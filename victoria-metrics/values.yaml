@@ -38,6 +38,7 @@ alertmanager:
   spec:
     nodeSelector:
       topology: lan
+      kubernetes.io/hostname: ubuntu
     storage:
       volumeClaimTemplate:
         spec:
@@ -56,6 +57,7 @@ grafana:
     size: 10Gi
   nodeSelector:
     topology: lan
+    kubernetes.io/hostname: ubuntu
   service:
     type: ClusterIP
   # disable ingress here, use Traefik IngressRoute
