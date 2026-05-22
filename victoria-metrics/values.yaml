@@ -4,12 +4,17 @@ victoria-metrics-operator:
 
 defaultRules:
   groups:
+    etcd:
+      create: false
     kubernetesSystemControllerManager:
       create: false
     kubeScheduler:
       create: false
     kubernetesSystemScheduler:
       create: false
+
+kubeEtcd:
+  enabled: false
 
 kubeControllerManager:
   enabled: false
