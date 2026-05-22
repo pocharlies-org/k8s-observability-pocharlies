@@ -68,7 +68,8 @@ alloy:
 
 controller:
   type: daemonset
-  nodeSelector: {}
+  nodeSelector:
+    kubernetes.io/os: linux
   tolerations:
     - key: dedicated
       operator: Equal

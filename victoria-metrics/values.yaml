@@ -88,7 +88,7 @@ nodeExporter:
   enabled: true
 
 prometheus-node-exporter:
-  hostNetwork: true
+  hostNetwork: false
   nodeSelector: {}
   tolerations:
     - operator: Exists   # let it run on tainted nodes too
