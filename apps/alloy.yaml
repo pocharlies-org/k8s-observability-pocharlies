@@ -16,7 +16,7 @@ spec:
         valueFiles:
           - $values/alloy/values.yaml
     - repoURL: https://github.com/pocharlies/k8s-observability-pocharlies
-      targetRevision: main
+      targetRevision: deploy/prod
       ref: values
   destination:
     server: https://kubernetes.default.svc
