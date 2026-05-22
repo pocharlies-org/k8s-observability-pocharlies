@@ -5,6 +5,8 @@ victoria-metrics-operator:
 vmsingle:
   enabled: true
   spec:
+    extraArgs:
+      maxLabelsPerTimeseries: "200"
     retentionPeriod: "90d"
     storage:
       accessModes: [ReadWriteOnce]
@@ -87,10 +89,15 @@ nodeExporter:
 
 prometheus-node-exporter:
   hostNetwork: true
-  nodeSelector:
-    topology: lan
+  nodeSelector: {}
   tolerations:
     - operator: Exists   # let it run on tainted nodes too
+  resources:
+    requests:
+      cpu: 20m
+      memory: 32Mi
+    limits:
+      memory: 128Mi
 
 # Don't enable the kube-state-metrics subchart on edge (sauvage)
 kube-state-metrics:

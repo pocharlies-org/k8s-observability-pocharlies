@@ -1,0 +1,84 @@
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMProbe
+metadata:
+  name: k8s-lan-ingresses
+  namespace: monitoring
+spec:
+  jobName: k8s-lan-ingresses
+  interval: 30s
+  scrapeTimeout: 10s
+  module: http_alive_tls
+  vmProberSpec:
+    url: blackbox-exporter.monitoring.svc.cluster.local:9115
+    path: /probe
+  targets:
+    staticConfig:
+      labels:
+        scope: lan
+      targets:
+        - https://adguard.lan.e-dani.com/
+        - https://argocd.lan.e-dani.com/
+        - https://auth.lan.e-dani.com/
+        - https://code.lan.e-dani.com/
+        - https://grafana.lan.e-dani.com/
+        - https://alertmanager.lan.e-dani.com/
+        - https://vm.lan.e-dani.com/
+        - https://harbor.lan.e-dani.com/
+        - https://libreplay.lan.e-dani.com/
+        - https://litellm.lan.e-dani.com/
+        - https://longhorn.lan.e-dani.com/
+        - https://minio.lan.e-dani.com/
+        - https://s3.lan.e-dani.com/
+        - https://teslamate.lan.e-dani.com/
+        - https://vault.lan.e-dani.com/
+---
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMProbe
+metadata:
+  name: k8s-public-endpoints
+  namespace: monitoring
+spec:
+  jobName: k8s-public-endpoints
+  interval: 30s
+  scrapeTimeout: 10s
+  module: http_alive_tls
+  vmProberSpec:
+    url: blackbox-exporter.monitoring.svc.cluster.local:9115
+    path: /probe
+  targets:
+    staticConfig:
+      labels:
+        scope: public
+      targets:
+        - https://firecrawl.e-dani.com/
+        - https://harbor.e-dani.com/
+        - https://skirmshop.e-dani.com/bundles/
+        - https://skirmshop.e-dani.com/labels/
+        - https://skirmshop.e-dani.com/labels-ups/
+        - https://skirmshop.e-dani.com/picker/
+        - https://skirmshop.e-dani.com/sii/
+        - https://whatsapp.e-dani.com/
+---
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMProbe
+metadata:
+  name: k8s-control-plane-health
+  namespace: monitoring
+spec:
+  jobName: k8s-control-plane-health
+  interval: 30s
+  scrapeTimeout: 10s
+  module: http_alive
+  vmProberSpec:
+    url: blackbox-exporter.monitoring.svc.cluster.local:9115
+    path: /probe
+  targets:
+    staticConfig:
+      labels:
+        scope: cluster
+      targets:
+        - http://vm-grafana.monitoring.svc.cluster.local/api/health
+        - http://vmsingle-vm-victoria-metrics-k8s-stack.monitoring.svc.cluster.local:8428/health
+        - http://vmagent-vm-victoria-metrics-k8s-stack.monitoring.svc.cluster.local:8429/health
+        - http://vmalert-vm-victoria-metrics-k8s-stack.monitoring.svc.cluster.local:8080/health
+        - http://loki.monitoring.svc.cluster.local:3100/ready

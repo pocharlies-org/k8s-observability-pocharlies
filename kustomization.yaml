@@ -3,4 +3,9 @@ kind: Kustomization
 resources:
   - apps/victoria-metrics.yaml
   - apps/loki.yaml
+  - apps/blackbox-exporter.yaml
   - apps/alloy.yaml
+  - manifests/ingressroutes.yaml
+  - manifests/alertmanager-config.yaml
+  - manifests/probes.yaml
+  - manifests/rules.yaml

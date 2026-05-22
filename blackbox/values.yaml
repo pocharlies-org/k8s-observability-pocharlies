@@ -1,0 +1,34 @@
+fullnameOverride: blackbox-exporter
+
+config:
+  modules:
+    http_alive:
+      prober: http
+      timeout: 5s
+      http:
+        valid_http_versions: ["HTTP/1.1", "HTTP/2.0"]
+        valid_status_codes: [200, 204, 301, 302, 401, 403]
+        follow_redirects: true
+        preferred_ip_protocol: ip4
+    http_alive_tls:
+      prober: http
+      timeout: 5s
+      http:
+        valid_http_versions: ["HTTP/1.1", "HTTP/2.0"]
+        valid_status_codes: [200, 204, 301, 302, 401, 403]
+        follow_redirects: true
+        fail_if_not_ssl: true
+        preferred_ip_protocol: ip4
+
+nodeSelector:
+  topology: lan
+
+tolerations:
+  - operator: Exists
+
+resources:
+  requests:
+    cpu: 20m
+    memory: 32Mi
+  limits:
+    memory: 128Mi

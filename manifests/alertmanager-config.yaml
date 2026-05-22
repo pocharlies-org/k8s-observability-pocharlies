@@ -1,0 +1,20 @@
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMAlertmanagerConfig
+metadata:
+  name: synapse-webhook
+  namespace: monitoring
+spec:
+  route:
+    receiver: synapse-alertmanager
+    group_by:
+      - alertname
+      - namespace
+      - severity
+    group_wait: 30s
+    group_interval: 5m
+    repeat_interval: 4h
+  receivers:
+    - name: synapse-alertmanager
+      webhook_configs:
+        - url: https://synapse.e-dani.com/webhooks/alertmanager
+          send_resolved: true

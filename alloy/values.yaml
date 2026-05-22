@@ -68,8 +68,7 @@ alloy:
 
 controller:
   type: daemonset
-  nodeSelector:
-    topology: lan
+  nodeSelector: {}
   tolerations:
     - key: dedicated
       operator: Equal
