@@ -9,3 +9,4 @@ resources:
   - manifests/alertmanager-config.yaml
   - manifests/probes.yaml
   - manifests/rules.yaml
+  - manifests/dashboards.yaml
