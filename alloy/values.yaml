@@ -87,3 +87,11 @@ controller:
       operator: Equal
       value: edge
       effect: NoSchedule
+
+configReloader:
+  resources:
+    requests:
+      cpu: 10m
+      memory: 50Mi
+    limits:
+      memory: 128Mi
