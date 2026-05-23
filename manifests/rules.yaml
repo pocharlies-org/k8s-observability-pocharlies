@@ -43,3 +43,27 @@ spec:
           annotations:
             summary: "DaemonSet unavailable"
             description: "{{ $labels.namespace }}/{{ $labels.daemonset }} has nodes without a ready daemon pod."
+---
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMRule
+metadata:
+  name: pocharlies-synapse
+  namespace: monitoring
+spec:
+  groups:
+    - name: pocharlies.synapse
+      rules:
+        # Synapse is Alertmanager's only path to Telegram. If it is down,
+        # every alert is lost silently — so this is critical and MUST be
+        # delivered via the direct-to-Telegram backup receiver (which does
+        # not depend on Synapse). See alertmanager-config.yaml.
+        - alert: SynapseDown
+          expr: probe_success{job="synapse-gateway"} == 0
+          for: 2m
+          labels:
+            severity: critical
+            area: availability
+            component: synapse
+          annotations:
+            summary: "Synapse gateway is down — alert delivery is broken"
+            description: "synapse.e-dani.com/webhooks/alertmanager is not responding for >2m. Alertmanager cannot deliver alerts to Telegram through Synapse. Check synapse-gateway (systemd --user) on sauvage."

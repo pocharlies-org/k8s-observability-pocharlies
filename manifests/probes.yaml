@@ -82,3 +82,27 @@ spec:
         - http://vmagent-vm-victoria-metrics-k8s-stack.monitoring.svc.cluster.local:8429/health
         - http://vmalert-vm-victoria-metrics-k8s-stack.monitoring.svc.cluster.local:8080/health
         - http://loki.monitoring.svc.cluster.local:3100/ready
+---
+# Synapse lives OUTSIDE the cluster (systemd on sauvage); Alertmanager's
+# only delivery route to Telegram is the webhook to this endpoint. Probe
+# it directly so we can alert (critical) when the delivery path is down.
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMProbe
+metadata:
+  name: synapse-gateway
+  namespace: monitoring
+spec:
+  jobName: synapse-gateway
+  interval: 30s
+  scrapeTimeout: 10s
+  module: http_synapse_webhook
+  vmProberSpec:
+    url: blackbox-exporter.monitoring.svc.cluster.local:9115
+    path: /probe
+  targets:
+    staticConfig:
+      labels:
+        scope: edge
+        component: synapse
+      targets:
+        - https://synapse.e-dani.com/webhooks/alertmanager

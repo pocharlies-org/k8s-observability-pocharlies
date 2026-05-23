@@ -6,6 +6,7 @@ resources:
   - apps/blackbox-exporter.yaml
   - apps/alloy.yaml
   - manifests/ingressroutes.yaml
+  - manifests/alertmanager-secrets.yaml
   - manifests/alertmanager-config.yaml
   - manifests/probes.yaml
   - manifests/rules.yaml
