@@ -1,0 +1,29 @@
+# Stable ClusterIP for Synapse (a host systemd process on the sauvage
+# node, outside k8s) to PUSH workflow-failure alerts into Alertmanager
+# via /api/v2/alerts. The operator's own service is headless (no
+# ClusterIP) and the LAN ingress sits behind Authelia, so we expose a
+# fixed in-cluster ClusterIP: the sauvage node routes to it directly
+# (kube-proxy), nothing is published outside the cluster, and no auth
+# token is needed (same trust model as Prometheus pushing to AM).
+# IP is pinned so Synapse's config has a stable target.
+apiVersion: v1
+kind: Service
+metadata:
+  name: alertmanager-ingest
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: alertmanager-ingest
+    app.kubernetes.io/part-of: synapse-alerting
+spec:
+  type: ClusterIP
+  clusterIP: 10.43.200.10
+  selector:
+    app.kubernetes.io/component: monitoring
+    app.kubernetes.io/instance: vm-victoria-metrics-k8s-stack
+    app.kubernetes.io/name: vmalertmanager
+    managed-by: vm-operator
+  ports:
+    - name: web
+      port: 9093
+      targetPort: 9093
+      protocol: TCP

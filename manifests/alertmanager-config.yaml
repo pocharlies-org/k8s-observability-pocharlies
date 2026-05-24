@@ -20,6 +20,18 @@ spec:
       - matchers:
           - "severity = critical"
         receiver: synapse-with-telegram-backup
+      # Synapse application failures (pushed in by the ops-explainer) are
+      # grouped by domain and rate-limited here so a burst of the same
+      # failure collapses into one card instead of flooding Telegram.
+      - matchers:
+          - "alertname = SynapseWorkflowFailed"
+        receiver: synapse-alertmanager
+        group_by:
+          - alertname
+          - domain
+        group_wait: 30s
+        group_interval: 2m
+        repeat_interval: 12h
   receivers:
     - name: synapse-alertmanager
       webhook_configs:
