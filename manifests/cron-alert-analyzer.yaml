@@ -47,7 +47,7 @@ data:
   TELEGRAM_CHAT_ID: "-1003785136626"        # synapse Telegram group
   TELEGRAM_THREAD_ID: "28350"               # "Crons" topic (createForumTopic 2026-05-25)
   LITELLM_URL: "http://litellm.litellm.svc.cluster.local:4000"
-  LITELLM_MODEL: "vllm-122b"
+  LITELLM_MODEL: "qwen35-122b"
   DASHBOARD_BASE: "https://dgx.e-dani.com/crontab"
   LOG_TAIL_LINES: "200"
   LLM_MAX_LOG_CHARS: "12000"
