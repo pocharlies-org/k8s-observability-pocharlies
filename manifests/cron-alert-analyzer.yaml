@@ -1,0 +1,149 @@
+# cron-alert-analyzer — receives Alertmanager webhooks for K8sCronJobFailed alerts,
+# fetches the failed pod's logs via the k8s API (Loki misses short-lived CronJob
+# pods), runs an LLM root-cause analysis via litellm (vllm-122b), and posts an
+# HTML report to the Telegram "Crons" topic in the synapse group with a
+# deep-link to dgx.e-dani.com/crontab.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cron-alert-analyzer
+  namespace: monitoring
+---
+# RBAC: read pods + pod logs + jobs across the whole cluster (since CronJobs
+# live in many namespaces). No write permissions.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cron-alert-analyzer
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "pods/log"]
+    verbs: ["get", "list"]
+  - apiGroups: ["batch"]
+    resources: ["jobs", "cronjobs"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: cron-alert-analyzer
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cron-alert-analyzer
+subjects:
+  - kind: ServiceAccount
+    name: cron-alert-analyzer
+    namespace: monitoring
+---
+# Non-secret config (chat/thread ids, URLs, tunables).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cron-alert-analyzer
+  namespace: monitoring
+data:
+  TELEGRAM_CHAT_ID: "-1003785136626"        # synapse Telegram group
+  TELEGRAM_THREAD_ID: "28350"               # "Crons" topic (createForumTopic 2026-05-25)
+  LITELLM_URL: "http://litellm.litellm.svc.cluster.local:4000"
+  LITELLM_MODEL: "vllm-122b"
+  DASHBOARD_BASE: "https://dgx.e-dani.com/crontab"
+  LOG_TAIL_LINES: "200"
+  LLM_MAX_LOG_CHARS: "12000"
+  LLM_TIMEOUT_S: "120"
+  LOG_LEVEL: "INFO"
+---
+# LiteLLM master key, pulled from the same Vault path that litellm itself uses
+# (secret/litellm). Mirrors litellm/litellm-secrets but in the monitoring ns so
+# the analyzer can mount it without cross-ns secret access.
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: cron-alert-analyzer-llm
+  namespace: monitoring
+spec:
+  refreshInterval: "1h"
+  secretStoreRef:
+    name: vault-backend
+    kind: ClusterSecretStore
+  target:
+    name: cron-alert-analyzer-llm
+    creationPolicy: Owner
+  data:
+    - secretKey: LITELLM_API_KEY
+      remoteRef:
+        key: secret/litellm
+        property: LITELLM_MASTER_KEY
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cron-alert-analyzer
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: cron-alert-analyzer
+    app.kubernetes.io/component: alert-webhook
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app.kubernetes.io/name: cron-alert-analyzer }
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: cron-alert-analyzer
+        app.kubernetes.io/component: alert-webhook
+    spec:
+      serviceAccountName: cron-alert-analyzer
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        seccompProfile: { type: RuntimeDefault }
+      nodeSelector:
+        kubernetes.io/arch: amd64
+      containers:
+        - name: analyzer
+          image: harbor.lan.e-dani.com/homelab/cron-alert-analyzer:v0.1.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - { name: http, containerPort: 8080 }
+          envFrom:
+            - configMapRef: { name: cron-alert-analyzer }
+          env:
+            - name: TELEGRAM_BOT_TOKEN
+              valueFrom:
+                secretKeyRef: { name: alertmanager-telegram-backup, key: bot_token }
+            - name: LITELLM_API_KEY
+              valueFrom:
+                secretKeyRef: { name: cron-alert-analyzer-llm, key: LITELLM_API_KEY }
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 15
+            periodSeconds: 30
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          resources:
+            requests: { cpu: 20m, memory: 64Mi }
+            limits: { memory: 256Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cron-alert-analyzer
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: cron-alert-analyzer
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: cron-alert-analyzer
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http

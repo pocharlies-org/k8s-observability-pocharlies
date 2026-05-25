@@ -67,3 +67,35 @@ spec:
           annotations:
             summary: "Synapse gateway is down — alert delivery is broken"
             description: "synapse.e-dani.com/webhooks/alertmanager is not responding for >2m. Alertmanager cannot deliver alerts to Telegram through Synapse. Check synapse-gateway (systemd --user) on sauvage."
+---
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMRule
+metadata:
+  name: pocharlies-k8s-cronjobs
+  namespace: monitoring
+spec:
+  groups:
+    - name: pocharlies.k8s-cronjobs
+      rules:
+        # Fires once a CronJob-owned Job has failed pods. The cron-alert-analyzer
+        # receives the webhook, fetches the pod logs via the k8s API, runs an
+        # LLM root-cause analysis (vllm-122b via litellm), and posts the report
+        # to the Telegram "Crons" topic with a deep-link to the dashboard.
+        # severity:warning (NOT critical) so this does NOT also fire the
+        # severity=critical → telegram-backup route (which would duplicate the
+        # alert in the General topic without LLM analysis).
+        - alert: K8sCronJobFailed
+          expr: |
+            (
+              max by (namespace, job_name) (kube_job_status_failed > 0)
+            )
+            * on (namespace, job_name) group_left(owner_name)
+              max by (namespace, job_name, owner_name) (kube_job_owner{owner_kind="CronJob"})
+          for: 1m
+          labels:
+            severity: warning
+            area: kubernetes
+            domain: crons
+          annotations:
+            summary: "CronJob {{ $labels.namespace }}/{{ $labels.owner_name }} failed"
+            description: "Job {{ $labels.job_name }} owned by CronJob {{ $labels.namespace }}/{{ $labels.owner_name }} has failed. The cron-alert-analyzer will post a root-cause analysis to the Telegram 'Crons' topic."
