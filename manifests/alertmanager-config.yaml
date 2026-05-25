@@ -5,14 +5,19 @@ metadata:
   namespace: monitoring
 spec:
   route:
+    # Default route: now that disableNamespaceMatcher is on (see
+    # victoria-metrics/values.yaml), this captures ALL alerts of any
+    # namespace — including infra (kube-state, node-exporter, etc.).
+    # Grouped by alertname+namespace+severity and rate-limited (repeat 12h)
+    # so the full infra catalogue does not flood Telegram.
     receiver: synapse-alertmanager
     group_by:
       - alertname
       - namespace
       - severity
-    group_wait: 30s
+    group_wait: 1m
     group_interval: 5m
-    repeat_interval: 4h
+    repeat_interval: 12h
     routes:
       # Critical alerts go to Synapse (LLM card) AND straight to Telegram.
       # The direct Telegram leg does not depend on Synapse, so a Synapse

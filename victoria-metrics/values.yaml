@@ -69,6 +69,13 @@ vmalert:
 alertmanager:
   enabled: true
   spec:
+    # Drop the per-config `namespace="monitoring"` entry matcher the
+    # operator otherwise injects into the synapse-webhook route. Without
+    # this, infra alerts (kube-state/node-exporter carry the AFFECTED
+    # object's namespace, not "monitoring") never enter the route and are
+    # dropped to the blackhole receiver. With it, the route captures ALL
+    # alerts regardless of namespace.
+    disableNamespaceMatcher: true
     hostAliases:
       - ip: "100.109.183.9"
         hostnames:
