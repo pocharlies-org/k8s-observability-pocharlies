@@ -52,6 +52,14 @@ vmcluster:
 vmagent:
   enabled: true
   spec:
+    useDefaultResources: false
+    resources:
+      requests:
+        cpu: 200m
+        memory: 300Mi
+      limits:
+        cpu: "1"
+        memory: 750Mi
     extraArgs:
       promscrape.maxScrapeSize: "67108864"
       promscrape.streamParse: "true"
