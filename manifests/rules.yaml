@@ -77,10 +77,15 @@ spec:
   groups:
     - name: pocharlies.k8s-cronjobs
       rules:
-        # Fires once a CronJob-owned Job has failed pods. The cron-alert-analyzer
-        # receives the webhook, fetches the pod logs via the k8s API, runs an
-        # LLM root-cause analysis (vllm-122b via litellm), and posts the report
-        # to the Telegram "Crons" topic with a deep-link to the dashboard.
+        # Fires only when a CronJob-owned Job has failed pod attempts and no
+        # successful pod attempt. This avoids false positives where a Job
+        # retries once, later exits 0, but kube-state-metrics still exposes the
+        # earlier failed attempt in kube_job_status_failed.
+        #
+        # The cron-alert-analyzer receives the webhook, fetches the pod logs via
+        # the k8s API, runs an LLM root-cause analysis (vllm-122b via litellm),
+        # and posts the report to the Telegram "Crons" topic with a deep-link
+        # to the dashboard and Telegram action buttons.
         # severity:warning (NOT critical) so this does NOT also fire the
         # severity=critical → telegram-backup route (which would duplicate the
         # alert in the General topic without LLM analysis).
@@ -95,6 +100,8 @@ spec:
               unless on (namespace, job_name)
               max by (namespace, job_name) (kube_job_status_succeeded > 0)
             )
+            * on (namespace, job_name)
+              max by (namespace, job_name) (kube_job_status_succeeded == 0)
             * on (namespace, job_name) group_left(owner_name)
               max by (namespace, job_name, owner_name) (kube_job_owner{owner_kind="CronJob"})
           for: 1m

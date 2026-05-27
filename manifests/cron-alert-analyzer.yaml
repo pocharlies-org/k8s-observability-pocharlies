@@ -52,6 +52,7 @@ data:
   LOG_TAIL_LINES: "200"
   LLM_MAX_LOG_CHARS: "12000"
   LLM_TIMEOUT_S: "120"
+  ENABLE_FIX_BUTTON: "true"
   LOG_LEVEL: "INFO"
 ---
 # LiteLLM master key, pulled from the same Vault path that litellm itself uses
@@ -114,7 +115,7 @@ spec:
                     operator: DoesNotExist
       containers:
         - name: analyzer
-          image: harbor.lan.e-dani.com/homelab/cron-alert-analyzer:v0.1.1
+          image: harbor.lan.e-dani.com/homelab/cron-alert-analyzer:v0.1.2
           imagePullPolicy: IfNotPresent
           ports:
             - { name: http, containerPort: 8080 }
