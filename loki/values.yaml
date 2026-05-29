@@ -49,6 +49,12 @@ singleBinary:
     enabled: true
     storageClass: longhorn
     size: 20Gi
+  # Survive accidental scale-to-zero during maintenance — the chart default
+  # leaves the StatefulSet with whenScaled: Delete which destroys the PVC
+  # (and all log history) when replicas drop to 0. Retain keeps the data.
+  persistentVolumeClaimRetentionPolicy:
+    whenScaled: Retain
+    whenDeleted: Delete
   resources:
     requests:
       cpu: 100m
