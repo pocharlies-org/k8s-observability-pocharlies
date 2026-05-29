@@ -59,3 +59,10 @@ spec:
       webhook_configs:
         - url: http://cron-alert-analyzer.monitoring.svc.cluster.local:8080/alert
           send_resolved: false
+        # Carril B funnel: each K8sCronJobFailed alert ALSO enters the synapse
+        # counter-card stream (via the gateway), so repeats collapse into one
+        # editable ×N card and surface in the ops-explainer daily backlog digest
+        # — the counter-card is the single dedup authority. The analyzer above
+        # still posts its rich LLM log analysis to the Crons topic.
+        - url: https://synapse.e-dani.com/webhooks/alertmanager
+          send_resolved: true
