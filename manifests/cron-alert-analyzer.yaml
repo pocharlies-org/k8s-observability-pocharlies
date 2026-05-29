@@ -101,6 +101,17 @@ spec:
         seccompProfile: { type: RuntimeDefault }
       nodeSelector:
         kubernetes.io/arch: amd64
+      # Keep off OVH nodes (region=ovh-*): they can't reach the LAN registry
+      # harbor.lan.e-dani.com → ImagePullBackOff → rollout never completes →
+      # ProgressDeadlineExceeded → the ArgoCD app goes Degraded. Schedule only
+      # on home-LAN nodes (which carry no `region` label).
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: region
+                    operator: DoesNotExist
       containers:
         - name: analyzer
           image: harbor.lan.e-dani.com/homelab/cron-alert-analyzer:v0.1.1
