@@ -18,7 +18,6 @@ spec:
       targets:
         - https://adguard.lan.e-dani.com/
         - https://argocd.lan.e-dani.com/
-        - https://auth.lan.e-dani.com/
         - https://code.lan.e-dani.com/
         - https://grafana.lan.e-dani.com/
         - https://alertmanager.lan.e-dani.com/
@@ -50,6 +49,7 @@ spec:
       labels:
         scope: public
       targets:
+        - https://auth-next.e-dani.com/
         - https://firecrawl.e-dani.com/
         - https://harbor.e-dani.com/
         - https://skirmshop.e-dani.com/bundles/
