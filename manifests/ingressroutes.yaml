@@ -10,8 +10,8 @@ spec:
     - kind: Rule
       match: Host(`grafana.lan.e-dani.com`)
       middlewares:
-        - name: authelia
-          namespace: authelia
+        - name: sso-chain
+          namespace: keycloak
       services:
         - name: vm-grafana
           port: 80
@@ -30,8 +30,8 @@ spec:
     - kind: Rule
       match: Host(`alertmanager.lan.e-dani.com`)
       middlewares:
-        - name: authelia
-          namespace: authelia
+        - name: sso-chain
+          namespace: keycloak
       services:
         - name: vmalertmanager-vm-victoria-metrics-k8s-stack
           port: 9093
@@ -50,8 +50,8 @@ spec:
     - kind: Rule
       match: Host(`vm.lan.e-dani.com`)
       middlewares:
-        - name: authelia
-          namespace: authelia
+        - name: sso-chain
+          namespace: keycloak
       services:
         - name: vmsingle-vm-victoria-metrics-k8s-stack
           port: 8428
