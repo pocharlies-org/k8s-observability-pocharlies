@@ -50,7 +50,14 @@ spec:
         group_wait: 30s
         group_interval: 2m
         repeat_interval: 6h
+      # The chart default KubeJobFailed alert is raw and duplicates CronJob
+      # failures already handled by K8sCronJobFailed + cron-alert-analyzer.
+      # Drop it here to avoid zombie retained Jobs flooding the general stream.
+      - matchers:
+          - "alertname = KubeJobFailed"
+        receiver: blackhole
   receivers:
+    - name: blackhole
     - name: synapse-alertmanager
       webhook_configs:
         - url: https://synapse.e-dani.com/webhooks/alertmanager
