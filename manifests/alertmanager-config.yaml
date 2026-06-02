@@ -19,6 +19,11 @@ spec:
     group_interval: 5m
     repeat_interval: 12h
     routes:
+      # Pure liveness/self-test alerts are useful for Alertmanager internals,
+      # but they should never create Telegram work items.
+      - matchers:
+          - 'alertname =~ "Watchdog|InfoInhibitor"'
+        receiver: blackhole
       # Critical alerts intentionally stay on the Synapse webhook path so
       # the ops-explainer can render one clean LLM summary for Telegram.
       # Do not add a generic Alertmanager telegram_configs leg here: its
