@@ -19,6 +19,15 @@ config:
         follow_redirects: true
         fail_if_not_ssl: true
         preferred_ip_protocol: ip4
+    http_alive_tls_no_redirect:
+      prober: http
+      timeout: 5s
+      http:
+        valid_http_versions: ["HTTP/1.1", "HTTP/2.0"]
+        valid_status_codes: [200, 204, 301, 302, 401, 403]
+        follow_redirects: false
+        fail_if_not_ssl: true
+        preferred_ip_protocol: ip4
     # Liveness probe for the Synapse gateway via its alertmanager webhook
     # path. A GET to /webhooks/alertmanager returns 405 (Method Not
     # Allowed) when the gateway is up — that is the success signal here.
