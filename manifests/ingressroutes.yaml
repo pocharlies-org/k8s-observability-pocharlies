@@ -8,7 +8,14 @@ spec:
     - websecure
   routes:
     - kind: Rule
+      match: Host(`grafana.lan.e-dani.com`) && (ClientIP(`192.168.50.0/24`) || ClientIP(`100.64.0.0/10`))
+      priority: 300
+      services:
+        - name: vm-grafana
+          port: 80
+    - kind: Rule
       match: Host(`grafana.lan.e-dani.com`)
+      priority: 100
       middlewares:
         - name: sso-chain
           namespace: keycloak
@@ -28,7 +35,14 @@ spec:
     - websecure
   routes:
     - kind: Rule
+      match: Host(`alertmanager.lan.e-dani.com`) && (ClientIP(`192.168.50.0/24`) || ClientIP(`100.64.0.0/10`))
+      priority: 300
+      services:
+        - name: vmalertmanager-vm-victoria-metrics-k8s-stack
+          port: 9093
+    - kind: Rule
       match: Host(`alertmanager.lan.e-dani.com`)
+      priority: 100
       middlewares:
         - name: sso-chain
           namespace: keycloak
@@ -48,7 +62,14 @@ spec:
     - websecure
   routes:
     - kind: Rule
+      match: Host(`vm.lan.e-dani.com`) && (ClientIP(`192.168.50.0/24`) || ClientIP(`100.64.0.0/10`))
+      priority: 300
+      services:
+        - name: vmsingle-vm-victoria-metrics-k8s-stack
+          port: 8428
+    - kind: Rule
       match: Host(`vm.lan.e-dani.com`)
+      priority: 100
       middlewares:
         - name: sso-chain
           namespace: keycloak
