@@ -120,7 +120,7 @@ grafana:
       login_attribute_path: preferred_username
       groups_attribute_path: groups
       name_attribute_path: name
-      role_attribute_path: "email=='me@e-dani.com' && 'GrafanaAdmin' || ''"
+      role_attribute_path: "contains(groups, `/edani-admins`) && `GrafanaAdmin` || contains(groups, `/edani-operators`) && `Editor` || `Viewer`"
       role_attribute_strict: true
       skip_org_role_sync: false
       allow_assign_grafana_admin: true
