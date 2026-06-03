@@ -9,6 +9,7 @@ resources:
   - manifests/alertmanager-secrets.yaml
   - manifests/alertmanager-ingest.yaml
   - manifests/alertmanager-config.yaml
+  - manifests/whatsapp-mcp-telegram-alert.yaml
   - manifests/probes.yaml
   - manifests/rules.yaml
   - manifests/cron-alert-analyzer.yaml
