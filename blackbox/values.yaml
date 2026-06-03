@@ -44,7 +44,7 @@ config:
         preferred_ip_protocol: ip4
 
 nodeSelector:
-  topology: lan
+  node-pool: ks5-nvme
 
 tolerations:
   - operator: Exists

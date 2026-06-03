@@ -43,7 +43,7 @@ loki:
 singleBinary:
   replicas: 1
   nodeSelector:
-    topology: lan
+    node-pool: ks5-nvme
     kubernetes.io/arch: amd64
   persistence:
     enabled: true

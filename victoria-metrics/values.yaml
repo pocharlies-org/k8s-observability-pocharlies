@@ -43,7 +43,7 @@ vmsingle:
         requests:
           storage: 50Gi
     nodeSelector:
-      topology: lan
+      node-pool: ks5-nvme
       kubernetes.io/arch: amd64
 
 vmcluster:
@@ -57,13 +57,13 @@ vmagent:
       promscrape.streamParse: "true"
     selectAllByDefault: true
     nodeSelector:
-      topology: lan
+      node-pool: ks5-nvme
 
 vmalert:
   enabled: true
   spec:
     nodeSelector:
-      topology: lan
+      node-pool: ks5-nvme
   remoteWriteVMAgent: false
 
 alertmanager:
@@ -81,8 +81,7 @@ alertmanager:
         hostnames:
           - synapse.e-dani.com
     nodeSelector:
-      topology: lan
-      kubernetes.io/hostname: ubuntu
+      node-pool: ks5-nvme
     storage:
       volumeClaimTemplate:
         spec:
@@ -133,8 +132,7 @@ grafana:
     storageClassName: longhorn
     size: 10Gi
   nodeSelector:
-    topology: lan
-    kubernetes.io/hostname: ubuntu
+    node-pool: ks5-nvme
   service:
     type: ClusterIP
   # disable ingress here, use Traefik IngressRoute
@@ -157,7 +155,7 @@ grafana:
 kubeStateMetrics:
   enabled: true
   nodeSelector:
-    topology: lan
+    node-pool: ks5-nvme
 
 nodeExporter:
   enabled: true
@@ -201,4 +199,4 @@ kube-state-metrics:
     - services=[infra]
     - namespaces=[infra]
   nodeSelector:
-    topology: lan
+    node-pool: ks5-nvme
