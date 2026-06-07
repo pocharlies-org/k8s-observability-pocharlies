@@ -1,0 +1,91 @@
+---
+# GPU memory/process exporter as a k8s DaemonSet on the GPU nodes.
+# DCGM does NOT expose framebuffer/VRAM on the GB10 (Grace-Blackwell unified
+# memory) — only the RTX 3080 reports DCGM_FI_DEV_FB_*. nvidia-smi DOES report
+# memory on all of them, so we run the (host-retired) dgx-node-metrics exporter
+# here in GPU-only mode: runtimeClassName nvidia + NVIDIA_VISIBLE_DEVICES=all
+# gives read-only NVML/nvidia-smi access WITHOUT requesting nvidia.com/gpu (so it
+# never steals a GPU from vLLM). The dashboard reads VRAM from dgx_gpu_memory_*
+# (all 3 incl GB10) and temp/util/power from DCGM.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: dgx-gpu-mem-exporter
+  namespace: monitoring
+  labels:
+    app: dgx-gpu-mem-exporter
+    app.kubernetes.io/part-of: dgx-dashboard-metrics
+spec:
+  selector:
+    matchLabels:
+      app: dgx-gpu-mem-exporter
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app: dgx-gpu-mem-exporter
+    spec:
+      # gx10-ec3d's containerd lacks harbor creds in registries.yaml (unlike the
+      # other nodes); pull via this secret instead of restarting k3s-agent there.
+      imagePullSecrets:
+        - name: harbor-pull
+      runtimeClassName: nvidia
+      nodeSelector:
+        nvidia.com/gpu.present: "true"
+      tolerations:
+        - { key: nvidia.com/gpu, operator: Exists, effect: NoSchedule }
+        - { key: dedicated, operator: Equal, value: llm, effect: NoSchedule }
+        - { key: pool, operator: Equal, value: dev, effect: PreferNoSchedule }
+      containers:
+        - name: exporter
+          image: harbor.e-dani.com/homelab/dgx-node-metrics:20260607-1
+          ports:
+            - { containerPort: 9108, name: metrics }
+          env:
+            - name: NODE_NAME
+              valueFrom: { fieldRef: { fieldPath: spec.nodeName } }
+            - { name: NVIDIA_VISIBLE_DEVICES, value: "all" }
+            - { name: NVIDIA_DRIVER_CAPABILITIES, value: "utility" }
+            - { name: PORT, value: "9108" }
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits: { memory: 128Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dgx-gpu-mem-exporter
+  namespace: monitoring
+  labels:
+    app: dgx-gpu-mem-exporter
+spec:
+  clusterIP: None
+  selector:
+    app: dgx-gpu-mem-exporter
+  ports:
+    - { name: metrics, port: 9108, targetPort: 9108 }
+---
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMServiceScrape
+metadata:
+  name: dgx-gpu-mem-exporter
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: dgx-dashboard-metrics
+spec:
+  selector:
+    matchLabels:
+      app: dgx-gpu-mem-exporter
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: 30s
+      scrapeTimeout: 20s
+      # keep the exporter's own labels (node, index, container=GPU-proc) instead of
+      # the scrape's target labels overwriting them (e.g. container=exporter).
+      honorLabels: true
