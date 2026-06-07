@@ -1,0 +1,29 @@
+---
+# Scrape the gpu-operator nvidia-dcgm-exporter into VictoriaMetrics so the
+# dgx-dashboard (and any alert) can read GPU vitals from the VM instead of the
+# retired docker prometheus + host dgx-node-metrics exporter.
+# vmagent has empty serviceScrape{,Namespace}Selector → it picks up this object
+# from any namespace; the object lives in `monitoring` and targets the dcgm
+# Service in `gpu-operator`.
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMServiceScrape
+metadata:
+  name: dcgm-exporter
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: dgx-dashboard-metrics
+spec:
+  namespaceSelector:
+    matchNames: ["gpu-operator"]
+  selector:
+    matchLabels:
+      app: nvidia-dcgm-exporter
+  endpoints:
+    - port: gpu-metrics
+      path: /metrics
+      interval: 30s
+      scrapeTimeout: 20s
+      relabelConfigs:
+        # Homogeneous `node` label (DCGM already carries Hostname=node name too).
+        - sourceLabels: [__meta_kubernetes_pod_node_name]
+          targetLabel: node
