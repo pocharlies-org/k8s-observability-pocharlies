@@ -60,6 +60,13 @@ spec:
             allowPrivilegeEscalation: false
             capabilities:
               drop: ["ALL"]
+          # host /proc so the exporter reads node mem/cpu (HOST_PROC=/host/proc);
+          # without it dgx_host_memory_*/dgx_host_cpu_usage_ratio reported 0.
+          volumeMounts:
+            - { name: host-proc, mountPath: /host/proc, readOnly: true }
+      volumes:
+        - name: host-proc
+          hostPath: { path: /proc }
 ---
 apiVersion: v1
 kind: Service
