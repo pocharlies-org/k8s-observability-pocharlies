@@ -26,6 +26,11 @@ spec:
       labels:
         app: dgx-gpu-mem-exporter
     spec:
+      # nvidia-smi --query-compute-apps can't resolve GPU-process PIDs (running in
+      # other containers) without the host PID namespace. On GB10 (memory.used is
+      # N/A) the exporter falls back to summing per-process VRAM, which returned 0
+      # on gx10-ec3d until hostPID let it see those processes.
+      hostPID: true
       # gx10-ec3d's containerd lacks harbor creds in registries.yaml (unlike the
       # other nodes); pull via this secret instead of restarting k3s-agent there.
       imagePullSecrets:
