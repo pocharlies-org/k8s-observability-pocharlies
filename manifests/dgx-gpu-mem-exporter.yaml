@@ -44,7 +44,7 @@ spec:
         - { key: pool, operator: Equal, value: dev, effect: PreferNoSchedule }
       containers:
         - name: exporter
-          image: harbor.e-dani.com/homelab/dgx-node-metrics:20260607-1
+          image: harbor.e-dani.com/homelab/dgx-node-metrics:20260610-1
           ports:
             - { containerPort: 9108, name: metrics }
           env:
@@ -62,11 +62,23 @@ spec:
               drop: ["ALL"]
           # host /proc so the exporter reads node mem/cpu (HOST_PROC=/host/proc);
           # without it dgx_host_memory_*/dgx_host_cpu_usage_ratio reported 0.
+          # containerd CRI socket so crictl resolves GPU-process container IDs to
+          # k8s container names (GPU cards show vllm/embedder/… instead of
+          # container-<id>). Read-only socket access, no nsenter / CAP_SYS_ADMIN;
+          # the container runs as root so the root:root 0660 socket is reachable
+          # with all capabilities dropped.
           volumeMounts:
             - { name: host-proc, mountPath: /host/proc, readOnly: true }
+            - name: containerd-sock
+              mountPath: /run/k3s/containerd/containerd.sock
+              readOnly: true
       volumes:
         - name: host-proc
           hostPath: { path: /proc }
+        - name: containerd-sock
+          hostPath:
+            path: /run/k3s/containerd/containerd.sock
+            type: Socket
 ---
 apiVersion: v1
 kind: Service
