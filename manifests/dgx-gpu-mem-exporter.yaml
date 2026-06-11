@@ -58,14 +58,14 @@ spec:
           resources:
             requests: { cpu: 10m, memory: 32Mi }
             limits: { memory: 192Mi }
+          # privileged: nsenter into PID 1 for live host systemd state needs
+          # it — caps+seccomp+apparmor unconfined are NOT enough for setns into
+          # the host mount ns (standard node-agent reality). Decision 2026-06-11,
+          # scoped to this read-only observability DS; the dashboard pod stays
+          # clean (it only HTTP-GETs the exporter). journal/crontab/docker are
+          # privilege-independent; this only unlocks /inventory + /unitfile.
           securityContext:
-            allowPrivilegeEscalation: true
-            capabilities:
-              drop: ["ALL"]
-              # nsenter into PID 1 for live systemd unit state (decision
-              # 2026-06-11); scoped to this read-only observability DS, the
-              # dashboard pod stays clean. journal/crontab need no caps.
-              add: ["SYS_ADMIN", "SYS_PTRACE"]
+            privileged: true
           # host /proc so the exporter reads node mem/cpu (HOST_PROC=/host/proc);
           # containerd CRI socket so crictl resolves GPU-process container names;
           # /var/run (ro) gives the host D-Bus socket (systemctl queries for
@@ -154,10 +154,7 @@ spec:
             requests: { cpu: 10m, memory: 32Mi }
             limits: { memory: 192Mi }
           securityContext:
-            allowPrivilegeEscalation: true
-            capabilities:
-              drop: ["ALL"]
-              add: ["SYS_ADMIN", "SYS_PTRACE"]
+            privileged: true   # nsenter into host PID 1 (see GPU DS note)
           volumeMounts:
             - { name: host-proc, mountPath: /host/proc, readOnly: true }
             - { name: host-run, mountPath: /host-run, readOnly: true }
