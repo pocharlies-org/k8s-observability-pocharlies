@@ -45,7 +45,7 @@ spec:
         - { key: pool, operator: Equal, value: dev, effect: PreferNoSchedule }
       containers:
         - name: exporter
-          image: harbor.e-dani.com/homelab/dgx-node-metrics:20260611-1
+          image: harbor.e-dani.com/homelab/dgx-node-metrics:20260611-2
           ports:
             - { containerPort: 9108, name: metrics }
           env:
@@ -59,9 +59,13 @@ spec:
             requests: { cpu: 10m, memory: 32Mi }
             limits: { memory: 192Mi }
           securityContext:
-            allowPrivilegeEscalation: false
+            allowPrivilegeEscalation: true
             capabilities:
               drop: ["ALL"]
+              # nsenter into PID 1 for live systemd unit state (decision
+              # 2026-06-11); scoped to this read-only observability DS, the
+              # dashboard pod stays clean. journal/crontab need no caps.
+              add: ["SYS_ADMIN", "SYS_PTRACE"]
           # host /proc so the exporter reads node mem/cpu (HOST_PROC=/host/proc);
           # containerd CRI socket so crictl resolves GPU-process container names;
           # /var/run (ro) gives the host D-Bus socket (systemctl queries for
@@ -123,6 +127,8 @@ spec:
         app: dgx-node-exporter-cpu
         metrics-of: dgx-node
     spec:
+      # hostPID so nsenter -t 1 can reach the host init's namespaces.
+      hostPID: true
       imagePullSecrets:
         - name: harbor-pull
       affinity:
@@ -136,7 +142,7 @@ spec:
         - { key: pool, operator: Equal, value: dev, effect: PreferNoSchedule }
       containers:
         - name: exporter
-          image: harbor.e-dani.com/homelab/dgx-node-metrics:20260611-1
+          image: harbor.e-dani.com/homelab/dgx-node-metrics:20260611-2
           ports:
             - { containerPort: 9108, name: metrics }
           env:
@@ -148,9 +154,10 @@ spec:
             requests: { cpu: 10m, memory: 32Mi }
             limits: { memory: 192Mi }
           securityContext:
-            allowPrivilegeEscalation: false
+            allowPrivilegeEscalation: true
             capabilities:
               drop: ["ALL"]
+              add: ["SYS_ADMIN", "SYS_PTRACE"]
           volumeMounts:
             - { name: host-proc, mountPath: /host/proc, readOnly: true }
             - { name: host-run, mountPath: /host-run, readOnly: true }
