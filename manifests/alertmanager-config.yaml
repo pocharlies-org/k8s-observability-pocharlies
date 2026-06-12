@@ -24,6 +24,16 @@ spec:
       - matchers:
           - 'alertname =~ "Watchdog|InfoInhibitor"'
         receiver: blackhole
+      # One direct emergency leg is intentional: when Synapse itself is down,
+      # the normal webhook path cannot deliver the alert or its OpenClaw button.
+      - matchers:
+          - "alertname = SynapseDown"
+        receiver: emergency-telegram
+        group_by:
+          - alertname
+        group_wait: 30s
+        group_interval: 5m
+        repeat_interval: 30m
       # Critical alerts intentionally stay on the Synapse webhook path so
       # the ops-explainer can render one clean LLM summary for Telegram.
       # Do not add a generic Alertmanager telegram_configs leg here: its
@@ -61,20 +71,31 @@ spec:
       - matchers:
           - "alertname = KubeJobFailed"
         receiver: blackhole
+      # Generic warning alerts stay queryable in Alertmanager/Grafana but do
+      # not become Telegram work items. Only the curated warning routes above
+      # (SynapseWorkflowFailed and K8sCronJobFailed) page the monitor group.
+      - matchers:
+          - "severity = warning"
+        receiver: blackhole
   receivers:
     - name: blackhole
     - name: synapse-alertmanager
       webhook_configs:
         - url: https://synapse.e-dani.com/webhooks/alertmanager
           send_resolved: true
+    - name: emergency-telegram
+      telegram_configs:
+        - bot_token:
+            name: alertmanager-telegram-backup
+            key: bot_token
+          chat_id: -1003785136626
+          parse_mode: HTML
+          send_resolved: true
+          message: |-
+            {{ if eq .Status "firing" }}🔴 CAÍDA{{ else }}✅ RECUPERADO{{ end }} <b>Synapse alert delivery</b>
+            {{ range .Alerts }}- {{ .Annotations.summary }} [{{ .Labels.severity }}]
+            {{ end }}
     - name: cron-alert-analyzer-webhook
       webhook_configs:
         - url: http://cron-alert-analyzer.monitoring.svc.cluster.local:8080/alert
           send_resolved: false
-        # Carril B funnel: each K8sCronJobFailed alert ALSO enters the synapse
-        # counter-card stream (via the gateway), so repeats collapse into one
-        # editable ×N card and surface in the ops-explainer daily backlog digest
-        # — the counter-card is the single dedup authority. The analyzer above
-        # still posts its rich LLM log analysis to the Crons topic.
-        - url: https://synapse.e-dani.com/webhooks/alertmanager
-          send_resolved: true
