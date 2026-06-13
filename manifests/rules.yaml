@@ -17,7 +17,10 @@ spec:
             summary: "Endpoint probe is failing"
             description: "{{ $labels.instance }} has failed blackbox probes for more than 2 minutes."
         - alert: KubernetesDeploymentUnavailable
-          expr: kube_deployment_spec_replicas > kube_deployment_status_replicas_available
+          expr: |
+            (kube_deployment_spec_replicas > kube_deployment_status_replicas_available)
+              unless on(namespace, deployment)
+            kube_deployment_spec_replicas{namespace="llm",deployment=~"vllm-.*-dgx2|omnivoice-tts-dgx2|.*-bench"}
           for: 5m
           labels:
             severity: critical
@@ -25,6 +28,19 @@ spec:
           annotations:
             summary: "Deployment unavailable"
             description: "{{ $labels.namespace }}/{{ $labels.deployment }} has fewer available replicas than desired."
+        - alert: LlmResidentDeploymentUnavailable
+          expr: |
+            kube_deployment_spec_replicas{namespace="llm",deployment=~"vllm-.*-dgx2|omnivoice-tts-dgx2"}
+              >
+            kube_deployment_status_replicas_available{namespace="llm",deployment=~"vllm-.*-dgx2|omnivoice-tts-dgx2"}
+          for: 30m
+          labels:
+            severity: critical
+            area: kubernetes
+            workload_class: gpu-llm
+          annotations:
+            summary: "LLM resident deployment unavailable"
+            description: "{{ $labels.namespace }}/{{ $labels.deployment }} is still unavailable after 30 minutes; inspect GPU scheduling, model startup and competing bench workloads."
         - alert: KubernetesStatefulSetUnavailable
           expr: kube_statefulset_replicas > kube_statefulset_status_replicas_ready
           for: 5m
