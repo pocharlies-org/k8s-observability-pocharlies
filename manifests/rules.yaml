@@ -93,10 +93,10 @@ spec:
   groups:
     - name: pocharlies.k8s-cronjobs
       rules:
-        # Fires only when Kubernetes has marked a CronJob-owned Job as failed.
-        # This avoids false positives where a Job has a failed pod attempt but
-        # is still retrying or later exits 0, while kube-state-metrics still
-        # exposes the earlier attempt in kube_job_status_failed.
+        # Fires only when Kubernetes has marked a CronJob-owned Job as failed
+        # and no newer successful run exists for the same CronJob. This avoids
+        # false positives where a Job has a failed pod attempt, is still
+        # retrying, or the next scheduled run has already recovered.
         #
         # The cron-alert-analyzer receives the webhook, fetches the pod logs via
         # the k8s API, runs an LLM root-cause analysis (vllm-122b via litellm),
@@ -108,12 +108,36 @@ spec:
         - alert: K8sCronJobFailed
           expr: |
             (
-              max by (namespace, job_name) (kube_job_failed{condition="true"} == 1)
-              and on (namespace, job_name)
-              max by (namespace, job_name) (kube_job_status_start_time > time() - 3600)
+              (
+                max by (namespace, job_name) (kube_job_failed{condition="true"} == 1)
+                and on (namespace, job_name)
+                max by (namespace, job_name) (kube_job_status_start_time > time() - 3600)
+              )
+              * on (namespace, job_name) group_left(owner_name)
+                max by (namespace, job_name, owner_name) (kube_job_owner{owner_kind="CronJob"})
             )
-            * on (namespace, job_name) group_left(owner_name)
-              max by (namespace, job_name, owner_name) (kube_job_owner{owner_kind="CronJob"})
+            unless on (namespace, owner_name)
+            (
+              max by (namespace, owner_name) (
+                (
+                  max by (namespace, job_name) (kube_job_status_start_time)
+                  * on (namespace, job_name)
+                    max by (namespace, job_name) (kube_job_status_succeeded > 0)
+                )
+                * on (namespace, job_name) group_left(owner_name)
+                  max by (namespace, job_name, owner_name) (kube_job_owner{owner_kind="CronJob"})
+              )
+              > on (namespace, owner_name)
+              max by (namespace, owner_name) (
+                (
+                  max by (namespace, job_name) (kube_job_status_start_time)
+                  * on (namespace, job_name)
+                    max by (namespace, job_name) (kube_job_failed{condition="true"} == 1)
+                )
+                * on (namespace, job_name) group_left(owner_name)
+                  max by (namespace, job_name, owner_name) (kube_job_owner{owner_kind="CronJob"})
+              )
+            )
           for: 1m
           labels:
             severity: warning
