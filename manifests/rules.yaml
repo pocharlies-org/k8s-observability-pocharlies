@@ -59,6 +59,28 @@ spec:
           annotations:
             summary: "DaemonSet unavailable"
             description: "{{ $labels.namespace }}/{{ $labels.daemonset }} has nodes without a ready daemon pod."
+        - alert: KubeHpaMaxedOut
+          expr: |
+            (
+              kube_horizontalpodautoscaler_status_current_replicas{job="kube-state-metrics"}
+                == kube_horizontalpodautoscaler_spec_max_replicas{job="kube-state-metrics"}
+            )
+            and on(namespace, horizontalpodautoscaler, cluster)
+            (
+              kube_horizontalpodautoscaler_spec_max_replicas{job="kube-state-metrics"}
+                != kube_horizontalpodautoscaler_spec_min_replicas{job="kube-state-metrics"}
+            )
+            and on(namespace, horizontalpodautoscaler, cluster)
+            (
+              kube_horizontalpodautoscaler_status_condition{job="kube-state-metrics",condition="ScalingLimited",status="true"} == 1
+            )
+          for: 15m
+          labels:
+            severity: warning
+            area: kubernetes
+          annotations:
+            summary: "HPA is capped at max replicas"
+            description: "{{ $labels.namespace }}/{{ $labels.horizontalpodautoscaler }} is at max replicas and Kubernetes reports ScalingLimited=True for more than 15 minutes."
         - alert: NodeDiskIOSaturation
           expr: |
             (

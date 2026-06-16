@@ -6,6 +6,8 @@ defaultRules:
   rules:
     KubeJobFailed:
       create: false
+    KubeHpaMaxedOut:
+      create: false
     NodeDiskIOSaturation:
       create: false
   groups:
