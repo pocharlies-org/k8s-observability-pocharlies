@@ -3,6 +3,9 @@ victoria-metrics-operator:
   enabled: true
 
 defaultRules:
+  rules:
+    KubeJobFailed:
+      enabled: false
   groups:
     etcd:
       create: false
