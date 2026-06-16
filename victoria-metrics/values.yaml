@@ -5,7 +5,7 @@ victoria-metrics-operator:
 defaultRules:
   rules:
     KubeJobFailed:
-      enabled: false
+      create: false
   groups:
     etcd:
       create: false
