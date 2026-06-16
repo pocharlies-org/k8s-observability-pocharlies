@@ -1,6 +1,6 @@
-# dgx-cluster-health-watcher — twice-daily cluster check; Telegram only for
-# new actionable issues. Full reports stay in Job logs; Telegram gets only
-# issue lines and is deduped by fingerprint.
+# dgx-cluster-health-watcher — twice-daily cluster check. Full reports stay in
+# Job logs; Telegram posting is disabled so real paging can be routed through
+# Alertmanager/Synapse with OpenClaw actions instead of bypassing alert hygiene.
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -45,7 +45,7 @@ metadata:
 data:
   health-check.sh: |
     #!/usr/bin/env bash
-    # dgx-cluster-health-watcher — cluster health check with actionable Telegram alerts.
+    # dgx-cluster-health-watcher — cluster health check with reports in Job logs.
     set +e
     STATE_DIR="${STATE_DIR:-/state}"
     mkdir -p "$STATE_DIR"
@@ -380,7 +380,7 @@ spec:
                 - name: STATE_DIR
                   value: /state
                 - name: POST_MODE
-                  value: actionable
+                  value: never
               volumeMounts:
                 - name: ssh-keys
                   mountPath: /root/.ssh
