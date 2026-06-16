@@ -1,0 +1,405 @@
+# dgx-cluster-health-watcher — twice-daily cluster check; Telegram only for
+# new actionable issues. Full reports stay in Job logs; Telegram gets only
+# issue lines and is deduped by fingerprint.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cluster-health-watcher
+  namespace: monitoring
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cluster-health-watcher-read
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "services", "nodes"]
+    verbs: ["get", "list"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets", "daemonsets"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get"]
+    resourceNames: ["litellm-secrets"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: cluster-health-watcher-read
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-health-watcher-read
+subjects:
+  - kind: ServiceAccount
+    name: cluster-health-watcher
+    namespace: monitoring
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cluster-health-watcher-scripts
+  namespace: monitoring
+data:
+  health-check.sh: |
+    #!/usr/bin/env bash
+    # dgx-cluster-health-watcher — cluster health check with actionable Telegram alerts.
+    set +e
+    STATE_DIR="${STATE_DIR:-/state}"
+    mkdir -p "$STATE_DIR"
+    POST_MODE="${POST_MODE:-actionable}"  # actionable, always, never
+    DEDUP_FILE="$STATE_DIR/last-telegram-issue-fingerprint"
+
+    # SSH from inside the pod: the mounted /root/.ssh files are owned by
+    # uid 1000 (host's dibanez user), so OpenSSH refuses the config and key
+    # with strict owner checks. Copy the key into /tmp root-owned and connect
+    # directly to LAN IPs.
+    install -m 0600 -o root -g root /root/.ssh/nvidiadgx /tmp/ssh-key 2>/dev/null
+    SSH_OPTS="-F /dev/null -i /tmp/ssh-key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes -o ConnectTimeout=10 -o LogLevel=ERROR -o IdentitiesOnly=yes"
+    ssh_dgx()  { ssh $SSH_OPTS dibanerz@192.168.50.140 "$@" 2>/dev/null || echo "[ssh-error]"; }
+    ssh_dgx2() { ssh $SSH_OPTS dibanez@192.168.50.141  "$@" 2>/dev/null || echo "[ssh-error]"; }
+
+    NOW_LOCAL="$(TZ=Europe/Madrid date '+%Y-%m-%d %H:%M %Z')"
+    RED=0; YELLOW=0
+    REPORT=""
+    add_line() { REPORT="${REPORT}${1}"$'\n'; }
+
+    add_line "PODS (ns llm)"
+    PODS_RAW=$(kubectl -n llm get pods -o json 2>/dev/null)
+    report_pod_app() {
+      local app="$1" label="$2" required="${3:-true}"
+      POD=$(echo "$PODS_RAW" | jq -r --arg a "$app" '
+        [.items[]
+         | select(.metadata.labels.app == $a)
+         | select((.status.phase // "") != "Succeeded")
+         | {name:.metadata.name, ready:([.status.containerStatuses[]?.ready] | all), restarts:([.status.containerStatuses[]?.restartCount // 0] | add // 0), node:(.spec.nodeName // "pending")}][0] // empty
+         | @base64' | head -1)
+      if [ -z "$POD" ]; then
+        if [ "$required" = "true" ]; then add_line "  ❌ $label: not found"; RED=$((RED+1)); else add_line "  🟡 $label: not found"; YELLOW=$((YELLOW+1)); fi
+        return
+      fi
+      dec() { echo "$POD" | base64 -d | jq -r "$1"; }
+      READY=$(dec '.ready')
+      RESTARTS=$(dec '.restarts')
+      NODE=$(dec '.node')
+      if [ "$READY" = "true" ]; then ICON="✅"; else ICON="❌"; RED=$((RED+1)); fi
+      STATE_KEY=$(echo "$app-$NODE" | tr -c 'A-Za-z0-9_.-' '_')
+      PRIOR_R=$(cat "$STATE_DIR/restarts-$STATE_KEY" 2>/dev/null || echo "$RESTARTS")
+      echo "$RESTARTS" > "$STATE_DIR/restarts-$STATE_KEY"
+      DELTA=$((RESTARTS - PRIOR_R))
+      DELTA_STR=""
+      if [ "$DELTA" -gt 0 ]; then DELTA_STR=" (+$DELTA in 12h ⚠️)"; YELLOW=$((YELLOW+1)); fi
+      add_line "  $ICON $label: $app ($NODE) restarts=$RESTARTS$DELTA_STR ready=$READY"
+    }
+    report_active_vllm_on_node() {
+      local node="$1" label="$2"
+      ACTIVE=$(echo "$PODS_RAW" | jq -r --arg n "$node" '
+        [.items[]
+         | select((.metadata.labels.app // "") | startswith("vllm-"))
+         | select(.spec.nodeName == $n)
+         | select((.status.phase // "") == "Running")
+         | select([.status.containerStatuses[]?.ready] | all)
+         | {app:.metadata.labels.app, name:.metadata.name, restarts:([.status.containerStatuses[]?.restartCount // 0] | add // 0), start:(.status.startTime // "")} ]
+        | sort_by(.start) | reverse | .[0] // empty | @base64' | head -1)
+      if [ -z "$ACTIVE" ]; then
+        add_line "  ❌ $label active vLLM ($node): not found"; RED=$((RED+1)); return
+      fi
+      dec_active() { echo "$ACTIVE" | base64 -d | jq -r "$1"; }
+      APP=$(dec_active '.app'); RESTARTS=$(dec_active '.restarts')
+      STATE_KEY=$(echo "active-$node-$APP" | tr -c 'A-Za-z0-9_.-' '_')
+      PRIOR_R=$(cat "$STATE_DIR/restarts-$STATE_KEY" 2>/dev/null || echo "$RESTARTS")
+      echo "$RESTARTS" > "$STATE_DIR/restarts-$STATE_KEY"
+      DELTA=$((RESTARTS - PRIOR_R))
+      DELTA_STR=""
+      if [ "$DELTA" -gt 0 ]; then DELTA_STR=" (+$DELTA in 12h ⚠️)"; YELLOW=$((YELLOW+1)); fi
+      add_line "  ✅ $label active vLLM: $APP ($node) restarts=$RESTARTS$DELTA_STR ready=true"
+    }
+    report_active_vllm_on_node nvidia-dgx DGX1
+    report_active_vllm_on_node gx10-ec3d DGX2
+    report_pod_app bge-m3-embedding bge-m3-embedding true
+    report_pod_app bge-reranker bge-reranker true
+
+    add_line ""
+    add_line "Xid / NVRM (last 12h)"
+    for host in dgx dgx2; do
+      if [ "$host" = "dgx" ]; then
+        XID=$(ssh_dgx 'sudo dmesg -T --since "12 hours ago" | grep -iE "Xid|NVRM:" | tail -10')
+      else
+        XID=$(ssh_dgx2 'sudo dmesg -T --since "12 hours ago" | grep -iE "Xid|NVRM:" | tail -10')
+      fi
+      if [ "$XID" = "[ssh-error]" ]; then
+        add_line "  ⚠️ $host: ssh failed"; YELLOW=$((YELLOW+1))
+      elif [ -z "$XID" ]; then
+        add_line "  ✅ $host: 0 events"
+      else
+        XID_COUNT=$(echo "$XID" | wc -l)
+        add_line "  🔴 $host: $XID_COUNT events ⚠️"
+        while IFS= read -r line; do
+          add_line "    ⚠️ $(echo "$line" | cut -c1-80)"
+        done <<< "$(echo "$XID" | head -2)"
+        RED=$((RED+1))
+      fi
+    done
+
+    add_line ""
+    add_line "NVMe DGX1"
+    NVME=$(ssh_dgx 'sudo nvme smart-log /dev/nvme0 2>/dev/null | grep -i unsafe_shutdowns | awk "{print \$NF}" | tr -d ","')
+    if [ -z "$NVME" ] || [ "$NVME" = "[ssh-error]" ]; then
+      add_line "  ⚠️ unsafe_shutdowns: read failed"; YELLOW=$((YELLOW+1))
+    else
+      PRIOR_NVME=$(cat "$STATE_DIR/prior-unsafe.txt" 2>/dev/null || echo "$NVME")
+      DELTA=$((NVME - PRIOR_NVME))
+      echo "$NVME" > "$STATE_DIR/prior-unsafe.txt"
+      if [ "$DELTA" -gt 0 ]; then
+        add_line "  🔴 unsafe_shutdowns: $NVME (+$DELTA in 12h ⚠️)"; RED=$((RED+1))
+      else
+        add_line "  ✅ unsafe_shutdowns: $NVME"
+      fi
+    fi
+
+    add_line ""
+    add_line "Thermal DGX1 (last 12h)"
+    PEAK=$(ssh_dgx 'sudo awk -F, -v T=$(date -d "12 hours ago" +%s) "\$1 ~ /^[0-9]+$/ && \$10 ~ /^[0-9.]+$/ && \$1>T && \$10>85 {print \$10}" /var/log/dgx1-temps.csv 2>/dev/null | sort -n | tail -1')
+    if [ -z "$PEAK" ] || [ "$PEAK" = "[ssh-error]" ]; then
+      add_line "  ✅ peak: <85°C (no samples flagged)"
+    else
+      if awk -v p="$PEAK" 'BEGIN{exit !(p>92)}'; then
+        add_line "  🔴 peak: ${PEAK}°C ⚠️"; RED=$((RED+1))
+      elif awk -v p="$PEAK" 'BEGIN{exit !(p>88)}'; then
+        add_line "  🟡 peak: ${PEAK}°C"; YELLOW=$((YELLOW+1))
+      else
+        add_line "  ✅ peak: ${PEAK}°C"
+      fi
+    fi
+
+    add_line ""
+    add_line "LiteLLM"
+    KEY=$(kubectl -n litellm get secret litellm-secrets -o jsonpath='{.data.LITELLM_MASTER_KEY}' 2>/dev/null | base64 -d)
+    if [ -z "$KEY" ]; then
+      add_line "  ⚠️ master-key fetch failed"; YELLOW=$((YELLOW+1))
+    else
+      INFO=$(curl -sS -m 10 -H "Authorization: Bearer $KEY" http://litellm.litellm.svc.cluster.local:4000/v1/model/info 2>/dev/null)
+      TOOLING_N=$(echo "$INFO" | jq '[.data[] | select(.model_name=="tooling")] | length' 2>/dev/null)
+      LOCAL_N=$(echo "$INFO" | jq '[.data[] | select(.model_name=="local")] | length' 2>/dev/null)
+      if [ "${TOOLING_N:-0}" -ge 1 ] 2>/dev/null; then TI="✅"; else TI="🔴"; RED=$((RED+1)); fi
+      if [ "${LOCAL_N:-0}" -ge 1 ] 2>/dev/null; then LI="✅"; else LI="🔴"; RED=$((RED+1)); fi
+      add_line "  topology: tooling=$TOOLING_N $TI · local=$LOCAL_N $LI"
+
+      for alias in tooling local; do
+        CODE=$(curl -sS -o /dev/null -w "%{http_code}" -m 30 -X POST \
+          -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
+          -d "{\"model\":\"$alias\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}],\"max_tokens\":3}" \
+          http://litellm.litellm.svc.cluster.local:4000/v1/chat/completions 2>/dev/null)
+        if [ "$CODE" = "200" ]; then
+          add_line "  $alias probe: 200 ✅"
+        else
+          add_line "  $alias probe: $CODE 🔴"; RED=$((RED+1))
+        fi
+      done
+    fi
+
+    add_line ""
+    add_line "Direct hostPort"
+    for entry in "192.168.50.140 DGX1" "192.168.50.141 DGX2"; do
+      IP="${entry% *}"; LBL="${entry#* }"
+      HEALTH_CODE=$(curl -sS -o /dev/null -w "%{http_code}" -m 10 "http://${IP}:8200/health" 2>/dev/null)
+      MODELS_JSON=$(curl -sS -m 10 "http://${IP}:8200/v1/models" 2>/dev/null)
+      MODELS_CODE=$(curl -sS -o /dev/null -w "%{http_code}" -m 10 "http://${IP}:8200/v1/models" 2>/dev/null)
+      MODEL_IDS=$(echo "$MODELS_JSON" | jq -r '[.data[]?.id] | join(",")' 2>/dev/null)
+      [ -z "$MODEL_IDS" ] && MODEL_IDS="models unavailable"
+      if [ "$HEALTH_CODE" = "200" ] && [ "$MODELS_CODE" = "200" ]; then
+        add_line "  $LBL ($IP:8200): health=200 models=200 ✅ [$MODEL_IDS]"
+      elif [ "$HEALTH_CODE" = "200" ]; then
+        add_line "  $LBL ($IP:8200): health=200 ✅ models=$MODELS_CODE ⚠️ [$MODEL_IDS]"; YELLOW=$((YELLOW+1))
+      else
+        add_line "  $LBL ($IP:8200): health=$HEALTH_CODE models=$MODELS_CODE 🔴 [$MODEL_IDS]"; RED=$((RED+1))
+      fi
+    done
+
+    add_line ""
+    add_line "GPU snapshot"
+    for h in dgx dgx2; do
+      LBL="DGX1"; [ "$h" = "dgx2" ] && LBL="DGX2"
+      if [ "$h" = "dgx" ]; then
+        GPU=$(ssh_dgx 'nvidia-smi --query-gpu=memory.used,memory.total,utilization.gpu,temperature.gpu --format=csv,noheader,nounits 2>/dev/null')
+      else
+        GPU=$(ssh_dgx2 'nvidia-smi --query-gpu=memory.used,memory.total,utilization.gpu,temperature.gpu --format=csv,noheader,nounits 2>/dev/null')
+      fi
+      if [ -z "$GPU" ] || [ "$GPU" = "[ssh-error]" ]; then
+        add_line "  $LBL: read failed ⚠️"; YELLOW=$((YELLOW+1))
+      else
+        MU=$(echo "$GPU" | head -1 | cut -d, -f1 | tr -d ' ')
+        MT=$(echo "$GPU" | head -1 | cut -d, -f2 | tr -d ' ')
+        UT=$(echo "$GPU" | head -1 | cut -d, -f3 | tr -d ' ')
+        TP=$(echo "$GPU" | head -1 | cut -d, -f4 | tr -d ' ')
+        MU_GB=$(awk -v m="$MU" 'BEGIN{printf "%.1f", m/1024}')
+        MT_GB=$(awk -v m="$MT" 'BEGIN{printf "%.0f", m/1024}')
+        add_line "  $LBL: mem ${MU_GB}/${MT_GB} GB · util ${UT}% · ${TP}°C"
+      fi
+    done
+
+    add_line ""
+    ARGO_READY=$(kubectl -n argocd get pod -l app.kubernetes.io/name=argocd-application-controller -o json 2>/dev/null | jq '[.items[].status.containerStatuses[]? | select(.ready==true)] | length')
+    ARGO_TOTAL=$(kubectl -n argocd get pod -l app.kubernetes.io/name=argocd-application-controller -o json 2>/dev/null | jq '[.items[].status.containerStatuses[]?] | length')
+    if [ -n "$ARGO_TOTAL" ] && [ "$ARGO_TOTAL" != "0" ] && [ "$ARGO_READY" = "$ARGO_TOTAL" ]; then
+      add_line "ArgoCD controller: ✅ ${ARGO_READY}/${ARGO_TOTAL}"
+    else
+      add_line "ArgoCD controller: 🟡 ${ARGO_READY:-0}/${ARGO_TOTAL:-?} (still down)"; YELLOW=$((YELLOW+1))
+    fi
+
+    if [ "$RED" -gt 0 ]; then EMOJI="🔴"
+    elif [ "$YELLOW" -gt 0 ]; then EMOJI="🟡"
+    else EMOJI="🟢"; fi
+
+    HEADER="${EMOJI} DGX cluster health · ${NOW_LOCAL}"
+    FULL=$(printf "%s\n\n%s" "$HEADER" "$REPORT")
+    FULL="${FULL:0:4000}"
+
+    ISSUE_LINES=$(printf "%s\n" "$REPORT" | grep -E '🔴|❌|⚠️|🟡' || true)
+    ISSUE_FINGERPRINT=""
+    if [ -n "$ISSUE_LINES" ]; then
+      ISSUE_FINGERPRINT=$(printf "%s" "$ISSUE_LINES" | sha256sum | awk '{print $1}')
+    fi
+
+    echo "================ REPORT ================"
+    echo "$FULL"
+
+    if [ "$POST_MODE" = "never" ]; then
+      echo "================ TELEGRAM RESPONSE ================"
+      echo "skipped: POST_MODE=never"
+      exit 0
+    fi
+
+    TELEGRAM_TEXT="$FULL"
+    if [ "$POST_MODE" = "actionable" ]; then
+      if [ -z "$ISSUE_LINES" ]; then
+        rm -f "$DEDUP_FILE" 2>/dev/null || true
+        echo "================ TELEGRAM RESPONSE ================"
+        echo "skipped: no actionable issue lines"
+        exit 0
+      fi
+      PRIOR_FINGERPRINT=$(cat "$DEDUP_FILE" 2>/dev/null || true)
+      if [ "$ISSUE_FINGERPRINT" = "$PRIOR_FINGERPRINT" ]; then
+        echo "================ TELEGRAM RESPONSE ================"
+        echo "skipped: duplicate actionable fingerprint $ISSUE_FINGERPRINT"
+        exit 0
+      fi
+      TELEGRAM_TEXT=$(printf "%s\n\n%s\n\n(full report is in the Kubernetes job logs)" "$HEADER" "$ISSUE_LINES")
+      TELEGRAM_TEXT="${TELEGRAM_TEXT:0:4000}"
+    elif [ "$POST_MODE" != "always" ]; then
+      echo "================ TELEGRAM RESPONSE ================"
+      echo "skipped: invalid POST_MODE=$POST_MODE"
+      exit 0
+    fi
+
+    if [ "${TELEGRAM_DRY_RUN:-false}" = "true" ]; then
+      echo "================ TELEGRAM RESPONSE ================"
+      echo "dry-run: would send"
+      echo "$TELEGRAM_TEXT"
+      exit 0
+    fi
+
+    PAYLOAD=$(jq -n --arg chat "$TELEGRAM_CHAT_ID" --arg topic "$TELEGRAM_TOPIC_ID" --arg text "$TELEGRAM_TEXT" \
+      '{chat_id: ($chat|tonumber), message_thread_id: ($topic|tonumber), text: $text}')
+
+    RESPONSE=$(curl -sS -m 30 -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+      -H "Content-Type: application/json" -d "$PAYLOAD")
+
+    OK=$(echo "$RESPONSE" | jq -r '.ok // false')
+    echo "================ TELEGRAM RESPONSE ================"
+    echo "ok=$OK"
+    echo "$RESPONSE" | jq -r '.description // ""'
+
+    if [ "$OK" = "true" ]; then
+      if [ "$POST_MODE" = "actionable" ] && [ -n "$ISSUE_FINGERPRINT" ]; then
+        echo "$ISSUE_FINGERPRINT" > "$DEDUP_FILE"
+      fi
+      exit 0
+    else
+      exit 1
+    fi
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: dgx-cluster-health-watcher
+  namespace: monitoring
+spec:
+  schedule: "0 6,18 * * *"
+  timeZone: Etc/UTC
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 5
+  startingDeadlineSeconds: 1800
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      ttlSecondsAfterFinished: 3600
+      template:
+        metadata:
+          labels:
+            app: dgx-cluster-health-watcher
+        spec:
+          restartPolicy: OnFailure
+          serviceAccountName: cluster-health-watcher
+          nodeSelector:
+            kubernetes.io/hostname: ubuntu
+          tolerations:
+            - key: dedicated
+              operator: Equal
+              value: llm
+              effect: NoSchedule
+          containers:
+            - name: watcher
+              image: alpine/k8s:1.32.5
+              imagePullPolicy: IfNotPresent
+              resources:
+                requests:
+                  cpu: "100m"
+                  memory: "128Mi"
+                limits:
+                  cpu: "500m"
+                  memory: "256Mi"
+              command: ["bash", "-c"]
+              args:
+                - |
+                  apk add --no-cache openssh-client >/dev/null 2>&1 || true
+                  exec bash /scripts/health-check.sh
+              env:
+                - name: TELEGRAM_BOT_TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      name: alertmanager-telegram-backup
+                      key: bot_token
+                - name: TELEGRAM_CHAT_ID
+                  value: "-1003984393379"
+                - name: TELEGRAM_TOPIC_ID
+                  value: "584"
+                - name: STATE_DIR
+                  value: /state
+                - name: POST_MODE
+                  value: actionable
+              volumeMounts:
+                - name: ssh-keys
+                  mountPath: /root/.ssh
+                  readOnly: true
+                - name: scripts
+                  mountPath: /scripts
+                  readOnly: true
+                - name: state
+                  mountPath: /state
+          volumes:
+            - name: ssh-keys
+              hostPath:
+                path: /home/dibanez/.ssh
+                type: Directory
+            - name: scripts
+              configMap:
+                name: cluster-health-watcher-scripts
+                defaultMode: 0755
+            - name: state
+              hostPath:
+                path: /var/lib/dgx-cluster-health-watcher
+                type: DirectoryOrCreate
