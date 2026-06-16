@@ -211,5 +211,6 @@ kube-state-metrics:
   metricLabelsAllowlist:
     - services=[infra]
     - namespaces=[infra]
+    - persistentvolumeclaims=[excluded_from_alerts]
   nodeSelector:
     node-pool: ks5-nvme
