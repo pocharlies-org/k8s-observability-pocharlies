@@ -15,4 +15,5 @@ resources:
   - manifests/dashboards.yaml
   - manifests/dcgm-scrape.yaml
   - manifests/dgx-gpu-mem-exporter.yaml
+  - manifests/kyverno-policy-exceptions.yaml
   - manifests/dgx-cluster-health-watcher.yaml

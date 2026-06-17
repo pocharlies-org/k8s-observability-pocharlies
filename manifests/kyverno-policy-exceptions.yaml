@@ -1,0 +1,33 @@
+---
+apiVersion: kyverno.io/v2
+kind: PolicyException
+metadata:
+  name: monitoring-privileged-node-exporters
+  namespace: monitoring
+  annotations:
+    sre.edani.com/reason: "The DGX node exporter needs host namespace access for read-only systemd, journal and inventory probes."
+spec:
+  background: true
+  exceptions:
+    - policyName: disallow-privileged-containers
+      ruleNames:
+        - no-privileged
+        - autogen-no-privileged
+  match:
+    any:
+      - resources:
+          kinds:
+            - Pod
+          namespaces:
+            - monitoring
+          names:
+            - dgx-gpu-mem-exporter-*
+            - dgx-node-exporter-cpu-*
+      - resources:
+          kinds:
+            - DaemonSet
+          namespaces:
+            - monitoring
+          names:
+            - dgx-gpu-mem-exporter
+            - dgx-node-exporter-cpu

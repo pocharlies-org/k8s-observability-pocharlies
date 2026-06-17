@@ -1,6 +1,12 @@
 # VictoriaMetrics k8s-stack — drop-in for kube-prometheus-stack, lighter
 victoria-metrics-operator:
   enabled: true
+  resources:
+    requests:
+      cpu: 50m
+      memory: 96Mi
+    limits:
+      memory: 256Mi
 
 defaultRules:
   rules:
@@ -67,6 +73,12 @@ vmagent:
       limits:
         cpu: "1"
         memory: 750Mi
+    configReloaderResources:
+      requests:
+        cpu: 10m
+        memory: 25Mi
+      limits:
+        memory: 64Mi
     extraArgs:
       promscrape.maxScrapeSize: "67108864"
       promscrape.streamParse: "true"
@@ -79,6 +91,12 @@ vmalert:
   spec:
     nodeSelector:
       node-pool: ks5-nvme
+    configReloaderResources:
+      requests:
+        cpu: 10m
+        memory: 25Mi
+      limits:
+        memory: 64Mi
   remoteWriteVMAgent: false
 
 alertmanager:
@@ -95,6 +113,12 @@ alertmanager:
       - ip: "100.109.183.9"
         hostnames:
           - synapse.e-dani.com
+    configReloaderResources:
+      requests:
+        cpu: 10m
+        memory: 25Mi
+      limits:
+        memory: 64Mi
     nodeSelector:
       node-pool: ks5-nvme
     storage:
@@ -109,6 +133,12 @@ alertmanager:
 grafana:
   enabled: true
   adminPassword: "ChangeMe-Grafana-Bootstrap-2026!"
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
   envValueFrom:
     GF_AUTH_GENERIC_OAUTH_CLIENT_SECRET:
       secretKeyRef:
@@ -154,6 +184,12 @@ grafana:
   ingress:
     enabled: false
   sidecar:
+    resources:
+      requests:
+        cpu: 10m
+        memory: 32Mi
+      limits:
+        memory: 128Mi
     dashboards:
       enabled: true
       defaultFolderName: General
@@ -214,5 +250,11 @@ kube-state-metrics:
     - services=[infra]
     - namespaces=[infra]
     - persistentvolumeclaims=[excluded_from_alerts]
+  resources:
+    requests:
+      cpu: 25m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
   nodeSelector:
     node-pool: ks5-nvme

@@ -66,6 +66,22 @@ singleBinary:
     limits:
       memory: 2Gi
 
+gateway:
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      memory: 128Mi
+
+sidecar:
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      memory: 128Mi
+
 backend:
   replicas: 0
 read:
