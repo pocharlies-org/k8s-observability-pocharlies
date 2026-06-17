@@ -187,3 +187,159 @@ spec:
           annotations:
             summary: "CronJob {{ $labels.namespace }}/{{ $labels.owner_name }} failed"
             description: "Job {{ $labels.job_name }} owned by CronJob {{ $labels.namespace }}/{{ $labels.owner_name }} has failed. The cron-alert-analyzer will post a root-cause analysis to the Telegram 'Crons' topic."
+---
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMRule
+metadata:
+  name: pocharlies-rabbitmq
+  namespace: monitoring
+spec:
+  groups:
+    - name: pocharlies.rabbitmq
+      rules:
+        # The shared-rabbitmq broker is the Synapse fabric bus. Before these
+        # rules there were 0 rabbitmq_* series in VM (see manifests/
+        # rabbitmq-scrape.yaml) so the broker incident was invisible. The 19
+        # functional queues being moved to quorum (engine.*, gestoria, webhooks,
+        # messaging.send) need head-of-line and memory visibility. The single
+        # root cause of the incident was: consumer stuck -> backlog -> memory
+        # watermark -> publishers blocked.
+        #
+        # Per-queue alerts EXCLUDE buffers without a consumer by design:
+        # dlq.*, archive.* and the catch-all parent queues. These are sinks,
+        # not work queues; a backlog or zero-consumer there is expected.
+
+        # --- critical: broker-wide ---------------------------------------
+        - alert: RabbitmqMemoryAlarmActive
+          # RabbitMQ has tripped its own memory high-watermark alarm and is
+          # blocking publishers cluster-wide. This is the terminal state of
+          # the original incident.
+          expr: rabbitmq_alarms_memory_used_watermark == 1
+          for: 0m
+          labels:
+            severity: critical
+            area: messaging
+            component: shared-rabbitmq
+          annotations:
+            summary: "RabbitMQ memory alarm active — publishers blocked"
+            description: "shared-rabbitmq node {{ $labels.rabbitmq_node }} has tripped the memory high-watermark alarm. Publishers are throttled/blocked. Drain the offending queue (check RabbitmqUnackedStuck / RabbitmqQueueBacklogHigh) and inspect consumers on sauvage."
+        - alert: RabbitmqMemoryHigh
+          # Resident memory above 80% of the configured watermark
+          # (1.8 GB). Pages before the hard alarm so there is time to react.
+          expr: |
+            (
+              rabbitmq_process_resident_memory_bytes
+                / rabbitmq_resident_memory_limit_bytes
+            ) > 0.80
+          for: 10m
+          labels:
+            severity: critical
+            area: messaging
+            component: shared-rabbitmq
+          annotations:
+            summary: "RabbitMQ resident memory >80% of watermark"
+            description: "shared-rabbitmq node {{ $labels.rabbitmq_node }} resident memory has been above 80% of the 1.8 GB watermark for 10m. Approaching the publish-blocking alarm. Identify the growing queue before it trips."
+        - alert: RabbitmqUnackedStuck
+          # Unacked messages piling up while consumers are present == a
+          # consumer that took messages but is not acking (the exact failure
+          # mode of the incident). Buffers excluded.
+          expr: |
+            (
+              rabbitmq_detailed_queue_messages_unacked{
+                vhost="/synapse",
+                queue!~"dlq\\..+|archive\\..+|catch-all.*"
+              } > 100
+            )
+            and on (vhost, queue)
+            (
+              rabbitmq_detailed_queue_consumers{
+                vhost="/synapse",
+                queue!~"dlq\\..+|archive\\..+|catch-all.*"
+              } > 0
+            )
+          for: 15m
+          labels:
+            severity: critical
+            area: messaging
+            component: shared-rabbitmq
+          annotations:
+            summary: "RabbitMQ queue {{ $labels.queue }} has stuck unacked messages"
+            description: "Queue {{ $labels.queue }} (vhost {{ $labels.vhost }}) has >100 unacked messages with consumers present for 15m. A consumer is holding deliveries without acking — head-of-line block. Inspect the consumer (systemd --user on sauvage)."
+        - alert: RabbitmqHeadMessageStale
+          # The oldest message in the queue has been sitting unconsumed for
+          # >30m. head_message_timestamp only exists when there are messages,
+          # so an empty queue does not false-positive.
+          expr: |
+            (
+              time() - (
+                rabbitmq_detailed_queue_head_message_timestamp{
+                  vhost="/synapse",
+                  queue!~"dlq\\..+|archive\\..+|catch-all.*"
+                } / 1000
+              )
+            ) > 1800
+          for: 10m
+          labels:
+            severity: critical
+            area: messaging
+            component: shared-rabbitmq
+          annotations:
+            summary: "RabbitMQ queue {{ $labels.queue }} head message is stale"
+            description: "The oldest message in {{ $labels.queue }} (vhost {{ $labels.vhost }}) has been unconsumed for over 30 minutes. Consumer is stalled or absent — messages are aging at the head of the line."
+        - alert: RabbitmqScrapeMissing
+          # The broker scrape itself is gone. Without this the whole rule set
+          # is silently blind — which is precisely how the incident happened.
+          expr: |
+            absent(rabbitmq_identity_info{rabbitmq_node=~".*shared-rabbitmq.*"})
+          for: 5m
+          labels:
+            severity: critical
+            area: messaging
+            component: shared-rabbitmq
+          annotations:
+            summary: "RabbitMQ broker metrics are missing"
+            description: "No rabbitmq_identity_info series for shared-rabbitmq for 5m. The broker scrape (manifests/rabbitmq-scrape.yaml) is failing or the broker is down. All other RabbitMQ alerts are blind until this is fixed."
+
+        # --- warning: per-queue health -----------------------------------
+        - alert: RabbitmqQueueBacklogHigh
+          # A large ready backlog on a functional queue. Not yet a memory
+          # alarm, but trending there. Buffers excluded.
+          expr: |
+            rabbitmq_detailed_queue_messages_ready{
+              vhost="/synapse",
+              queue!~"dlq\\..+|archive\\..+|catch-all.*"
+            } > 10000
+          for: 15m
+          labels:
+            severity: warning
+            area: messaging
+            component: shared-rabbitmq
+          annotations:
+            summary: "RabbitMQ queue {{ $labels.queue }} backlog is high"
+            description: "Queue {{ $labels.queue }} (vhost {{ $labels.vhost }}) has >10000 ready messages for 15m. Consumers are not keeping up — check throughput and scaling before it pressures broker memory."
+        - alert: RabbitmqFunctionalQueueNoConsumer
+          # A functional queue with messages waiting and zero consumers
+          # attached. This is a dead handler. Buffers (which legitimately have
+          # no consumer) are excluded.
+          expr: |
+            (
+              rabbitmq_detailed_queue_consumers{
+                vhost="/synapse",
+                queue!~"dlq\\..+|archive\\..+|catch-all.*"
+              } == 0
+            )
+            and on (vhost, queue)
+            (
+              rabbitmq_detailed_queue_messages_ready{
+                vhost="/synapse",
+                queue!~"dlq\\..+|archive\\..+|catch-all.*"
+              } > 0
+            )
+          for: 10m
+          labels:
+            severity: warning
+            area: messaging
+            component: shared-rabbitmq
+          annotations:
+            summary: "RabbitMQ queue {{ $labels.queue }} has messages but no consumer"
+            description: "Queue {{ $labels.queue }} (vhost {{ $labels.vhost }}) has ready messages with zero consumers for 10m. The handler is dead or disconnected — messages will sit until a consumer reattaches."

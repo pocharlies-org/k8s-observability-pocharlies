@@ -1,0 +1,60 @@
+---
+# Scrape the shared-rabbitmq broker (the Synapse fabric bus) into VictoriaMetrics.
+# Until now there were 0 `rabbitmq_*` series in VM — the broker incident was
+# flown blind. vmagent has empty serviceScrape{,Namespace}Selector → it picks up
+# these objects from any namespace; the objects live in `monitoring` and target
+# the shared-rabbitmq Services in `databases`.
+#
+# The selector {component: shared-rabbitmq, managed-by: argocd} matches both the
+# ClusterIP `shared-rabbitmq` Service and the `shared-rabbitmq-headless` Service
+# (per-pod endpoints → per-node memory). It deliberately EXCLUDES
+# `shared-rabbitmq-ext` (NodePort, no `managed-by` label and no `prometheus`
+# port), making discovery deterministic.
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMServiceScrape
+metadata:
+  name: shared-rabbitmq
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: synapse-broker-metrics
+spec:
+  namespaceSelector:
+    matchNames: ["databases"]
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: shared-rabbitmq
+      app.kubernetes.io/managed-by: argocd
+  endpoints:
+    # /metrics -> broker-wide aggregate (memory, alarms, identity_info).
+    - port: prometheus
+      path: /metrics
+      interval: 30s
+      scrapeTimeout: 20s
+---
+# /metrics/detailed -> per-queue series (labels vhost,queue). The `family`
+# params bound cardinality to exactly what the alerts need: ready/unacked,
+# consumer count and head_message_timestamp.
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMServiceScrape
+metadata:
+  name: shared-rabbitmq-detailed
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: synapse-broker-metrics
+spec:
+  namespaceSelector:
+    matchNames: ["databases"]
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: shared-rabbitmq
+      app.kubernetes.io/managed-by: argocd
+  endpoints:
+    - port: prometheus
+      path: /metrics/detailed
+      params:
+        family:
+          - queue_coarse_metrics
+          - queue_consumer_count
+          - queue_metrics
+      interval: 30s
+      scrapeTimeout: 25s
