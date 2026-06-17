@@ -21,7 +21,7 @@ spec:
             (kube_deployment_spec_replicas > kube_deployment_status_replicas_available)
               unless on(namespace, deployment)
             kube_deployment_spec_replicas{namespace="llm",deployment=~"vllm-.*|omnivoice-tts-dgx2|.*-bench"}
-          for: 5m
+          for: 15m
           labels:
             severity: critical
             area: kubernetes
