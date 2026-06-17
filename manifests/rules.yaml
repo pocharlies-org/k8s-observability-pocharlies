@@ -176,7 +176,10 @@ spec:
                   max by (namespace, job_name, owner_name) (kube_job_owner{owner_kind="CronJob"})
               )
             )
-          for: 1m
+          # Give frequent CronJobs one natural retry window before paging. A
+          # newer success still clears the expression immediately via the
+          # `unless` above; persistent failures continue to alert.
+          for: 15m
           labels:
             severity: warning
             area: kubernetes
