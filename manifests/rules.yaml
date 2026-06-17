@@ -247,14 +247,14 @@ spec:
             (
               rabbitmq_detailed_queue_messages_unacked{
                 vhost="/synapse",
-                queue!~"dlq\\..+|archive\\..+|catch-all.*"
+                queue!~"dlq\\..+|archive\\..+|adapter\\.[^.]+"
               } > 100
             )
             and on (vhost, queue)
             (
               rabbitmq_detailed_queue_consumers{
                 vhost="/synapse",
-                queue!~"dlq\\..+|archive\\..+|catch-all.*"
+                queue!~"dlq\\..+|archive\\..+|adapter\\.[^.]+"
               } > 0
             )
           for: 15m
@@ -274,7 +274,7 @@ spec:
               time() - (
                 rabbitmq_detailed_queue_head_message_timestamp{
                   vhost="/synapse",
-                  queue!~"dlq\\..+|archive\\..+|catch-all.*"
+                  queue!~"dlq\\..+|archive\\..+|adapter\\.[^.]+"
                 } / 1000
               )
             ) > 1800
@@ -307,7 +307,7 @@ spec:
           expr: |
             rabbitmq_detailed_queue_messages_ready{
               vhost="/synapse",
-              queue!~"dlq\\..+|archive\\..+|catch-all.*"
+              queue!~"dlq\\..+|archive\\..+|adapter\\.[^.]+"
             } > 10000
           for: 15m
           labels:
@@ -325,14 +325,14 @@ spec:
             (
               rabbitmq_detailed_queue_consumers{
                 vhost="/synapse",
-                queue!~"dlq\\..+|archive\\..+|catch-all.*"
+                queue!~"dlq\\..+|archive\\..+|adapter\\.[^.]+"
               } == 0
             )
             and on (vhost, queue)
             (
               rabbitmq_detailed_queue_messages_ready{
                 vhost="/synapse",
-                queue!~"dlq\\..+|archive\\..+|catch-all.*"
+                queue!~"dlq\\..+|archive\\..+|adapter\\.[^.]+"
               } > 0
             )
           for: 10m
