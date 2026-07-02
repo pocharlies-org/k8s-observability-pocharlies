@@ -71,6 +71,20 @@ spec:
       - matchers:
           - "alertname = KubeJobFailed"
         receiver: blackhole
+      # SII monthly fiscal report alerts are metric-based (pushed gauge, no pod
+      # logs to fetch), so the cron-alert-analyzer path does not apply. Route
+      # them to the Synapse webhook so the ops-explainer renders one LLM card to
+      # Telegram; without this, the warning leg below would blackhole
+      # SiiMonthlyReportFailed (SiiMonthlyReportMissing is critical and would
+      # reach Telegram anyway, but keep both on one deterministic route).
+      - matchers:
+          - 'alertname =~ "SiiMonthlyReport.*"'
+        receiver: synapse-alertmanager
+        group_by:
+          - alertname
+        group_wait: 30s
+        group_interval: 5m
+        repeat_interval: 24h
       # Generic warning alerts stay queryable in Alertmanager/Grafana but do
       # not become Telegram work items. Only the curated warning routes above
       # (SynapseWorkflowFailed and K8sCronJobFailed) page the monitor group.

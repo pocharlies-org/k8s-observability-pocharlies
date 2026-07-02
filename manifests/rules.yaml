@@ -343,3 +343,49 @@ spec:
           annotations:
             summary: "RabbitMQ queue {{ $labels.queue }} has messages but no consumer"
             description: "Queue {{ $labels.queue }} (vhost {{ $labels.vhost }}) has ready messages with zero consumers for 10m. The handler is dead or disconnected — messages will sit until a consumer reattaches."
+---
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMRule
+metadata:
+  name: pocharlies-sii-monthly-report
+  namespace: monitoring
+spec:
+  groups:
+    - name: pocharlies.sii-monthly-report
+      rules:
+        # The monthly SII fiscal report (CronJob skirmshop/sii-monthly-report,
+        # schedule "10 1 1 * *") pushes gauges to VictoriaMetrics under
+        # job="sii_monthly_report". Since shopify-sii-app v1.13.6 the Telegram
+        # post is NON-FATAL: a dead forum topic no longer fails the Job (exit 0),
+        # so the generic K8sCronJobFailed (kube_job_failed based) can no longer
+        # catch it. These two alerts watch the pushed metric instead.
+        #
+        # Metrics are pushed once/run (monthly) and go stale for instant queries
+        # within minutes, so both exprs use last_over_time() over a multi-month
+        # window to read the last sample regardless of staleness. The success
+        # gauge is step-less (v1.13.7) so ==0 has exactly one series to match.
+        - alert: SiiMonthlyReportFailed
+          # Last completed run reported failure (success=0). Usually the
+          # non-fatal Telegram post (Excel + gestoría Gmail draft still created),
+          # but any earlier fatal step (config/archive/draft) also lands here.
+          expr: last_over_time(sii_monthly_report_last_success{job="sii_monthly_report"}[40d]) == 0
+          for: 15m
+          labels:
+            severity: warning
+            area: fiscal
+            domain: crons
+          annotations:
+            summary: "SII monthly fiscal report last run failed"
+            description: "sii_monthly_report_last_success=0 for the last run of CronJob skirmshop/sii-monthly-report. The fiscal artifacts (Excel + gestoría Gmail draft) are preserved by design; the failing step (most often the Telegram post to a missing forum topic) is in `kubectl -n skirmshop logs job/<sii-monthly-report-...>`. Fix the forum topic / SII_REPORT_TELEGRAM_THREAD_ID in secret sii-secrets and re-run."
+        - alert: SiiMonthlyReportMissing
+          # The cron has not produced a run in >32 days (a monthly cycle was
+          # skipped): the gestoría gets no monthly fiscal Excel — compliance gap.
+          expr: (time() - last_over_time(sii_monthly_report_last_run_timestamp{job="sii_monthly_report"}[90d])) > 32 * 24 * 3600
+          for: 30m
+          labels:
+            severity: critical
+            area: fiscal
+            domain: crons
+          annotations:
+            summary: "SII monthly fiscal report has not run in over 32 days"
+            description: "No sii_monthly_report run recorded in >32 days — CronJob skirmshop/sii-monthly-report (schedule '10 1 1 * *') likely did not fire. The monthly fiscal report + gestoría draft to Talenom is missing. Check the CronJob (suspend/schedule/image pull) and run it manually if a cycle was skipped."
