@@ -389,3 +389,89 @@ spec:
           annotations:
             summary: "SII monthly fiscal report has not run in over 32 days"
             description: "No sii_monthly_report run recorded in >32 days — CronJob skirmshop/sii-monthly-report (schedule '10 1 1 * *') likely did not fire. The monthly fiscal report + gestoría draft to Talenom is missing. Check the CronJob (suspend/schedule/image pull) and run it manually if a cycle was skipped."
+---
+# affiliate.skirmshop.es (Shopify embedded app): affiliate portal/API + the
+# go.skirmshop.es/r/* link redirects (revenue path), single pod on the edge node.
+# Historically failed intermittently with OOMKill (~every 12h) + readiness
+# flapping and had ZERO alerting, so failures were only found via user reports.
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMRule
+metadata:
+  name: affiliate-app-reliability
+  namespace: monitoring
+spec:
+  groups:
+    - name: affiliate-app.availability
+      rules:
+        - alert: AffiliateAppPublicDown
+          expr: probe_success{job="k8s-public-endpoints",instance=~"https://(affiliate|go)[.]skirmshop[.]es/health"} == 0
+          for: 3m
+          labels:
+            severity: critical
+            area: availability
+            component: affiliate
+          annotations:
+            summary: "Affiliate app endpoint down"
+            description: "{{ $labels.instance }} has failed blackbox probes for >3m. Affiliate portal/API and go.skirmshop.es link redirects may be returning 5xx/timeout."
+        - alert: AffiliateAppHealthLatencyHigh
+          expr: avg_over_time(probe_duration_seconds{job="k8s-public-endpoints",instance="https://affiliate.skirmshop.es/health"}[5m]) > 2
+          for: 10m
+          labels:
+            severity: warning
+            area: availability
+            component: affiliate
+          annotations:
+            summary: "Affiliate /health latency high"
+            description: "affiliate.skirmshop.es/health averaged {{ $value | humanizeDuration }} over 5m (>2s). Likely GC stalls (heap growth) or cross-node DB/Redis latency; readiness flapping tends to follow."
+    - name: affiliate-app.runtime
+      rules:
+        # Edge-triggered: last termination was OOMKilled AND a restart happened in
+        # the last 15m, so it auto-resolves instead of staying stuck for the pod's
+        # whole life. Primary historical failure mode (heap grew to the limit).
+        - alert: AffiliateAppOOMKilled
+          expr: |
+            (kube_pod_container_status_last_terminated_reason{namespace="skirmshop",container="app",reason="OOMKilled"} == 1)
+            and on (namespace,pod,container)
+            (increase(kube_pod_container_status_restarts_total{namespace="skirmshop",container="app"}[15m]) > 0)
+          for: 1m
+          labels:
+            severity: critical
+            area: kubernetes
+            component: affiliate
+          annotations:
+            summary: "Affiliate app OOMKilled"
+            description: "{{ $labels.namespace }}/{{ $labels.pod }} was OOMKilled and restarted. Heap leak likely — profile and fix in v0.4.5."
+        - alert: AffiliateAppMemoryHigh
+          expr: |
+            max by (namespace,pod) (container_memory_working_set_bytes{namespace="skirmshop",container="app",pod=~"affiliate-app.*"})
+            /
+            max by (namespace,pod) (container_spec_memory_limit_bytes{namespace="skirmshop",container="app",pod=~"affiliate-app.*"})
+            > 0.85
+          for: 5m
+          labels:
+            severity: warning
+            area: resources
+            component: affiliate
+          annotations:
+            summary: "Affiliate app memory >85% of limit"
+            description: "{{ $labels.pod }} working set is {{ $value | humanizePercentage }} of its memory limit for >5m. OOMKill likely within ~1-2h — check heap growth (leak)."
+        - alert: AffiliateAppRestartSpike
+          expr: increase(kube_pod_container_status_restarts_total{namespace="skirmshop",container="app"}[1h]) > 2
+          for: 10m
+          labels:
+            severity: critical
+            area: kubernetes
+            component: affiliate
+          annotations:
+            summary: "Affiliate app restarting repeatedly"
+            description: "{{ $labels.pod }} restarted {{ $value }} times in 1h. Check pod events (OOM, liveness, or prisma migrate P1001 crashloop at boot)."
+        - alert: AffiliateAppNotReady
+          expr: max by (namespace,pod) (kube_pod_status_ready{namespace="skirmshop",pod=~"affiliate-app.*",condition="true"}) == 0
+          for: 5m
+          labels:
+            severity: critical
+            area: kubernetes
+            component: affiliate
+          annotations:
+            summary: "Affiliate app pod not Ready"
+            description: "{{ $labels.pod }} not-Ready for >5m (readiness /health failing). Traefik returns 503 for affiliate.skirmshop.es."
