@@ -54,6 +54,11 @@ spec:
         - https://skirmshop.e-dani.com/labels-ups/health
         - https://skirmshop.e-dani.com/picker/health
         - https://whatsapp.e-dani.com/
+        # Affiliate app (Shopify embedded) — portal/API + go.skirmshop.es/r/* link
+        # redirects (revenue path). /health probes the app cheaply; probing a real
+        # /r/<code> is avoided on purpose (it would record fake affiliate clicks).
+        - https://affiliate.skirmshop.es/health
+        - https://go.skirmshop.es/health
 ---
 apiVersion: operator.victoriametrics.com/v1beta1
 kind: VMProbe
