@@ -77,7 +77,7 @@ spec:
           volumeMounts:
             - { name: host-proc, mountPath: /host/proc, readOnly: true }
             - name: containerd-sock
-              mountPath: /run/k3s/containerd/containerd.sock
+              mountPath: /run/k3s/containerd
               readOnly: true
             - { name: host-run, mountPath: /host-run, readOnly: true }
             - { name: host-journal, mountPath: /host/journal, readOnly: true }
@@ -88,9 +88,15 @@ spec:
         - name: host-proc
           hostPath: { path: /proc }
         - name: containerd-sock
+          # Mount the containerd run DIRECTORY, not the socket file. A single-file
+          # hostPath (type: Socket) pins the socket inode at pod-create time; when
+          # k3s/containerd restarts it mints a NEW socket inode and the bind-mount
+          # goes stale -> crictl "connection refused" -> empty container map -> GPU
+          # cards render container-<hash> instead of workload names. A directory
+          # mount resolves the socket path lazily per call, surviving restarts.
           hostPath:
-            path: /run/k3s/containerd/containerd.sock
-            type: Socket
+            path: /run/k3s/containerd
+            type: Directory
         - name: host-run
           hostPath: { path: /var/run }
         - name: host-journal
