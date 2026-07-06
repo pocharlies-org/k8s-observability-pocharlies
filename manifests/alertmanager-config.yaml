@@ -85,6 +85,20 @@ spec:
         group_wait: 30s
         group_interval: 5m
         repeat_interval: 24h
+      # MCP plane health (AgentGateway + bridge backends). The 2026-07-04 outage
+      # proved MCPBackendCrashLooping fires but dies in the warning blackhole
+      # below — route the whole MCPBackend.*/MCPGatewayDown family to the
+      # Synapse webhook (ops-explainer renders to the Telegram Crons topic)
+      # BEFORE the generic warning leg, same pattern as SiiMonthlyReport above.
+      - matchers:
+          - 'alertname =~ "MCPBackend.*|MCPGatewayDown"'
+        receiver: synapse-alertmanager
+        group_by:
+          - alertname
+          - namespace
+        group_wait: 30s
+        group_interval: 5m
+        repeat_interval: 6h
       # Generic warning alerts stay queryable in Alertmanager/Grafana but do
       # not become Telegram work items. Only the curated warning routes above
       # (SynapseWorkflowFailed and K8sCronJobFailed) page the monitor group.
