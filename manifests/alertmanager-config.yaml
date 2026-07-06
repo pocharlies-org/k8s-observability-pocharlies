@@ -99,6 +99,16 @@ spec:
         group_wait: 30s
         group_interval: 5m
         repeat_interval: 6h
+      # OVH PVC-hub backup watchdog (Stale/MetricMissing) — same alertname-route
+      # pattern; these are warnings that MUST reach the Telegram Crons topic.
+      - matchers:
+          - 'alertname =~ "OVHPVCHub.*"'
+        receiver: synapse-alertmanager
+        group_by:
+          - alertname
+        group_wait: 30s
+        group_interval: 5m
+        repeat_interval: 24h
       # Generic warning alerts stay queryable in Alertmanager/Grafana but do
       # not become Telegram work items. Only the curated warning routes above
       # (SynapseWorkflowFailed and K8sCronJobFailed) page the monitor group.
