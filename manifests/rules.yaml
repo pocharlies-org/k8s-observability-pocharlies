@@ -343,6 +343,87 @@ spec:
           annotations:
             summary: "RabbitMQ queue {{ $labels.queue }} has messages but no consumer"
             description: "Queue {{ $labels.queue }} (vhost {{ $labels.vhost }}) has ready messages with zero consumers for 10m. The handler is dead or disconnected — messages will sit until a consumer reattaches."
+
+        # --- critical: cluster membership / partition ----------------------
+        # Added after the 2026-07-10 01:08Z split-brain (P1): a Tailscale flap
+        # (casa<->OVH) partitioned rabbit-0 from rabbit-1/2 for ~7h and nothing
+        # here fired. Evidence from that incident:
+        #   * rabbitmq_unreachable_cluster_peers_count stayed 0 the WHOLE time:
+        #     the Erlang dist link reconnected within seconds and the partition
+        #     is sticky Mnesia state, which the 3.13.7 prometheus plugin does
+        #     NOT export. RabbitmqClusterPartition alone cannot catch that case.
+        #   * The only signal in VM was up{pod="shared-rabbitmq-0",
+        #     job="shared-rabbitmq"}==0 for 3 samples (01:07:30-01:08:30Z) —
+        #     hence RabbitmqNodeScrapeBlackout, validated against that window
+        #     (returns pod-0 at 0.58 @ 01:10Z).
+        # Dedupe GOTCHA: every broker pod is scraped by TWO jobs
+        # (shared-rabbitmq + shared-rabbitmq-headless) -> always aggregate
+        # with min/max by (pod).
+        # Residual gap: a sticky Mnesia partition with healthy scrapes is not
+        # metric-detectable in 3.13.7; closing it needs a probe of the mgmt
+        # API /api/nodes .partitions field (future work).
+        # All four are severity critical ON PURPOSE: critical rides the default
+        # route to the synapse webhook; warning would hit the blackhole leg
+        # (see alertmanager-config.yaml) and need its own alertname route.
+        - alert: RabbitmqClusterPartition
+          # Sustained unreachable peers = hard partition in progress. for: 5m
+          # so a single rolling pod restart (~2-3m) does not page.
+          expr: max by (pod) (rabbitmq_unreachable_cluster_peers_count{namespace="databases"}) > 0
+          for: 5m
+          labels:
+            severity: critical
+            area: messaging
+            component: shared-rabbitmq
+          annotations:
+            summary: "RabbitMQ {{ $labels.pod }} cannot reach {{ $value }} cluster peer(s) — possible partition"
+            description: "shared-rabbitmq (ns databases) reports unreachable cluster peers for >5m (cluster_partition_handling=pause_minority). Run rabbitmqctl cluster_status on ALL 3 pods and check the Network Partitions section. If partitions are listed: inventory queues/messages on both sides first, then restart the MINORITY side pod (kubectl -n databases delete pod <minority>). Never force_boot/reset. Runbook: memory gotcha_rmq_pause_minority_flash_partition."
+        - alert: RabbitmqNodeScrapeBlackout
+          # THE signal that existed during the 2026-07-10 partition. <0.7 means
+          # >=2 of the last 6 samples (30s interval) failed on EITHER scrape
+          # job (min by; max by would NOT have fired — the headless job only
+          # lost 1 sample). A single isolated miss does not fire. Clean pod
+          # deletes do not fire either (the target leaves the Service and the
+          # series disappears) — that case is covered by
+          # RabbitmqClusterSizeBelowExpected.
+          expr: min by (pod) (avg_over_time(up{job=~"shared-rabbitmq(-headless)?",namespace="databases"}[3m])) < 0.7
+          for: 1m
+          labels:
+            severity: critical
+            area: messaging
+            component: shared-rabbitmq
+          annotations:
+            summary: "RabbitMQ {{ $labels.pod }} scrape failing in bursts — hung node or network partition in progress"
+            description: "The prometheus endpoint (15692) of {{ $labels.pod }} failed >=2 of the last 6 scrapes. This is the exact signature of the 2026-07-10 01:08Z split-brain (90s blackout + sticky Mnesia partition). Check NOW: rabbitmqctl cluster_status on all 3 pods (Network Partitions section) and the pod logs for running_partitioned_network."
+        - alert: RabbitmqClusterSizeBelowExpected
+          # Covers the blackout alert's blind spot: when a pod drops out of the
+          # Service endpoints (prolonged NotReady / paused by pause_minority)
+          # its up series DISAPPEARS instead of going to 0. 3 = StatefulSet
+          # replicas. If ALL targets vanish this returns no data — that case
+          # is RabbitmqScrapeMissing above.
+          expr: count(up{job="shared-rabbitmq",namespace="databases"} == 1) < 3
+          for: 5m
+          labels:
+            severity: critical
+            area: messaging
+            component: shared-rabbitmq
+          annotations:
+            summary: "Only {{ $value }}/3 shared-rabbitmq nodes visible to scrape for >5m"
+            description: "Fewer than 3 healthy targets in the shared-rabbitmq scrape job. A broker node is down, paused (pause_minority) or out of the Service endpoints. Check kubectl -n databases get pods -o wide | grep rabbitmq and rabbitmqctl cluster_status."
+        - alert: RabbitmqPeersMetricMissing
+          # absent() watchdog (same pattern as OVHPVCHubMetricMissing in
+          # dgx-infra): if the metric RabbitmqClusterPartition relies on
+          # disappears (plugin/scrape regression), that alert goes silently
+          # blind. Critical, not warning, so it rides the default route
+          # (precedent: RabbitmqScrapeMissing is critical for the same reason).
+          expr: absent(rabbitmq_unreachable_cluster_peers_count{namespace="databases"})
+          for: 15m
+          labels:
+            severity: critical
+            area: messaging
+            component: shared-rabbitmq
+          annotations:
+            summary: "rabbitmq_unreachable_cluster_peers_count has been absent >15m — partition detection is blind"
+            description: "The metric backing RabbitmqClusterPartition no longer exists in VM. Check the VMServiceScrape shared-rabbitmq (manifests/rabbitmq-scrape.yaml) and the broker prometheus plugin (port 15692)."
 ---
 apiVersion: operator.victoriametrics.com/v1beta1
 kind: VMRule
