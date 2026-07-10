@@ -3,6 +3,7 @@ kind: Kustomization
 resources:
   - apps/victoria-metrics.yaml
   - apps/loki.yaml
+  - loki/minio-credentials.yaml
   - apps/blackbox-exporter.yaml
   - apps/alloy.yaml
   - manifests/ingressroutes.yaml
