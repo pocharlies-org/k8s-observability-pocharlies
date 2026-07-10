@@ -109,6 +109,22 @@ spec:
         group_wait: 30s
         group_interval: 5m
         repeat_interval: 24h
+      # RabbitMQ functional-queue health (no-consumer / backlog) — actionable
+      # warnings that MUST reach Telegram. Proven 2026-07-10: the queue
+      # collections-tree.shopify-events.skirmshop sat at ~957 ready messages
+      # with 0 consumers since 2026-06-26 and RabbitmqFunctionalQueueNoConsumer
+      # died in the warning blackhole below, so nobody was ever notified.
+      # Grouped per queue so distinct queues become distinct cards.
+      - matchers:
+          - 'alertname =~ "RabbitmqFunctionalQueueNoConsumer|RabbitmqQueueBacklogHigh"'
+        receiver: synapse-alertmanager
+        group_by:
+          - alertname
+          - vhost
+          - queue
+        group_wait: 30s
+        group_interval: 5m
+        repeat_interval: 24h
       # Generic warning alerts stay queryable in Alertmanager/Grafana but do
       # not become Telegram work items. Only the curated warning routes above
       # (SynapseWorkflowFailed and K8sCronJobFailed) page the monitor group.
