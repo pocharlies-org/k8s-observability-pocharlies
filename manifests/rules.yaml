@@ -359,10 +359,12 @@ spec:
         # Dedupe GOTCHA: every broker pod is scraped by TWO jobs
         # (shared-rabbitmq + shared-rabbitmq-headless) -> always aggregate
         # with min/max by (pod).
-        # Residual gap: a sticky Mnesia partition with healthy scrapes is not
-        # metric-detectable in 3.13.7; closing it needs a probe of the mgmt
-        # API /api/nodes .partitions field (future work).
-        # All four are severity critical ON PURPOSE: critical rides the default
+        # Residual gap: 3.13.7 exports NO direct Mnesia-partitions metric; the
+        # sticky partition phase is covered by the latched proxy
+        # RabbitmqMnesiaPartitionStuck below. Direct detection would still
+        # need a probe of the mgmt API /api/nodes .partitions field
+        # (future work).
+        # All are severity critical ON PURPOSE: critical rides the default
         # route to the synapse webhook; warning would hit the blackhole leg
         # (see alertmanager-config.yaml) and need its own alertname route.
         - alert: RabbitmqClusterPartition
@@ -394,6 +396,79 @@ spec:
           annotations:
             summary: "RabbitMQ {{ $labels.pod }} scrape failing in bursts — hung node or network partition in progress"
             description: "The prometheus endpoint (15692) of {{ $labels.pod }} failed >=2 of the last 6 scrapes. This is the exact signature of the 2026-07-10 01:08Z split-brain (90s blackout + sticky Mnesia partition). Check NOW: rabbitmqctl cluster_status on all 3 pods (Network Partitions section) and the pod logs for running_partitioned_network."
+        - alert: RabbitmqMnesiaPartitionStuck
+          # Latched detector for the DAMAGING phase of the 2026-07-10 P1: after
+          # a flash partition the Erlang dist links reconnect within seconds,
+          # every gauge returns to healthy (unreachable_peers==0, dist state
+          # up==3, scrapes green), but Mnesia stays running_partitioned_network
+          # with BOTH sides serving until a broker restart. 3.13.7 exports no
+          # partitions metric, so this latches the two onset signatures for 24h:
+          #   * a scrape blackout (same signal as RabbitmqNodeScrapeBlackout), OR
+          #   * Erlang dist-link resets (erlang_vm_dist_recv_cnt drops to 0 when
+          #     a dist connection is re-established — catches flaps that never
+          #     break the scrape path).
+          # It keeps firing while BOTH hold:
+          #   * no rabbitmq container has (re)started AFTER the flap — a broker
+          #     restart is the only thing that clears sticky Mnesia state. Flap
+          #     evidence within 15m after a container start is ignored: peer
+          #     dist resets caused by a restarted/crashlooping broker are
+          #     expected (validated: the 2026-07-05 05:37Z pod-2 container
+          #     restart produced dist resets on all pods but zero Mnesia events
+          #     in Loki, and is correctly gated out).
+          #   * scrapes are currently healthy (>0.9) — while a blackout is
+          #     still live, RabbitmqNodeScrapeBlackout/ClusterSizeBelowExpected
+          #     already page; this alert owns the deceptive "everything looks
+          #     green again" phase.
+          # Backtest vs the real incident (query_range step 5m): fires
+          # continuously 01:15Z->07:55Z on 2026-07-10 (partition active
+          # 01:08Z->07:58Z heal restart; clears exactly on the heal). Zero
+          # firing samples over the whole rest of the metric history
+          # (2026-06-25 first data -> 2026-07-10 00:30Z).
+          # CAVEATS: (1) clears on ANY rabbitmq container start, even if the
+          # wrong (majority) pod was restarted — ALWAYS verify cluster_status
+          # on all 3 pods after the heal. (2) The restart gate depends on
+          # kube-state-metrics (kube_pod_container_state_started); if KSM is
+          # down this alert is blind (KSM itself is covered by the stack's
+          # TargetDown alerts). (3) Latch expires after 24h unhealed.
+          expr: |
+            (
+              max_over_time(
+                timestamp(
+                  (
+                    (
+                      (
+                        min(avg_over_time(up{job=~"shared-rabbitmq(-headless)?",namespace="databases"}[3m])) < bool 0.7
+                      )
+                      +
+                      (
+                        sum(resets(erlang_vm_dist_recv_cnt{namespace="databases",job="shared-rabbitmq"}[10m])) > bool 0
+                      )
+                    ) > bool 0
+                  )
+                  *
+                  (
+                    (
+                      time() - max(kube_pod_container_state_started{namespace="databases",pod=~"shared-rabbitmq-.*",container="rabbitmq"})
+                    ) > bool 900
+                  )
+                  == 1
+                )[24h:2m]
+              )
+              >
+              max(kube_pod_container_state_started{namespace="databases",pod=~"shared-rabbitmq-.*",container="rabbitmq"})
+            )
+            and on ()
+            (
+              min(avg_over_time(up{job=~"shared-rabbitmq(-headless)?",namespace="databases"}[3m])) > 0.9
+            )
+          for: 10m
+          labels:
+            severity: critical
+            area: messaging
+            component: shared-rabbitmq
+          annotations:
+            summary: "RabbitMQ dist-link flap detected and no broker restarted since — Mnesia partition likely stuck"
+            description: "shared-rabbitmq (ns databases) had a network/dist-link flap in the last 24h and no rabbitmq container has restarted since: Mnesia is very likely stuck in running_partitioned_network with all gauges looking healthy (the exact 2026-07-10 01:08Z split-brain mode — 6.5h undetected). Verify NOW: rabbitmqctl cluster_status on ALL 3 pods (Network Partitions section) and pod logs for inconsistent_database. If partitioned: inventory queues/messages on both sides first (list_queues per vhost from both sides), then restart the MINORITY side pod: kubectl -n databases delete pod <minority>. Never force_boot/reset. After the heal re-check cluster_status from all 3 pods — this alert clears on ANY broker restart, including the wrong one. Runbook: memory gotcha_rmq_pause_minority_flash_partition."
         - alert: RabbitmqClusterSizeBelowExpected
           # Covers the blackout alert's blind spot: when a pod drops out of the
           # Service endpoints (prolonged NotReady / paused by pause_minority)
