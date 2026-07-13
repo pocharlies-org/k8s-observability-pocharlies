@@ -631,3 +631,15 @@ spec:
           annotations:
             summary: "Affiliate app pod not Ready"
             description: "{{ $labels.pod }} not-Ready for >5m (readiness /health failing). Traefik returns 503 for affiliate.skirmshop.es."
+    - name: pocharlies.llm
+      rules:
+        - alert: VllmLaneRestartLoop
+          expr: increase(kube_pod_container_status_restarts_total{namespace="llm"}[1h]) > 2
+          for: 5m
+          labels:
+            severity: critical
+            area: llm
+            component: vllm
+          annotations:
+            summary: "LLM lane restarting repeatedly"
+            description: "{{ $labels.pod }} (ns llm) restarted {{ $value }} times in 1h — crash-loop de lane (patrón 2026-07-10: CUDA illegal access bajo carga multimodal; exit code 0 engañoso). Ver logs --previous y XID en DCGM; litellm cae a fallbacks 35B mientras tanto."
