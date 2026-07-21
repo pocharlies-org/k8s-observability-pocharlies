@@ -137,7 +137,7 @@ spec:
         # retrying, or the next scheduled run has already recovered.
         #
         # The cron-alert-analyzer receives the webhook, fetches the pod logs via
-        # the k8s API, runs an LLM root-cause analysis (vllm-122b via litellm),
+        # the k8s API, runs an LLM root-cause analysis via LiteLLM,
         # and posts the report to the Telegram "Crons" topic with a deep-link
         # to the dashboard and Telegram action buttons.
         # severity:warning (NOT critical) so this does NOT also fire the

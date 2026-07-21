@@ -1,6 +1,6 @@
 """
 cron-alert-analyzer — Alertmanager webhook receiver that grabs the failed pod's
-logs (via k8s API), runs an LLM root-cause analysis (litellm → vllm-122b), and
+logs (via k8s API), runs an LLM root-cause analysis (LiteLLM), and
 posts a HTML report to the Telegram "Crons" topic with a deep-link to the
 dashboard.
 
@@ -9,17 +9,20 @@ Pipeline:
     background: fetch pod logs → litellm chat → Telegram sendMessage
 """
 
+import asyncio
 import hashlib
 import json
 import logging
 import os
 import re
+import time
 from datetime import datetime, timezone
 from html import escape
 from typing import Optional
 
 import httpx
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
+from fastapi.responses import PlainTextResponse
 from kubernetes import client as k8s_client
 from kubernetes import config as k8s_config
 
@@ -28,19 +31,45 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s — %(message)s",
 )
 log = logging.getLogger("cron-alert-analyzer")
+# httpx logs the full request URL at INFO. Telegram embeds the bot token in that
+# URL, so these library loggers must never emit request lines.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 # --- env -----------------------------------------------------------------
 TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 TELEGRAM_THREAD_ID = os.environ["TELEGRAM_THREAD_ID"]
 LITELLM_URL = os.environ.get("LITELLM_URL", "http://litellm.litellm.svc.cluster.local:4000")
-LITELLM_MODEL = os.environ.get("LITELLM_MODEL", "vllm-122b")
+LITELLM_MODEL = os.environ.get("LITELLM_MODEL", "qwen36-35b")
 LITELLM_API_KEY = os.environ["LITELLM_API_KEY"]
 DASHBOARD_BASE = os.environ.get("DASHBOARD_BASE", "https://dgx.e-dani.com/crontab")
 LOG_TAIL_LINES = int(os.environ.get("LOG_TAIL_LINES", "200"))
 LLM_MAX_LOG_CHARS = int(os.environ.get("LLM_MAX_LOG_CHARS", "12000"))
 LLM_TIMEOUT_S = float(os.environ.get("LLM_TIMEOUT_S", "120"))
 ENABLE_FIX_BUTTON = os.environ.get("ENABLE_FIX_BUTTON", "true").lower() in {"1", "true", "yes", "on"}
+TELEGRAM_MAX_ATTEMPTS = max(1, int(os.environ.get("TELEGRAM_MAX_ATTEMPTS", "3")))
+TELEGRAM_RETRY_BASE_S = max(0.0, float(os.environ.get("TELEGRAM_RETRY_BASE_S", "1")))
+APP_VERSION = os.environ.get("APP_VERSION", "dev")
+
+
+class _SensitiveValueFilter(logging.Filter):
+    """Redact credentials from application messages before any handler emits them."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        message = record.getMessage()
+        redacted = message
+        for value in (TELEGRAM_BOT_TOKEN, LITELLM_API_KEY):
+            if value:
+                redacted = redacted.replace(value, "[REDACTED]")
+        if redacted != message:
+            record.msg = redacted
+            record.args = ()
+        return True
+
+
+for _handler in logging.getLogger().handlers:
+    _handler.addFilter(_SensitiveValueFilter())
 
 # --- k8s clients ---------------------------------------------------------
 try:
@@ -52,10 +81,45 @@ BATCH = k8s_client.BatchV1Api()
 
 app = FastAPI(title="cron-alert-analyzer")
 
+# Per-process Prometheus state. Each pod is scraped as a distinct target, so
+# counters remain valid across the two replicas without shared mutable state.
+TELEGRAM_DELIVERY_ATTEMPTS = {"success": 0, "failure": 0}
+TELEGRAM_DELIVERY_RETRIES = 0
+TELEGRAM_LAST_ATTEMPT_TIMESTAMP = 0.0
+TELEGRAM_LAST_SUCCESS_TIMESTAMP = 0.0
+LLM_CALLS = {"success": 0, "failure": 0}
+
 
 @app.get("/healthz")
 def healthz():
     return {"ok": True}
+
+
+@app.get("/metrics", response_class=PlainTextResponse)
+def metrics() -> str:
+    lines = [
+        "# HELP cron_alert_analyzer_build_info Build identity for scrape and deployment health.",
+        "# TYPE cron_alert_analyzer_build_info gauge",
+        f'cron_alert_analyzer_build_info{{version="{APP_VERSION}"}} 1',
+        "# HELP cron_alert_analyzer_telegram_delivery_attempts_total Completed Telegram deliveries by result.",
+        "# TYPE cron_alert_analyzer_telegram_delivery_attempts_total counter",
+        f'cron_alert_analyzer_telegram_delivery_attempts_total{{result="success"}} {TELEGRAM_DELIVERY_ATTEMPTS["success"]}',
+        f'cron_alert_analyzer_telegram_delivery_attempts_total{{result="failure"}} {TELEGRAM_DELIVERY_ATTEMPTS["failure"]}',
+        "# HELP cron_alert_analyzer_telegram_delivery_retries_total Telegram delivery retries.",
+        "# TYPE cron_alert_analyzer_telegram_delivery_retries_total counter",
+        f"cron_alert_analyzer_telegram_delivery_retries_total {TELEGRAM_DELIVERY_RETRIES}",
+        "# HELP cron_alert_analyzer_telegram_delivery_last_attempt_timestamp_seconds Unix timestamp of the last completed Telegram delivery attempt.",
+        "# TYPE cron_alert_analyzer_telegram_delivery_last_attempt_timestamp_seconds gauge",
+        f"cron_alert_analyzer_telegram_delivery_last_attempt_timestamp_seconds {TELEGRAM_LAST_ATTEMPT_TIMESTAMP:.3f}",
+        "# HELP cron_alert_analyzer_telegram_delivery_last_success_timestamp_seconds Unix timestamp of the last successful Telegram delivery.",
+        "# TYPE cron_alert_analyzer_telegram_delivery_last_success_timestamp_seconds gauge",
+        f"cron_alert_analyzer_telegram_delivery_last_success_timestamp_seconds {TELEGRAM_LAST_SUCCESS_TIMESTAMP:.3f}",
+        "# HELP cron_alert_analyzer_llm_calls_total Completed LLM analyses by result.",
+        "# TYPE cron_alert_analyzer_llm_calls_total counter",
+        f'cron_alert_analyzer_llm_calls_total{{result="success"}} {LLM_CALLS["success"]}',
+        f'cron_alert_analyzer_llm_calls_total{{result="failure"}} {LLM_CALLS["failure"]}',
+    ]
+    return "\n".join(lines) + "\n"
 
 
 @app.post("/alert")
@@ -115,7 +179,15 @@ async def handle_alert(alert_data: dict):
         exit_code=exit_code,
         analysis=analysis,
     )
-    await send_telegram(message, reply_markup=reply_markup)
+    delivered = await send_telegram(message, reply_markup=reply_markup)
+    if not delivered:
+        log.error(
+            "telegram delivery exhausted: ns=%s cronjob=%s job=%s thread=%s",
+            ns,
+            cronjob,
+            job_name,
+            TELEGRAM_THREAD_ID,
+        )
 
 
 def read_logs_for_job(ns: str, job_name: str) -> tuple[str, str, str, Optional[int]]:
@@ -235,8 +307,11 @@ la causa raíz es la alerta/regla, y la acción recomendada es corregir el monit
             r = await cx.post(f"{LITELLM_URL}/v1/chat/completions", json=body, headers=headers)
             r.raise_for_status()
             data = r.json()
-            return data["choices"][0]["message"]["content"].strip()
+            result = data["choices"][0]["message"]["content"].strip()
+            LLM_CALLS["success"] += 1
+            return result
     except Exception as exc:
+        LLM_CALLS["failure"] += 1
         log.exception("LLM call failed: %s", exc)
         return f"(análisis LLM no disponible: {exc})"
 
@@ -355,7 +430,31 @@ def should_offer_fix(exit_code: Optional[int], analysis: str) -> bool:
     return exit_code not in (None, 0) or "acción recomendada" in text or "accion recomendada" in text
 
 
-async def send_telegram(text: str, reply_markup: Optional[dict] = None) -> None:
+def _record_telegram_delivery(success: bool) -> None:
+    global TELEGRAM_LAST_ATTEMPT_TIMESTAMP, TELEGRAM_LAST_SUCCESS_TIMESTAMP
+    now = time.time()
+    TELEGRAM_DELIVERY_ATTEMPTS["success" if success else "failure"] += 1
+    TELEGRAM_LAST_ATTEMPT_TIMESTAMP = now
+    if success:
+        TELEGRAM_LAST_SUCCESS_TIMESTAMP = now
+
+
+def _telegram_error_details(response: httpx.Response) -> tuple[str, float]:
+    description = "telegram response unavailable"
+    retry_after = 0.0
+    try:
+        payload = response.json()
+        description = str(payload.get("description") or description)
+        retry_after = float((payload.get("parameters") or {}).get("retry_after") or 0)
+    except (ValueError, TypeError, AttributeError):
+        description = f"non-JSON response ({len(response.content)} bytes)"
+    # Defense in depth: never log a token even if an upstream response echoes it.
+    description = description.replace(TELEGRAM_BOT_TOKEN, "[REDACTED]")[:240]
+    return description, min(max(retry_after, 0.0), 30.0)
+
+
+async def send_telegram(text: str, reply_markup: Optional[dict] = None) -> bool:
+    global TELEGRAM_DELIVERY_RETRIES
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     data = {
         "chat_id": TELEGRAM_CHAT_ID,
@@ -366,12 +465,54 @@ async def send_telegram(text: str, reply_markup: Optional[dict] = None) -> None:
     }
     if reply_markup:
         data["reply_markup"] = json.dumps(reply_markup, ensure_ascii=False)
-    try:
-        async with httpx.AsyncClient(timeout=30) as cx:
-            r = await cx.post(url, data=data)
-            if r.status_code != 200 or not r.json().get("ok"):
-                log.error("telegram error: %s %s", r.status_code, r.text[:300])
-            else:
-                log.info("telegram message sent (thread=%s)", TELEGRAM_THREAD_ID)
-    except Exception as exc:
-        log.exception("send_telegram failed: %s", exc)
+    async with httpx.AsyncClient(timeout=30) as cx:
+        for attempt in range(1, TELEGRAM_MAX_ATTEMPTS + 1):
+            retry_after = 0.0
+            try:
+                response = await cx.post(url, data=data)
+                payload_ok = False
+                try:
+                    payload_ok = bool(response.json().get("ok"))
+                except (ValueError, TypeError, AttributeError):
+                    pass
+                if response.status_code == 200 and payload_ok:
+                    _record_telegram_delivery(True)
+                    log.info(
+                        "telegram message sent (thread=%s attempt=%d)",
+                        TELEGRAM_THREAD_ID,
+                        attempt,
+                    )
+                    return True
+
+                description, retry_after = _telegram_error_details(response)
+                retryable = response.status_code == 429 or response.status_code >= 500
+                log.warning(
+                    "telegram delivery rejected: status=%s retryable=%s attempt=%d/%d description=%s thread=%s",
+                    response.status_code,
+                    retryable,
+                    attempt,
+                    TELEGRAM_MAX_ATTEMPTS,
+                    description,
+                    TELEGRAM_THREAD_ID,
+                )
+                if not retryable:
+                    _record_telegram_delivery(False)
+                    return False
+            except (httpx.TimeoutException, httpx.TransportError) as exc:
+                # Log only the exception type. httpx exception strings can embed
+                # the request URL, which contains the Telegram bot token.
+                log.warning(
+                    "telegram transport failure: type=%s attempt=%d/%d thread=%s",
+                    type(exc).__name__,
+                    attempt,
+                    TELEGRAM_MAX_ATTEMPTS,
+                    TELEGRAM_THREAD_ID,
+                )
+
+            if attempt < TELEGRAM_MAX_ATTEMPTS:
+                TELEGRAM_DELIVERY_RETRIES += 1
+                delay = retry_after or TELEGRAM_RETRY_BASE_S * (2 ** (attempt - 1))
+                await asyncio.sleep(min(delay, 30.0))
+
+    _record_telegram_delivery(False)
+    return False

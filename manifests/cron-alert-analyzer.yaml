@@ -1,6 +1,6 @@
 # cron-alert-analyzer — receives Alertmanager webhooks for K8sCronJobFailed alerts,
 # fetches the failed pod's logs via the k8s API (Loki misses short-lived CronJob
-# pods), runs an LLM root-cause analysis via litellm (vllm-122b), and posts an
+# pods), runs an LLM root-cause analysis via LiteLLM, and posts an
 # HTML report to the Telegram "Crons" topic in the synapse group with a
 # deep-link to dgx.e-dani.com/crontab.
 ---
@@ -45,14 +45,17 @@ metadata:
   namespace: monitoring
 data:
   TELEGRAM_CHAT_ID: "-1003785136626"        # synapse Telegram group
-  TELEGRAM_THREAD_ID: "28350"               # "Crons" topic (createForumTopic 2026-05-25)
+  TELEGRAM_THREAD_ID: "34494"               # "Crons" topic vigente, verificado por smoke 2026-07-21
   LITELLM_URL: "http://litellm.litellm.svc.cluster.local:4000"
-  LITELLM_MODEL: "qwen35-122b"
+  LITELLM_MODEL: "qwen36-35b"
   DASHBOARD_BASE: "https://dgx.e-dani.com/crontab"
   LOG_TAIL_LINES: "200"
   LLM_MAX_LOG_CHARS: "12000"
   LLM_TIMEOUT_S: "120"
   ENABLE_FIX_BUTTON: "true"
+  TELEGRAM_MAX_ATTEMPTS: "3"
+  TELEGRAM_RETRY_BASE_S: "1"
+  APP_VERSION: "v0.1.4"
   LOG_LEVEL: "INFO"
 ---
 # LiteLLM master key, pulled from the same Vault path that litellm itself uses
@@ -123,7 +126,7 @@ spec:
               app.kubernetes.io/name: cron-alert-analyzer
       containers:
         - name: analyzer
-          image: harbor.e-dani.com/homelab/cron-alert-analyzer:v0.1.3
+          image: harbor.e-dani.com/homelab/cron-alert-analyzer:v0.1.4
           imagePullPolicy: IfNotPresent
           ports:
             - { name: http, containerPort: 8080 }
@@ -180,3 +183,90 @@ spec:
     - name: http
       port: 8080
       targetPort: http
+---
+# AgentGateway exemption: /metrics is a cluster-only Prometheus exposition
+# endpoint, not an agent-facing API capability. It is read-only, contains only
+# aggregate counters/timestamps (no logs, credentials or PII), the Service is
+# ClusterIP, and no Ingress/IngressRoute/HTTPRoute publishes it. Exposing it as
+# a normal MCP tool would broaden access without an operational use case.
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMServiceScrape
+metadata:
+  name: cron-alert-analyzer
+  namespace: monitoring
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: cron-alert-analyzer
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 30s
+      scrapeTimeout: 10s
+---
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMRule
+metadata:
+  name: cron-alert-analyzer-delivery
+  namespace: monitoring
+spec:
+  groups:
+    - name: cron-alert-analyzer-delivery
+      rules:
+        - alert: CronAlertAnalyzerTelegramDeliveryFailed
+          expr: |
+            (
+              sum(increase(cron_alert_analyzer_telegram_delivery_attempts_total{result="failure"}[10m])) > 0
+            )
+            or
+            (
+              sum(
+                (cron_alert_analyzer_telegram_delivery_last_attempt_timestamp_seconds
+                  > cron_alert_analyzer_telegram_delivery_last_success_timestamp_seconds)
+                and
+                (time() - cron_alert_analyzer_telegram_delivery_last_attempt_timestamp_seconds < 10 * 60)
+              ) > 0
+            )
+          for: 1m
+          labels:
+            severity: warning
+            domain: crons
+          annotations:
+            summary: "cron-alert-analyzer no pudo entregar un aviso a Telegram"
+            description: "El analyzer agotó o rechazó una entrega en los últimos 10 minutos. Revisar sus métricas y logs saneados; la alerta usa el receiver de emergencia sin topic."
+        - alert: CronAlertAnalyzerLlmFailed
+          expr: sum(increase(cron_alert_analyzer_llm_calls_total{result="failure"}[10m])) > 0
+          for: 1m
+          labels:
+            severity: warning
+            domain: crons
+          annotations:
+            summary: "cron-alert-analyzer no pudo generar el análisis LLM"
+            description: "Al menos un análisis LLM falló en los últimos 10 minutos. El aviso Telegram conserva un fallback sin análisis; revisar LiteLLM/modelo."
+        - alert: CronAlertAnalyzerMetricsMissing
+          expr: absent(cron_alert_analyzer_build_info)
+          for: 5m
+          labels:
+            severity: warning
+            domain: crons
+          annotations:
+            summary: "Métricas de cron-alert-analyzer ausentes"
+            description: "VictoriaMetrics no ve ninguna réplica de cron-alert-analyzer desde hace 5 minutos."
+        - alert: AlertmanagerTelegramDeliveryFailed
+          expr: sum by (reason) (increase(alertmanager_notifications_failed_total{integration="telegram"}[10m])) > 0
+          for: 1m
+          labels:
+            severity: warning
+            domain: alerting
+          annotations:
+            summary: "Alertmanager no pudo entregar por Telegram"
+            description: "Alertmanager registró fallos Telegram en los últimos 10 minutos. Esta alerta se entrega por el webhook Synapse, no por Telegram."
+        - alert: AlertmanagerWebhookDeliveryFailed
+          expr: sum by (reason) (increase(alertmanager_notifications_failed_total{integration="webhook"}[10m])) > 0
+          for: 1m
+          labels:
+            severity: warning
+            domain: alerting
+          annotations:
+            summary: "Alertmanager no pudo entregar un webhook"
+            description: "Alertmanager registró fallos de webhook en los últimos 10 minutos. Esta alerta usa Telegram directo como ruta cruzada."

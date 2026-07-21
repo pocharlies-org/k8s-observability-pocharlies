@@ -52,6 +52,19 @@ spec:
         group_wait: 30s
         group_interval: 5m
         repeat_interval: 2h
+      # `continue: true` only continues with sibling routes; it does not fall
+      # back to the parent receiver. Keep this second sibling explicit so every
+      # non-Synapse critical gets both the emergency copy and the rich Synapse
+      # card. SynapseDown stops at its dedicated route above, avoiding a loop.
+      - matchers:
+          - "severity = critical"
+        receiver: synapse-alertmanager
+        group_by:
+          - alertname
+          - namespace
+        group_wait: 30s
+        group_interval: 5m
+        repeat_interval: 2h
       # Node-down family is severity=warning upstream (stock VM k8s-stack rule)
       # and used to die in the warning blackhole below — the exact reason the
       # 2026-07-20 9h node outage was silent. Direct emergency copy first, then
@@ -73,6 +86,38 @@ spec:
         group_wait: 30s
         group_interval: 5m
         repeat_interval: 6h
+      # labels-deep-monitor publishes check result + heartbeat metrics. Route
+      # these alertnames explicitly to the current Crons topic; labels such as
+      # `topic` or `telegram_topic` do not select an Alertmanager receiver.
+      - matchers:
+          - 'alertname =~ "LabelsDeepMonitorIncident|LabelsDeepMonitorMissing"'
+        receiver: labels-deep-monitor-telegram
+        group_by:
+          - alertname
+          - namespace
+        group_wait: 30s
+        group_interval: 5m
+        repeat_interval: 6h
+      # Delivery monitoring is crossed: Telegram integration failures use the
+      # Synapse webhook; webhook/analyzer failures use direct Telegram without
+      # a topic. A failed path is never asked to report its own outage.
+      - matchers:
+          - "alertname = AlertmanagerTelegramDeliveryFailed"
+        receiver: synapse-alertmanager
+        group_by:
+          - alertname
+          - reason
+        group_wait: 30s
+        group_interval: 5m
+        repeat_interval: 2h
+      - matchers:
+          - 'alertname =~ "AlertmanagerWebhookDeliveryFailed|CronAlertAnalyzerTelegramDeliveryFailed|CronAlertAnalyzerLlmFailed|CronAlertAnalyzerMetricsMissing"'
+        receiver: emergency-telegram
+        group_by:
+          - alertname
+        group_wait: 30s
+        group_interval: 5m
+        repeat_interval: 2h
       # Synapse application failures (pushed in by the ops-explainer) are
       # grouped by domain and rate-limited here so a burst of the same
       # failure collapses into one card instead of flooding Telegram.
@@ -87,7 +132,7 @@ spec:
         repeat_interval: 12h
       # K8s CronJob failures → cron-alert-analyzer service (in-cluster), which
       # fetches the failed pod's logs (k8s API), runs an LLM root-cause
-      # analysis (vllm-122b via litellm), and posts the report to the Telegram
+      # analysis via LiteLLM, and posts the report to the Telegram
       # "Crons" topic with a deep-link to the dashboard. Grouped by CronJob
       # (owner_name) so repeat failures of the same cron collapse into one card.
       - matchers:
@@ -194,6 +239,20 @@ spec:
           message: |-
             {{ if eq .Status "firing" }}🔴 ALERTA{{ else }}✅ RECUPERADO{{ end }} <b>{{ .CommonLabels.alertname }}</b>
             {{ range .Alerts }}- {{ if .Annotations.summary }}{{ .Annotations.summary }}{{ else }}{{ .Labels.alertname }}{{ end }} [{{ .Labels.severity }}{{ if .Labels.namespace }} · {{ .Labels.namespace }}{{ end }}]
+            {{ end }}
+    - name: labels-deep-monitor-telegram
+      telegram_configs:
+        - bot_token:
+            name: alertmanager-telegram-backup
+            key: bot_token
+          chat_id: -1003785136626
+          message_thread_id: 34494
+          parse_mode: HTML
+          send_resolved: true
+          message: |-
+            {{ if eq .Status "firing" }}🚨{{ else }}✅{{ end }} <b>labels-deep-monitor</b>
+            {{ range .Alerts }}- {{ .Annotations.summary }}
+            {{ .Annotations.description }}
             {{ end }}
     - name: cron-alert-analyzer-webhook
       webhook_configs:
