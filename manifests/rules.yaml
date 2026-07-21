@@ -324,18 +324,7 @@ spec:
           # forever. Motivation: 19 dead-lettered expense commands sat FIVE
           # days unalerted (2026-07-16..21, publisher-channel outage) because
           # every queue alert above excludes dlq.* by design.
-          expr: |
-            (
-              rabbitmq_detailed_queue_messages_ready{
-                vhost="/synapse",
-                queue=~"dlq\..+"
-              }
-              -
-              rabbitmq_detailed_queue_messages_ready{
-                vhost="/synapse",
-                queue=~"dlq\..+"
-              } offset 6h
-            ) > 0
+          expr: (rabbitmq_detailed_queue_messages_ready{vhost="/synapse",queue=~"dlq\\..+"} - (rabbitmq_detailed_queue_messages_ready{vhost="/synapse",queue=~"dlq\\..+"} offset 6h)) > 0
           for: 30m
           labels:
             severity: warning
