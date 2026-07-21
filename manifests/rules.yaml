@@ -659,3 +659,53 @@ spec:
           annotations:
             summary: "LLM lane restarting repeatedly"
             description: "{{ $labels.pod }} (ns llm) restarted {{ $value }} times in 1h — crash-loop de lane (patrón 2026-07-10: CUDA illegal access bajo carga multimodal; exit code 0 engañoso). Ver logs --previous y XID en DCGM; litellm cae a fallbacks 35B mientras tanto."
+---
+# Platform-critical signals born from the 2026-07-20 incident: the ubuntu node
+# froze with both postgres-shared instances on it and nothing paged. Pod-level
+# metrics went STALE (kubelet dead reports last-known ready=1), so these rules
+# lean on service-level probes and litellm's own readiness instead.
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMRule
+metadata:
+  name: pocharlies-platform-critical
+  namespace: monitoring
+spec:
+  groups:
+    - name: pocharlies.platform-critical
+      rules:
+        - alert: SharedDatastoreUnreachable
+          expr: probe_success{job="shared-datastores-tcp"} == 0
+          for: 3m
+          labels:
+            severity: critical
+            area: availability
+            topic: crons
+          annotations:
+            summary: "Shared datastore unreachable via Service"
+            description: "TCP connect to {{ $labels.instance }} has failed for 3 minutes. Consumers (litellm, synapse, skirmbooks…) are cut off even if pod metrics still look green (stale-kubelet pattern, incident 2026-07-20)."
+        - alert: LitellmNotReady
+          expr: min by (pod) (kube_pod_container_status_ready{namespace="litellm", container="litellm"}) == 0
+          for: 5m
+          labels:
+            severity: critical
+            area: availability
+            topic: crons
+          annotations:
+            summary: "litellm out of Service endpoints"
+            description: "Container litellm in {{ $labels.pod }} has been NotReady for 5 minutes — every local-model agent (OpenClaw litellm overrides, skirmshop tools) gets connection refused. Was 9h silent on 2026-07-20."
+        - alert: SharedDatastoreCoLocated
+          expr: |
+            count by (node, app) (
+              label_replace(
+                kube_pod_info{namespace="databases", pod=~"(postgres-shared|shared-valkey|shared-rabbitmq)-[0-9]+"},
+                "app", "$1", "pod", "^(postgres-shared|shared-valkey|shared-rabbitmq)-[0-9]+$"
+              )
+            ) > 1
+          for: 30m
+          labels:
+            severity: warning
+            area: availability
+            topic: crons
+          annotations:
+            summary: "Shared datastore replicas co-located on one node"
+            description: "{{ $labels.app }} has {{ $value }} replicas on node {{ $labels.node }} — one node failure takes out quorum/failover (root cause of 2026-07-20). Required anti-affinity should make this impossible; if it fires, scheduling drifted."

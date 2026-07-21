@@ -106,6 +106,33 @@ spec:
         - http://vmalert-vm-victoria-metrics-k8s-stack.monitoring.svc.cluster.local:8080/health
         - http://loki.monitoring.svc.cluster.local:3100/ready
 ---
+# Shared datastores probed at the SERVICE level (TCP connect through the VIP).
+# During the 2026-07-20 ubuntu-node freeze every pod-level metric stayed green
+# (stale kubelet status, direct pod-IP scrapes) while the Services had no
+# endpoints — this probe is the signal that would have caught it.
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMProbe
+metadata:
+  name: shared-datastores-tcp
+  namespace: monitoring
+spec:
+  jobName: shared-datastores-tcp
+  interval: 30s
+  scrapeTimeout: 10s
+  module: tcp_connect
+  vmProberSpec:
+    url: blackbox-exporter.monitoring.svc.cluster.local:9115
+    path: /probe
+  targets:
+    staticConfig:
+      labels:
+        scope: cluster
+        component: shared-datastores
+      targets:
+        - postgres-shared-rw.databases.svc.cluster.local:5432
+        - shared-rabbitmq.databases.svc.cluster.local:5672
+        - shared-valkey-master.databases.svc.cluster.local:6379
+---
 # Synapse lives OUTSIDE the cluster (systemd on sauvage); Alertmanager's
 # only delivery route to Telegram is the webhook to this endpoint. Probe
 # it directly so we can alert (critical) when the delivery path is down.

@@ -42,6 +42,14 @@ config:
         valid_status_codes: [200, 204, 405]
         fail_if_not_ssl: true
         preferred_ip_protocol: ip4
+    # Service-level reachability for the shared datastores. Pod metrics lied
+    # during the 2026-07-20 node freeze (kubelet dead => stale ready=1); a TCP
+    # connect through the Service VIP is the signal consumers actually see.
+    tcp_connect:
+      prober: tcp
+      timeout: 5s
+      tcp:
+        preferred_ip_protocol: ip4
 
 nodeSelector:
   node-pool: ks5-nvme
