@@ -109,6 +109,17 @@ spec:
         group_wait: 30s
         group_interval: 5m
         repeat_interval: 24h
+      # DLQ growth — dead-letters accumulating means a handler is failing
+      # repeatedly; MUST reach Telegram (2026-07-21: 19 msgs sat 5 days silent).
+      - matchers:
+          - 'alertname = "RabbitmqDlqGrowth"'
+        receiver: synapse-alertmanager
+        group_by:
+          - alertname
+          - queue
+        group_wait: 30s
+        group_interval: 5m
+        repeat_interval: 12h
       # RabbitMQ functional-queue health (no-consumer / backlog) — actionable
       # warnings that MUST reach Telegram. Proven 2026-07-10: the queue
       # collections-tree.shopify-events.skirmshop sat at ~957 ready messages
