@@ -41,6 +41,64 @@ spec:
           annotations:
             summary: "LLM resident deployment unavailable"
             description: "{{ $labels.namespace }}/{{ $labels.deployment }} is still unavailable after 2 hours; inspect GPU scheduling, model startup and competing bench workloads."
+        # A service that is *scaled to zero* is invisible to every rule above:
+        # they all compare spec > available, which at spec=0 evaluates 0 > 0 and
+        # can never fire. That blind spot hid two outages in July 2026 — the
+        # OmniVoice TTS/STT pair for six days and the DGX1 BGE pair for 5d15h —
+        # both left behind by an abandoned "RHO benchmark isolation" window
+        # (replicas: 0 committed to git, plus a KEDA activationThreshold of 2 on
+        # a trigger query bounded to 0..1, which reads as Ready and unpaused
+        # while pinning the target at zero). Watch the declared replica count
+        # itself, so "someone switched it off and walked away" pages like any
+        # other outage.
+        #
+        # The list is an explicit allowlist by design: 14 of the 23 llm
+        # Deployments sit at zero legitimately (alternative model profiles,
+        # canaries, retired node variants), so a namespace-wide "== 0" would be
+        # pure noise. Add a Deployment here only when zero is never correct.
+        # bge-m3-embedding and bge-reranker are the DGX1 halves, pinned to
+        # minReplicaCount: 1; if their VRAM gate is ever re-armed (min: 0), drop
+        # them from this list and let LlmPoolCapabilityUnavailable cover them.
+        - alert: LlmResidentScaledToZero
+          expr: |
+            kube_deployment_spec_replicas{namespace="llm",deployment=~"omnivoice-audio|omnivoice-tts-dgx2|stt-turbo|bge-m3-embedding|bge-reranker"} == 0
+          for: 15m
+          labels:
+            severity: critical
+            area: kubernetes
+            workload_class: llm-resident
+          annotations:
+            summary: "Resident LLM service scaled to zero"
+            description: "{{ $labels.namespace }}/{{ $labels.deployment }} has been declared with 0 replicas for 15 minutes, which is never correct for this service. Check git on the branch the ai Application is pinned to, the KEDA ScaledObject (activationThreshold vs the range its query can actually produce) and whether the ArgoCD pin was rolled back to an older revision."
+        # The BGE embedder and reranker run active-active across both GB10 nodes
+        # behind a single pool Service, and the DGX2 half is deliberately
+        # preemptible — the gpu_arbiter retires it to free the GPU for
+        # ComfyUI/Trellis — so a per-Deployment alert on that half would be
+        # noise. What matters is the capability. On 2026-07-21 both halves were
+        # down simultaneously for ~8 minutes (DGX1 parked at zero by the
+        # isolation window, DGX2 preempted) and nothing noticed, because there
+        # is no CPU fallback since 2026-07-03. Alert on the sum, not the parts.
+        - alert: LlmPoolCapabilityUnavailable
+          expr: |
+            sum by (pool) (
+              label_replace(
+                kube_deployment_status_replicas_available{namespace="llm",deployment=~"bge-m3-embedding|bge-m3-embedding-dgx2"},
+                "pool", "bge-embedding", "deployment", ".*"
+              )
+              or
+              label_replace(
+                kube_deployment_status_replicas_available{namespace="llm",deployment=~"bge-reranker|bge-reranker-dgx2"},
+                "pool", "bge-reranker", "deployment", ".*"
+              )
+            ) == 0
+          for: 5m
+          labels:
+            severity: critical
+            area: kubernetes
+            workload_class: llm-pool
+          annotations:
+            summary: "LLM pool has no serving replica on any node"
+            description: "The {{ $labels.pool }} pool has zero available replicas across both GB10 nodes, so its Service has no endpoints and there is no CPU fallback. Everything that embeds or reranks (brain, litellm, openclaw) is failing. Check the KEDA ScaledObjects on both nodes and whether the gpu_arbiter has preempted the DGX2 half while the DGX1 half was already down."
         - alert: KubernetesStatefulSetUnavailable
           expr: kube_statefulset_replicas > kube_statefulset_status_replicas_ready
           for: 5m
