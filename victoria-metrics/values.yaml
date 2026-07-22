@@ -48,7 +48,9 @@ vmsingle:
         memory: 12Gi
     extraArgs:
       maxLabelsPerTimeseries: "200"
-    retentionPeriod: "15d"
+    # Keep metrics for 48 hours. This is intentionally expressed in hours so
+    # the live CR and the requested policy are unambiguous.
+    retentionPeriod: "48h"
     storage:
       accessModes: [ReadWriteOnce]
       storageClassName: longhorn
