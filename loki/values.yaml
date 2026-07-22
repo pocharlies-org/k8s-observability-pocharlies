@@ -32,8 +32,11 @@ loki:
       s3ForcePathStyle: true
       insecure: true
   limits_config:
-    retention_period: 336h   # 14 days (auditoría disco 2026-06-11)
-    max_query_lookback: 336h
+    retention_period: 48h
+    max_query_lookback: 48h
+    # Do not accept samples that Loki can no longer retain or query.
+    reject_old_samples: true
+    reject_old_samples_max_age: 48h
     ingestion_rate_mb: 16
     ingestion_burst_size_mb: 32
   compactor:
@@ -53,12 +56,12 @@ singleBinary:
     enabled: true
     storageClass: longhorn
     size: 20Gi
+    enableStatefulSetAutoDeletePVC: true
+    whenScaled: Retain
+    whenDeleted: Retain
   # Survive accidental scale-to-zero during maintenance — the chart default
   # leaves the StatefulSet with whenScaled: Delete which destroys the PVC
   # (and all log history) when replicas drop to 0. Retain keeps the data.
-  persistentVolumeClaimRetentionPolicy:
-    whenScaled: Retain
-    whenDeleted: Delete
   resources:
     requests:
       cpu: 100m
