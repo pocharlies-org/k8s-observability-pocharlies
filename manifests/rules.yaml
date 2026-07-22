@@ -180,6 +180,195 @@ spec:
             summary: "Synapse gateway is down — alert delivery is broken"
             description: "synapse.e-dani.com/webhooks/alertmanager is not responding for >2m. Alertmanager cannot deliver alerts to Telegram through Synapse. Check synapse-gateway (systemd --user) on sauvage."
 ---
+# Synapse CORE health: the two singleton control-plane pods (engine +
+# dispatcher) plus the transactional outbox and the dead-letter graveyard.
+# SynapseDown above only probes the gateway (alert-delivery path). These
+# rules watch the actual fabric: the engine that schedules workflows, the
+# dispatcher that drains the Postgres outbox onto RabbitMQ, and the DLQ
+# backlog. Series confirmed live in VM 2026-07-22 (roadmap D2, after R1
+# made the core series scrapeable).
+#
+# Real label pins (VM query, ns synapse):
+#   job="synapse-engine"      (svc synapse-engine, 1 replica, :9103)
+#   job="synapse-dispatcher"  (svc synapse-dispatcher, 1 replica, :9102)
+# Both are singletons: no HPA, no dedup needed on synapse_* series.
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMRule
+metadata:
+  name: pocharlies-synapse-core
+  namespace: monitoring
+spec:
+  groups:
+    - name: pocharlies.synapse-core
+      rules:
+        # --- critical: control-plane singletons ---------------------------
+        # Either singleton missing from scrape (pod gone / crashloop before
+        # the metrics server binds) OR present-but-down. absent() covers the
+        # "series vanished" case that a bare `== 0` cannot see. Routed to the
+        # direct emergency-telegram leg (see alertmanager-config.yaml): the
+        # engine/dispatcher being down degrades the very pipeline that would
+        # otherwise render the alert card, so delivery must not depend on it.
+        - alert: SynapseCoreAbsent
+          expr: |
+            absent(up{job="synapse-engine"})
+            or absent(up{job="synapse-dispatcher"})
+            or (up{job=~"synapse-engine|synapse-dispatcher"} == 0)
+          for: 3m
+          labels:
+            severity: critical
+            area: availability
+            component: synapse
+          annotations:
+            summary: "Synapse core singleton down (engine/dispatcher)"
+            description: "synapse-engine and/or synapse-dispatcher is absent from scrape or reporting up==0 for >3m (job label on this alert names the affected side; absent() legs carry only the matched job). The control plane is degraded: engine=workflow scheduling, dispatcher=outbox drain onto RabbitMQ. Check `kubectl -n synapse get pods -l 'app in (synapse-engine,synapse-dispatcher)'` and the pod logs/events."
+        # Dispatcher alive but the outbox is NOT draining: zero publishes over
+        # 15m WHILE there is live (non-exhausted) backlog waiting. The backlog
+        # guard is deliberate — an idle-but-healthy dispatcher legitimately
+        # publishes nothing, so depth>0 is what turns silence into an alert.
+        # synapse_outbox_unpublished_rows is an in-process dispatcher gauge and
+        # DISAPPEARS on a dispatcher restart until the next outbox sweep
+        # repopulates it (observed 2026-07-22): when absent the right operand
+        # is empty and the whole expr is empty — fail-safe, no false page. Also
+        # routed to emergency-telegram (a stuck outbox blocks event delivery).
+        - alert: SynapseDispatcherNotPublishing
+          expr: |
+            sum(rate(synapse_dispatcher_published_total[15m])) == 0
+            and
+            sum(synapse_outbox_unpublished_rows{exhausted="false"}) > 0
+          for: 10m
+          labels:
+            severity: critical
+            area: messaging
+            component: synapse
+          annotations:
+            summary: "Synapse dispatcher not draining outbox despite backlog"
+            description: "synapse-dispatcher published 0 events in 15m while the transactional outbox holds unexhausted (still-retryable) rows. Events are being written but never reach RabbitMQ. Check the dispatcher pod (publisher channel / broker connection) and RabbitmqMemoryAlarmActive (a publish-block would also stall this)."
+        # --- warning: scheduled workflows ---------------------------------
+        # synapse_engine_scheduled_workflow_last_success_timestamp_seconds is a
+        # per-(tenant,workflow) in-process gauge on the engine. Two restart
+        # guards, both required, both validated against a live engine restart
+        # 21m before authoring (uptime 1273s, expr correctly empty):
+        #   1) `> 0` filter drops any child series that reset to 0 (a workflow
+        #      that has never succeeded since process start), which would else
+        #      read as `time()-0` ~ 1.7e9s and page instantly.
+        #   2) engine-uptime guard (kube_pod_container_state_started, KSM):
+        #      only alert once the engine has been up longer than the stall
+        #      threshold, so a fresh restart that has not yet re-run a workflow
+        #      cannot page. process_start_time_seconds is NOT exported by these
+        #      pods (verified absent in VM), hence the KSM container-start gauge.
+        # Threshold 3h = 3x the SLOWEST current cadence (all 14 scheduled
+        # workflows run hourly-or-faster: */15, */20, */30, and :NN hourly).
+        # CAVEAT: any future scheduled workflow with a cadence > ~2h will
+        # false-positive here and must be excluded with a workflow!~"..."
+        # matcher (or its own longer-threshold rule).
+        - alert: SynapseScheduledWorkflowStalled
+          expr: |
+            (
+              time()
+              - max by (tenant, workflow) (
+                  synapse_engine_scheduled_workflow_last_success_timestamp_seconds > 0
+                )
+            ) > 10800
+            and on ()
+            (
+              time()
+              - max(
+                  kube_pod_container_state_started{
+                    namespace="synapse", pod=~"synapse-engine-.*", container="engine"
+                  }
+                )
+            ) > 10800
+          for: 15m
+          labels:
+            severity: warning
+            area: reliability
+            component: synapse
+          annotations:
+            summary: "Synapse scheduled workflow {{ $labels.tenant }}/{{ $labels.workflow }} stalled"
+            description: "Scheduled workflow {{ $labels.workflow }} (tenant {{ $labels.tenant }}) has not recorded a success in over 3h, and the engine has been up longer than that (so this is a real stall, not a restart artifact). Check the engine scheduler and the workflow's handler logs. NOTE: assumes sub-3h cadence; a workflow scheduled less often than that must be excluded from this rule."
+        # --- warning: transactional outbox --------------------------------
+        # Exhausted rows = events that hit max retries and are stuck in the
+        # outbox (a poison payload or a permanently-failing publish). Any
+        # exhausted row is actionable. COORDINATION (2026-07-22 go-live): the
+        # outbox currently holds ~430 exhausted rows (tenant=system) + 1
+        # (skirmshop) of stale sediment, so this WILL fire on first repopulation
+        # after the current dispatcher restart. That is intended — the D2 triage
+        # drains the graveyard to 0 in parallel and the alert then clears. If it
+        # is still firing days later, the graveyard was never triaged.
+        - alert: SynapseOutboxExhausted
+          expr: sum by (tenant) (synapse_outbox_unpublished_rows{exhausted="true"}) > 0
+          for: 15m
+          labels:
+            severity: warning
+            area: messaging
+            component: synapse
+          annotations:
+            summary: "Synapse outbox has exhausted (dead) rows — tenant {{ $labels.tenant }}"
+            description: "{{ $value }} exhausted outbox row(s) for tenant {{ $labels.tenant }} — events that exceeded max publish retries and are now stuck (poison payload or permanent publish failure). Inspect the synapse outbox table and re-drive or discard. Baseline at D2 go-live was ~430 (system) + 1 (skirmshop) of sediment being triaged to 0 in parallel."
+        # Oldest unpublished row aging past 15m. This metric has NO exhausted
+        # split (only a tenant label), so while the ~430 exhausted-sediment rows
+        # exist it fires on that sediment (oldest ~467h) alongside
+        # SynapseOutboxExhausted; once the graveyard is triaged to 0 it becomes
+        # a clean "a LIVE unpublished row has been stuck > 15m" head-of-line
+        # signal. Absent on dispatcher restart (in-process gauge) -> no false
+        # page. for: 15m so a normal drain latency does not trip it.
+        - alert: SynapseOutboxOldestStale
+          expr: max by (tenant) (synapse_outbox_oldest_unpublished_age_seconds) > 900
+          for: 15m
+          labels:
+            severity: warning
+            area: messaging
+            component: synapse
+          annotations:
+            summary: "Synapse outbox oldest unpublished row is stale — tenant {{ $labels.tenant }}"
+            description: "The oldest unpublished outbox row for tenant {{ $labels.tenant }} has been waiting {{ $value | humanizeDuration }} (>15m). Until the exhausted-row sediment is triaged this reflects that sediment; afterwards it means a live event is not draining. Cross-check SynapseOutboxExhausted and SynapseDispatcherNotPublishing."
+        # --- warning: DLQ graveyard ---------------------------------------
+        # Total dead-letter depth backstop, complementary to RabbitmqDlqGrowth
+        # (which catches per-queue GROWTH over 6h). DEDUP IS MANDATORY: every
+        # DLQ series is scraped by BOTH the shared-rabbitmq and
+        # shared-rabbitmq-headless jobs, so a naive sum() double-counts
+        # (564 vs the real 282). `sum(max by (queue) (...))` collapses the two
+        # jobs back to the true per-queue depth. Threshold 350 sits above the
+        # 2026-07-22 baseline of 282 sediment messages (~68 headroom): only a
+        # bulk NEW dead-lettering event trips it, so the standing graveyard does
+        # not nag. repeat 24h on its dedicated route (alertmanager-config.yaml).
+        - alert: SynapseDLQBacklog
+          expr: |
+            sum(
+              max by (queue) (
+                rabbitmq_detailed_queue_messages_ready{vhost="/synapse", queue=~"dlq\\..+"}
+              )
+            ) > 350
+          for: 15m
+          labels:
+            severity: warning
+            area: messaging
+            component: synapse
+          annotations:
+            summary: "Synapse DLQ total backlog high ({{ $value }} messages)"
+            description: "Total ready messages across all /synapse dlq.* queues exceeded 350 (deduped across the two rabbitmq scrape jobs; baseline sediment ~282). A handler is dead-lettering in bulk. Use RabbitmqDlqGrowth to find the growing queue, then inspect that adapter's logs and the DLQ payloads."
+        # --- warning: core adapters ---------------------------------------
+        # The four control-critical adapters that must always have a target up.
+        # telegram is EXCLUDED on purpose: synapse-adapter-telegram runs at
+        # replicas=0 by design (no such scrape target exists), so any liveness
+        # rule on it would be permanently firing. Uses == 0 (not absent) so a
+        # legitimately-scaled-to-zero adapter does not page; a scheduled adapter
+        # reporting down for 10m does.
+        - alert: SynapseAdapterTargetDown
+          expr: |
+            up{
+              namespace="synapse",
+              job=~"synapse-adapter-(reminders|gmail|shopify|whatsapp)"
+            } == 0
+          for: 10m
+          labels:
+            severity: warning
+            area: availability
+            component: synapse
+          annotations:
+            summary: "Synapse adapter down: {{ $labels.job }}"
+            description: "{{ $labels.job }} ({{ $labels.pod }}) has reported up==0 for >10m. That control-critical adapter is not serving. Check `kubectl -n synapse get pods` and the pod logs. (telegram is intentionally not watched here: replicas=0 by design.)"
+---
 apiVersion: operator.victoriametrics.com/v1beta1
 kind: VMRule
 metadata:

@@ -24,10 +24,16 @@ spec:
       - matchers:
           - 'alertname =~ "Watchdog|InfoInhibitor"'
         receiver: blackhole
-      # One direct emergency leg is intentional: when Synapse itself is down,
-      # the normal webhook path cannot deliver the alert or its OpenClaw button.
+      # Direct emergency leg (no `continue`, so these STOP here and never reach
+      # the generic critical legs below — exactly one direct-Telegram message,
+      # no rich Synapse card): when Synapse itself is down OR its core control
+      # plane (engine/dispatcher) is degraded, the normal webhook path may not
+      # deliver the alert or its OpenClaw button, so delivery must not depend on
+      # the Synapse pipeline. SynapseCoreAbsent = a core singleton is down;
+      # SynapseDispatcherNotPublishing = the outbox is not draining onto the
+      # bus (event delivery, including alert cards, is at risk).
       - matchers:
-          - "alertname = SynapseDown"
+          - 'alertname =~ "SynapseDown|SynapseCoreAbsent|SynapseDispatcherNotPublishing"'
         receiver: emergency-telegram
         group_by:
           - alertname
@@ -216,6 +222,32 @@ spec:
         group_wait: 30s
         group_interval: 5m
         repeat_interval: 24h
+      # Synapse core DLQ backlog: total dead-letter depth is slow-moving
+      # sediment, so give it its own leg with a gentle 24h re-nag (vs the 12h
+      # bundle below) to avoid fatigue on a standing graveyard. Grouped by
+      # alertname (single-series expr, no per-queue label).
+      - matchers:
+          - 'alertname = "SynapseDLQBacklog"'
+        receiver: synapse-alertmanager
+        group_by:
+          - alertname
+        group_wait: 30s
+        group_interval: 5m
+        repeat_interval: 24h
+      # Synapse core WARNING family (roadmap D2): outbox health, stalled
+      # scheduled workflows and core-adapter liveness. These are actionable
+      # warnings that MUST reach Telegram, so they are routed to the Synapse
+      # webhook BEFORE the generic warning blackhole below (same pattern as the
+      # Rabbitmq/OVHPVCHub warning legs above). Grouped by alertname so each
+      # signal is one card (tenant variants collapse together).
+      - matchers:
+          - 'alertname =~ "SynapseOutbox.*|SynapseScheduledWorkflowStalled|SynapseAdapterTargetDown"'
+        receiver: synapse-alertmanager
+        group_by:
+          - alertname
+        group_wait: 30s
+        group_interval: 5m
+        repeat_interval: 12h
       # Generic warning alerts stay queryable in Alertmanager/Grafana but do
       # not become Telegram work items. Only the curated warning routes above
       # (SynapseWorkflowFailed and K8sCronJobFailed) page the monitor group.
