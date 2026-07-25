@@ -124,7 +124,9 @@ metadata:
     argocd.argoproj.io/hook: PostSync
     argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
 spec:
-  backoffLimit: 3
+  # Con la espera activa de arriba, 2 intentos sobran; más sólo alargaría un
+  # fallo real.
+  backoffLimit: 2
   ttlSecondsAfterFinished: 3600
   template:
     metadata:
@@ -146,6 +148,21 @@ spec:
             - |
               set -e
               pip install --no-cache-dir --quiet pyyaml
+              # Esperar a que el backend responda antes de aplicar nada. Sin
+              # esto el Job agotaba el backoffLimit cuando corría antes de que
+              # keep-backend estuviera listo (o mientras se reiniciaba), y como
+              # es un hook PostSync eso tumbaba el sync ENTERO del Application.
+              # Un hook de provisioning no debe poder romper el despliegue.
+              # Una sola línea: un python -c multilínea aquí heredaría la
+              # indentación del YAML y moriría con IndentationError.
+              echo "esperando a keep-backend..."
+              i=0
+              until python -c "import urllib.request; urllib.request.urlopen('$KEEP_API_URL/healthcheck', timeout=3)" 2>/dev/null; do
+                i=$((i+1))
+                [ $i -ge 60 ] && { echo "keep-backend no responde tras 5 min"; exit 1; }
+                sleep 5
+              done
+              echo "keep-backend listo"
               python /scripts/apply-rules.py
           env:
             # Service in-cluster, no el host público: este Job no debe depender

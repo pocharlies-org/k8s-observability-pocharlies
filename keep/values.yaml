@@ -271,15 +271,22 @@ backend:
   nodeSelector:
     node-pool: ks5-nvme
 
-  # Las dos réplicas en nodos distintos, o no sirven de nada.
+  # Las dos réplicas en nodos distintos — pero `preferred`, no `required`.
+  # Con `required` el rollout se quedaba colgado: sólo 3 nodos llevan la etiqueta
+  # node-pool=ks5-nvme, las 2 réplicas ocupan dos, y el tercero no tiene CPU
+  # libre, así que el pod de surge no encontraba hueco y el Deployment no
+  # convergía. Con peso 100 el scheduler sigue separándolas siempre que pueda,
+  # pero un rollout no puede quedarse bloqueado por falta de un tercer nodo.
   affinity:
     podAntiAffinity:
-      requiredDuringSchedulingIgnoredDuringExecution:
-        - labelSelector:
-            matchLabels:
-              app.kubernetes.io/name: keep
-              app.kubernetes.io/component: backend
-          topologyKey: kubernetes.io/hostname
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          podAffinityTerm:
+            labelSelector:
+              matchLabels:
+                app.kubernetes.io/name: keep
+                app.kubernetes.io/component: backend
+            topologyKey: kubernetes.io/hostname
 
   resources:
     requests:

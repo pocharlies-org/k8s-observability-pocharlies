@@ -970,11 +970,21 @@ spec:
     - name: keep.hub-health
       rules:
         - alert: KeepBackendAbsent
-          # Dos condiciones porque fallan de formas distintas: `absent` cubre que
-          # el target desaparezca del scrape (pods borrados, ns caído) y la
-          # segunda que los pods existan pero ninguno esté Ready.
+          # OJO con lo que se mide aquí. La primera versión usaba
+          #   absent(up{namespace="monitoring", pod=~"keep-backend-.*"})
+          # y era un falso positivo PERMANENTE: no había ningún scrape apuntando
+          # a Keep, así que esa serie no existía nunca y absent() era siempre
+          # true. La alerta se disparó en el minuto en que se creó la regla y no
+          # podía resolverse — un dead-man's switch que grita siempre es peor que
+          # no tenerlo, porque enseña a ignorarlo.
+          #
+          # Ahora depende sólo de kube-state-metrics, que sí se scrapea:
+          #   - absent(...)  -> el Deployment ha desaparecido del clúster
+          #   - == 0         -> existe pero no hay ninguna réplica disponible
+          # El scrape propio de Keep está en manifests/keep-scrape.yaml; cuando
+          # lleve tiempo estable se le puede añadir una condición sobre `up`.
           expr: |
-            absent(up{namespace="monitoring", pod=~"keep-backend-.*"})
+            absent(kube_deployment_status_replicas_available{namespace="monitoring", deployment="keep-backend"})
               or
             max(kube_deployment_status_replicas_available{namespace="monitoring", deployment="keep-backend"}) == 0
           for: 2m

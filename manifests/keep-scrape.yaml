@@ -1,0 +1,25 @@
+# Scrape de Keep. Faltaba, y su ausencia convirtió la primera versión de
+# KeepBackendAbsent en un falso positivo permanente: la regla preguntaba por
+# `up{pod=~"keep-backend-.*"}`, una serie que no existía porque nadie recogía
+# esas métricas.
+#
+# Keep expone /metrics en el puerto del API (usa PROMETHEUS_MULTIPROC_DIR para
+# agregar entre los workers de gunicorn).
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMServiceScrape
+metadata:
+  name: keep
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: keep
+    app.kubernetes.io/component: monitoring
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: keep
+      app.kubernetes.io/component: backend
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 30s
+      scrapeTimeout: 10s

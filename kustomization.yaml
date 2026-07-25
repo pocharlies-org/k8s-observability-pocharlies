@@ -16,6 +16,7 @@ resources:
   - manifests/alertmanager-config.yaml
   - manifests/probes.yaml
   - manifests/rules.yaml
+  - manifests/keep-scrape.yaml
   - manifests/cron-alert-analyzer.yaml
   - manifests/dashboards.yaml
   - manifests/dcgm-scrape.yaml
