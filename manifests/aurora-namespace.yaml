@@ -1,0 +1,20 @@
+# El namespace de Aurora, creado explícitamente y ANTES que nada suyo.
+#
+# Sin esto el sync de k8s-observability fallaba con `namespaces "aurora" not
+# found`: este Application tiene destino `monitoring`, así que su
+# CreateNamespace=true sólo crea ése, pero lleva recursos que apuntan a `aurora`
+# (ExternalSecrets, IngressRoutes, Certificate). El namespace lo habría creado el
+# Application `aurora`... que se crea en este mismo sync. Huevo y gallina.
+#
+# El sync-wave -2 garantiza que exista antes de que se aplique cualquier recurso
+# suyo, incluidos los ExternalSecrets que ESO necesita para materializar los
+# secretos que los pods montan.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: aurora
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+  labels:
+    app.kubernetes.io/name: aurora
+    app.kubernetes.io/part-of: observability
