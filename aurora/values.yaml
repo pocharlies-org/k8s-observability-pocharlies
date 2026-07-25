@@ -19,6 +19,25 @@
 fullnameOverride: aurora
 
 # ---------------------------------------------------------------------------
+# Imágenes. El chart trae el placeholder literal `your-registry`, así que sin
+# esto todos los pods entran en ImagePullBackOff intentando bajar
+# `your-registry/aurora-server:latest` de Docker Hub.
+#
+# Aurora SÍ publica imágenes: `make prod-prebuilt` tira de
+# ghcr.io/arvo-ai/aurora-{server,frontend}, multi-arch amd64+arm64. No hay que
+# construir nada.
+#
+# El tag va pineado a la versión del chart, no a `latest`: un `latest` móvil
+# haría que dos syncs del mismo commit desplegasen binarios distintos, y en un
+# sistema que investiga incidentes eso es justo lo que no quieres.
+#
+# Al subir la versión del chart en apps/aurora.yaml, subir también este tag.
+# ---------------------------------------------------------------------------
+image:
+  registry: ghcr.io/arvo-ai
+  tag: "1.2.16"
+
+# ---------------------------------------------------------------------------
 # Infra compartida en vez de la del chart. Ahorra ~4GB y evita duplicar bases de
 # datos que ya tienen backup y monitorización resueltos.
 # ---------------------------------------------------------------------------
