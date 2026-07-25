@@ -1,0 +1,35 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: keep
+  namespace: argocd
+  labels:
+    e-dani.com/tier: infra
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+    link.argocd.argoproj.io/Keep: https://keep.lan.e-dani.com
+spec:
+  project: default
+  sources:
+    - repoURL: https://keephq.github.io/helm-charts
+      chart: keep
+      targetRevision: 0.1.96
+      helm:
+        releaseName: keep
+        valueFiles:
+          - $values/keep/values.yaml
+    - repoURL: https://github.com/pocharlies/k8s-observability-pocharlies
+      targetRevision: deploy/prod
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    # Mismo namespace que vmalertmanager: la ingesta Alertmanager -> Keep es una
+    # llamada Service a Service, y wildcard-lan-tls ya existe aquí.
+    namespace: monitoring
+  syncPolicy:
+    automated:
+      selfHeal: true
+      prune: false
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

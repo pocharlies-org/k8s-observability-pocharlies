@@ -956,3 +956,63 @@ spec:
           annotations:
             summary: "Shared datastore replicas co-located on one node"
             description: "{{ $labels.app }} has {{ $value }} replicas on node {{ $labels.node }} — one node failure takes out quorum/failover (root cause of 2026-07-20). Required anti-affinity should make this impossible; if it fires, scheduling drifted."
+---
+# Reglas que vigilan al vigilante. Sin ellas el dead-man's switch del
+# VMAlertmanagerConfig no tiene nada que disparar: son las únicas alertas que
+# pueden avisar de que Keep — ahora el único notificador — ha dejado de recibir.
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMRule
+metadata:
+  name: keep-hub-health
+  namespace: monitoring
+spec:
+  groups:
+    - name: keep.hub-health
+      rules:
+        - alert: KeepBackendAbsent
+          # Dos condiciones porque fallan de formas distintas: `absent` cubre que
+          # el target desaparezca del scrape (pods borrados, ns caído) y la
+          # segunda que los pods existan pero ninguno esté Ready.
+          expr: |
+            absent(up{namespace="monitoring", pod=~"keep-backend-.*"})
+              or
+            max(kube_deployment_status_replicas_available{namespace="monitoring", deployment="keep-backend"}) == 0
+          for: 2m
+          labels:
+            severity: critical
+            area: availability
+          annotations:
+            summary: "Keep backend caído — no hay ingesta de alertas"
+            description: >-
+              El hub de alertas no está disponible. Alertmanager sigue
+              entregando por la lane directa de Telegram sólo para las 5 alertas
+              del backstop; todo lo demás se está perdiendo.
+        - alert: KeepIngestionDown
+          # Alertmanager contabiliza aquí los fallos de entrega del webhook. Si
+          # sube, Keep está arriba pero rechazando o no respondiendo — el caso
+          # que `up` no detecta (401 por API key mal sembrada, por ejemplo).
+          expr: increase(alertmanager_notifications_failed_total{integration="webhook"}[10m]) > 0
+          for: 5m
+          labels:
+            severity: critical
+            area: availability
+          annotations:
+            summary: "Alertmanager no consigue entregar a Keep"
+            description: >-
+              Fallos de entrega del webhook en los últimos 10 minutos. Revisar
+              que keepsvc-alertmanager-apikey coincida con KEEP_DEFAULT_API_KEYS
+              y que keep-backend responda en /alerts/event/prometheus.
+        - alert: KeepIngestionSilent
+          # Watchdog llega siempre (antes iba al blackhole, ahora entra a Keep).
+          # Si Alertmanager deja de notificar del todo, ni fallos ni éxitos se
+          # incrementan: este es el caso que ninguna de las dos anteriores ve.
+          expr: increase(alertmanager_notifications_total{integration="webhook"}[30m]) == 0
+          for: 10m
+          labels:
+            severity: warning
+            area: availability
+          annotations:
+            summary: "Alertmanager no ha notificado nada a Keep en 30 minutos"
+            description: >-
+              Con Watchdog activo debería haber tráfico constante hacia el
+              webhook. Silencio total sugiere que la ruta no está entregando.

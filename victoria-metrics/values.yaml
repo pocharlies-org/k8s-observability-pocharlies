@@ -111,10 +111,10 @@ alertmanager:
     # dropped to the blackhole receiver. With it, the route captures ALL
     # alerts regardless of namespace.
     disableNamespaceMatcher: true
-    hostAliases:
-      - ip: "100.109.183.9"
-        hostnames:
-          - synapse.e-dani.com
+    # El hostAliases de synapse.e-dani.com (100.109.183.9) se retiró con el
+    # cutover a Keep: la ingesta es ahora in-cluster contra keep-backend, así que
+    # Alertmanager ya no resuelve ningún nombre externo. Ver
+    # manifests/alertmanager-config.yaml.
     configReloaderResources:
       requests:
         cpu: 10m

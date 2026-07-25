@@ -1,0 +1,174 @@
+# Aplica keep/rules/correlation-rules.yaml contra la API de Keep.
+#
+# Las reglas de correlación no son provisionables por el chart (sólo providers,
+# workflows, dashboards y mapping rules), pero son EL criterio de notificación
+# del clúster, así que no pueden vivir clicadas en una UI: este Job las mantiene
+# en git y las reconcilia en cada sync.
+#
+# Hook PostSync de ArgoCD: corre después de que keep-backend esté disponible.
+# Idempotente — hace GET /rules y decide POST (nueva) o PUT (existente por
+# nombre). No borra: una regla quitada del fichero se queda en Keep y hay que
+# eliminarla a mano, a propósito, porque borrar una regla apaga notificaciones.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: keepsvc-rules
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: keep
+    app.kubernetes.io/component: correlation-rules
+data:
+  apply-rules.py: |
+    """Reconcilia las reglas de correlación de Keep desde YAML."""
+    import json
+    import os
+    import sys
+    import urllib.error
+    import urllib.request
+
+    import yaml
+
+    API = os.environ["KEEP_API_URL"].rstrip("/")
+    KEY = os.environ["KEEP_API_KEY"]
+    SPEC = "/rules/correlation-rules.yaml"
+
+
+    def call(method, path, body=None):
+        req = urllib.request.Request(
+            f"{API}{path}",
+            method=method,
+            data=json.dumps(body).encode() if body is not None else None,
+            headers={"x-api-key": KEY, "Content-Type": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                raw = r.read()
+                return json.loads(raw) if raw else None
+        except urllib.error.HTTPError as e:
+            detail = e.read().decode(errors="replace")[:400]
+            raise SystemExit(f"FALLO {method} {path} -> HTTP {e.code}: {detail}")
+        except urllib.error.URLError as e:
+            raise SystemExit(f"FALLO {method} {path} -> {e.reason}")
+
+
+    def compose(spec):
+        """Expande `chronic` y aplica la invariante 2 del fichero de reglas.
+
+        La lista de alertas crónicas vive UNA vez en el YAML. Aquí se convierte en:
+          - el celQuery de la regla chronic-debt (celQuery: chronic)
+          - una exclusión `&& !(name in [...])` añadida a toda regla que no lleve
+            exemptFromChronic, para que un crónico no pueda dejar un incidente
+            permanentemente abierto que se coma las alertas agudas de su regla.
+
+        Repetir la lista a mano en 16 expresiones CEL era el mismo acoplamiento
+        manual que ya se rompió una vez; esto lo hace imposible de desincronizar.
+        """
+        chronic = spec.get("chronic") or []
+        cel_list = ", ".join(json.dumps(n) for n in chronic)
+        out = []
+        for rule in spec["rules"]:
+            rule = dict(rule)
+            exempt = rule.pop("exemptFromChronic", False)
+            if rule["celQuery"].strip() == "chronic":
+                rule["celQuery"] = f"name in [{cel_list}]"
+            elif chronic and not exempt:
+                rule["celQuery"] = f'({rule["celQuery"].strip()}) && !(name in [{cel_list}])'
+            out.append(rule)
+        return out, chronic
+
+
+    def main():
+        spec = yaml.safe_load(open(SPEC))
+        desired, chronic = compose(spec)
+        print(f"{len(desired)} reglas, {len(chronic)} alertas en deuda crónica\n")
+
+        # El nombre es la clave de identidad: la API asigna un UUID que no
+        # podemos fijar desde git.
+        existing = {r["name"]: r["id"] for r in (call("GET", "/rules") or [])}
+
+        created = updated = 0
+        for rule in desired:
+            name = rule["ruleName"]
+            if name in existing:
+                call("PUT", f"/rules/{existing[name]}", rule)
+                print(f"  actualizada  {name}")
+                updated += 1
+            else:
+                call("POST", "/rules", rule)
+                print(f"  creada       {name}")
+                created += 1
+
+        huerfanas = sorted(set(existing) - {r["ruleName"] for r in desired})
+        if huerfanas:
+            # No se borran solas: quitar una regla apaga las notificaciones que
+            # dependían de ella, y eso debe ser una decisión consciente.
+            print(f"\nAVISO: reglas en Keep que no están en git: {huerfanas}")
+            print("Revisar y borrarlas a mano si procede.")
+
+        print(f"\n{created} creadas, {updated} actualizadas, {len(desired)} en git")
+
+
+    if __name__ == "__main__":
+        main()
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: keepsvc-apply-rules
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: keep
+    app.kubernetes.io/component: correlation-rules
+  annotations:
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: keep
+        app.kubernetes.io/component: correlation-rules
+    spec:
+      restartPolicy: Never
+      nodeSelector:
+        node-pool: ks5-nvme
+      containers:
+        - name: apply-rules
+          # slim y no alpine: pyyaml tiene wheels manylinux, así que el pip no
+          # compila nada. Requiere salida a PyPI; si eso deja de ser aceptable,
+          # el reemplazo es una imagen propia en harbor con pyyaml ya dentro.
+          image: python:3.12-slim
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              pip install --no-cache-dir --quiet pyyaml
+              python /scripts/apply-rules.py
+          env:
+            # Service in-cluster, no el host público: este Job no debe depender
+            # del ingress ni del SSO.
+            - name: KEEP_API_URL
+              value: http://keep-backend.monitoring.svc.cluster.local:8080
+            - name: KEEP_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: keepsvc-provisioning
+                  key: API_KEY_PROVISIONER
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+            - name: rules
+              mountPath: /rules
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { cpu: 500m, memory: 256Mi }
+      volumes:
+        - name: scripts
+          configMap:
+            name: keepsvc-rules
+        - name: rules
+          configMap:
+            name: keepsvc-correlation-rules

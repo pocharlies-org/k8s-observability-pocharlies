@@ -1,0 +1,307 @@
+# Keep — hub de alertas del clúster.
+#
+# Ingesta: Alertmanager POSTea in-cluster a keep-backend:8080/alerts/event/prometheus
+# con basic auth (user=api_key). Al vivir en el mismo namespace que
+# vmalertmanager, el camino crítico de notificación es una llamada de Service
+# a Service: sin ingress, sin salto externo, sin hostAliases.
+#
+# Auth: IngressRoute + middleware keycloak/sso-chain (oauth2-proxy compartido, ya
+# restringido a /edani-admins + /edani-operators). Keep lee la identidad de los
+# headers X-Auth-Request-*; ver manifests/ingressroutes.yaml.
+#
+# Base de datos: postgres-shared (CNPG en ns databases). Rol, Database CR y
+# credenciales viven en k8s-infra-pocharlies/databases/postgres-shared.
+
+global:
+  # Rutas gestionadas a mano en manifests/ingressroutes.yaml: el template de
+  # Traefik del chart hardcodea `ingressClassName: traefik`, y aquí las clases
+  # son traefik-lan / traefik-edge. Además la convención del repo para UIs de
+  # observabilidad es IngressRoute + sso-chain, no Ingress.
+  ingress:
+    enabled: false
+
+# Postgres del chart desactivada: usamos el CNPG compartido, que ya tiene
+# backup a MinIO y 2 instancias.
+database:
+  enabled: false
+
+# Soketi desactivado: evita un tercer host y un componente más en el camino.
+# La UI hace polling en vez de push (PUSHER_DISABLED en backend y frontend).
+websocket:
+  enabled: false
+
+backend:
+  enabled: true
+  # Keep pasa a ser el único notificador: una réplica en un nodo no es aceptable.
+  replicaCount: 2
+
+  # La DB es externa y ya está sana; el init container de espera asume MySQL local.
+  waitForDatabase:
+    enabled: false
+
+  databaseConnectionStringFromSecret:
+    enabled: true
+    secretName: keepsvc-database
+    secretKey: dsn
+
+  provision:
+    # Los providers NO van aquí: el chart los renderiza a un Secret desde values,
+    # lo que dejaría el bot_token de Telegram en git. Llegan por KEEP_PROVIDERS
+    # desde el ExternalSecret keepsvc-provisioning (manifests/keep-secrets.yaml).
+    providers: {}
+
+    # El chart monta esto como ConfigMap en /workflows y fija
+    # KEEP_WORKFLOWS_DIRECTORY solo. Un fichero por `id`.
+    #
+    # -------------------------------------------------------------------
+    # QUÉ NOTIFICA Y QUÉ NO — el criterio, en un sitio
+    #
+    # Registrar todo e ignorar el ruido son cosas distintas. Alertmanager
+    # entrega el 100% de las series a Keep (visibilidad, auditoría), pero
+    # notificar el 100% sería un downgrade: hoy 15 de 47 instancias activas
+    # producen mensaje; notificar por alerta daría 45. x3 de ruido.
+    #
+    # Por eso la notificación se dispara con `type: incident`, no `type: alert`:
+    #
+    #   alerta ingerida      -> siempre: registro auditable en Keep
+    #   regla de correlación -> convierte un patrón de alertas en 1 incidente
+    #   incidente creado     -> Telegram + Aurora
+    #
+    # Consecuencia buscada: una alerta que no encaja en ninguna regla queda
+    # REGISTRADA Y CALLADA. Las 116 series que hoy caen al blackhole entran así
+    # por defecto, y se promueven a notificables una a una añadiéndolas a una
+    # regla — no al revés. La red de seguridad es la regla `critical-safety-net`
+    # (keep/rules/correlation-rules.yaml): cualquier critical se convierte en
+    # incidente por sí sola, así que ninguna crítica puede quedarse muda.
+    #
+    # `on: [create]` y no `[create, update]` a propósito: Alertmanager reenvía
+    # cada minuto (pass-through), y notificar en update convertiría eso en un
+    # mensaje por minuto. El coste es que una escalada de severidad dentro de un
+    # incidente ya abierto no vuelve a avisar.
+    #
+    # Y va entre comillas — `"on"` — porque sin ellas tanto Helm (yaml.v2) como
+    # PyYAML leen `on` como el booleano true, y la clave acaba siendo "true":
+    # Keep recibiría el trigger SIN `on` y dispararía también en update, que es
+    # justo la inundación que esto evita. Comprobado renderizando el chart.
+    #
+    # La severidad de los CEL de aquí es la NORMALIZADA por Keep. El manejo de
+    # `page` y `warn` (que Keep ingiere como `info`) está en las reglas de
+    # correlación, que es donde se decide la cobertura:
+    # keep/rules/correlation-rules.yaml.
+    # -------------------------------------------------------------------
+    workflows:
+      - id: notify-incident-critical
+        name: Telegram — incidentes críticos
+        description: >-
+          Aviso urgente al chat principal. Reemplaza la lane emergency-telegram
+          del VMAlertmanagerConfig.
+        triggers:
+          - type: incident
+            "on": [create]
+            cel: severity == "critical"
+        actions:
+          - name: telegram-critical
+            provider:
+              type: telegram
+              config: "{{ providers.telegram_ops }}"
+              with:
+                chat_id: "-1003785136626"
+                parse_mode: HTML
+                message: |
+                  🔴 <b>{{ incident.user_generated_name or incident.ai_generated_name }}</b>
+                  {{ incident.user_summary or incident.generated_summary }}
+                  {{ incident.alerts_count }} alertas · {{ incident.services }}
+                  https://keep.lan.e-dani.com/incidents/{{ incident.id }}
+
+      - id: notify-incident
+        name: Telegram — incidentes al tema alertas
+        description: >-
+          Resto de incidentes al tema 34494 del grupo Synapse, donde publicaba
+          el ops-explainer. Un mensaje por incidente, no por alerta.
+        triggers:
+          - type: incident
+            "on": [create]
+            cel: severity != "critical"
+        actions:
+          - name: telegram-incident
+            provider:
+              type: telegram
+              config: "{{ providers.telegram_ops }}"
+              with:
+                chat_id: "-1003785136626"
+                message_thread_id: 34494
+                parse_mode: HTML
+                message: |
+                  ⚠️ <b>{{ incident.user_generated_name or incident.ai_generated_name }}</b>
+                  {{ incident.user_summary or incident.generated_summary }}
+                  {{ incident.alerts_count }} alertas · {{ incident.services }}
+                  https://keep.lan.e-dani.com/incidents/{{ incident.id }}
+
+      # Guardián de invariante: hace que una severidad fuera del vocabulario
+      # canónico sea CONSULTABLE en vez de invisible. Enriquece y punto — no
+      # notifica, porque con el reenvío cada minuto un aviso por alerta sería
+      # spam. Se revisa filtrando por `severity_drift` en la UI, o regenerando
+      # docs/alert-routing-matrix.md.
+      - id: severity-drift-guard
+        name: Guardián — severidad no canónica
+        description: >-
+          Marca las alertas cuya severidad Keep no sabe mapear (y que por tanto
+          ha ingerido como `info`). Sin esta marca, una VMRule nueva con
+          `severity: warn` volvería a colarse en silencio.
+        triggers:
+          - type: alert
+            only_on_change: [status]
+            cel: >-
+              labels.severity != "" &&
+              !(labels.severity in ["critical", "warning", "info", "high", "low", "error", "medium"])
+        actions:
+          - name: mark-drift
+            provider:
+              type: mock
+              with:
+                enrich_alert:
+                  - key: severity_drift
+                    value: "{{ alert.labels.severity }}"
+
+      # Lane preservada: el analizador específico de cronjobs sigue igual, y
+      # KubeJobFailed no se reenvía (como hoy) para no duplicar. Se queda a
+      # nivel de alerta a propósito: es una integración máquina-máquina, no un
+      # aviso a una persona. `only_on_change` evita reenviarlo cada minuto.
+      - id: cron-analyzer-lane
+        name: K8sCronJobFailed → cron-alert-analyzer
+        description: >-
+          Reenvía la alerta al analizador de cronjobs con forma Alertmanager,
+          que es lo que su endpoint /alert espera.
+        triggers:
+          - type: alert
+            only_on_change: [status]
+            cel: name == "K8sCronJobFailed"
+        actions:
+          - name: forward-to-analyzer
+            provider:
+              type: webhook
+              config: "{{ providers.cron_analyzer }}"
+              with:
+                method: POST
+                body:
+                  status: "{{ alert.status }}"
+                  commonLabels:
+                    alertname: "{{ alert.name }}"
+                    namespace: "{{ alert.labels.namespace }}"
+                    owner_name: "{{ alert.labels.owner_name }}"
+                  commonAnnotations:
+                    summary: "{{ alert.annotations.summary }}"
+
+  env:
+    # URL pública del backend, la que el navegador usa. Con el ingress del chart
+    # desactivado hay que fijarla: los helpers caerían a /backend.
+    - name: KEEP_API_URL
+      value: https://keep-api.lan.e-dani.com
+    - name: PORT
+      value: "8080"
+    # Los secretos de providers se guardan como Secrets de k8s en este namespace
+    # (el chart crea Role + RoleBinding). Evita depender de Vault en runtime.
+    - name: SECRET_MANAGER_TYPE
+      value: k8s
+    - name: PUSHER_DISABLED
+      value: "true"
+    - name: PROMETHEUS_MULTIPROC_DIR
+      value: /tmp/prometheus
+
+    # --- Identidad: headers del oauth2-proxy compartido ---
+    # OJO: si el header de roles llega vacío, Keep devuelve 401 en TODA petición
+    # (oauth2proxy_authverifier.py). sso-chain lo puebla porque el cliente
+    # Keycloak emite el claim `groups` y el proxy tiene set_xauthrequest = true.
+    - name: AUTH_TYPE
+      value: OAUTH2PROXY
+    - name: KEEP_OAUTH2_PROXY_USER_HEADER
+      value: x-auth-request-email
+    - name: KEEP_OAUTH2_PROXY_ROLE_HEADER
+      value: x-auth-request-groups
+    - name: KEEP_OAUTH2_PROXY_AUTO_CREATE_USER
+      value: "true"
+    - name: KEEP_OAUTH2_PROXY_ADMIN_ROLES
+      value: "/edani-admins"
+    - name: KEEP_OAUTH2_PROXY_NOC_ROLES
+      value: "/edani-operators"
+
+  # KEEP_DEFAULT_API_KEYS (la que usa Alertmanager) y KEEP_PROVIDERS.
+  envFromSecrets:
+    - name: keepsvc-provisioning
+
+  image:
+    repository: us-central1-docker.pkg.dev/keephq/keep/keep-api
+    pullPolicy: IfNotPresent
+
+  nodeSelector:
+    node-pool: ks5-nvme
+
+  # Las dos réplicas en nodos distintos, o no sirven de nada.
+  affinity:
+    podAntiAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        - labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: keep
+              app.kubernetes.io/component: backend
+          topologyKey: kubernetes.io/hostname
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 512Mi
+    limits:
+      cpu: "2"
+      memory: 2Gi
+
+frontend:
+  enabled: true
+  replicaCount: 1
+
+  env:
+    # Los helpers del chart respetan estos valores si están puestos aquí.
+    - name: API_URL
+      value: http://keep-backend:8080          # server-side, in-cluster
+    - name: API_URL_CLIENT
+      value: https://keep-api.lan.e-dani.com   # el que resuelve el navegador
+    - name: NEXTAUTH_URL
+      value: https://keep.lan.e-dani.com
+    - name: AUTH_TYPE
+      value: OAUTH2PROXY
+    - name: KEEP_OAUTH2_PROXY_USER_HEADER
+      value: x-auth-request-email
+    - name: KEEP_OAUTH2_PROXY_ROLE_HEADER
+      value: x-auth-request-groups
+    - name: PUSHER_DISABLED
+      value: "true"
+    # Los defaults del chart son de desarrollo.
+    - name: ENV
+      value: production
+    - name: NODE_ENV
+      value: production
+    - name: VERCEL
+      value: "1"
+    - name: HOSTNAME
+      value: 0.0.0.0
+    - name: FRIGADE_DISABLED
+      value: "true"
+
+  # NEXTAUTH_SECRET: frontend.env sólo admite valores literales (el template no
+  # soporta secretKeyRef), así que entra por aquí.
+  envFromSecrets:
+    - name: keepsvc-frontend-auth
+
+  image:
+    repository: us-central1-docker.pkg.dev/keephq/keep/keep-ui
+    pullPolicy: IfNotPresent
+
+  nodeSelector:
+    node-pool: ks5-nvme
+
+  resources:
+    requests:
+      cpu: 50m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi

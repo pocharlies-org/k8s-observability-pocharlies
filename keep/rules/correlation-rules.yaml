@@ -1,0 +1,449 @@
+# Reglas de correlación de Keep: alertas -> incidentes.
+#
+# ESTE FICHERO ES EL CRITERIO DE NOTIFICACIÓN DEL CLÚSTER.
+#
+# Los workflows notifican sobre incidentes, no sobre alertas (keep/values.yaml).
+# Una alerta que no encaje en ninguna regla queda registrada en Keep y CALLADA.
+# Es el sentido inverso al árbol de rutas anterior, donde el default era descartar
+# y había que acordarse de listar lo que querías ver: aquí el default es registrar,
+# y una regla es lo que convierte un patrón en algo que suena.
+#
+# Tres capas:
+#
+#   aguda      -> regla de dominio -> incidente -> Telegram
+#   crónica    -> chronic-debt     -> UN incidente permanente, avisa una vez
+#   sin regla  -> sólo registro auditable en Keep
+#
+# ---------------------------------------------------------------------------
+# INVARIANTE 1 — la exclusión del safety-net delega, no silencia
+#
+# `critical-safety-net` recoge cualquier crítica que NO caiga en una regla de
+# dominio, para que ninguna pueda quedarse muda. Su lista de exclusión existe
+# para evitar incidentes duplicados, así que:
+#
+#     todo prefijo o nombre excluido del safety-net TIENE que tener su
+#     propia regla más abajo.
+#
+# Si excluyes algo sin darle regla, lo has silenciado. Si le das regla y olvidas
+# excluirlo, se notifica dos veces — molesto, no peligroso: ése es el lado
+# correcto por el que fallar. Keep no tiene prioridades entre reglas.
+#
+# INVARIANTE 2 — ninguna regla de dominio puede contener una crónica
+#
+# La aplica el script, no la vista: `apply-rules.py` añade automáticamente
+# `&& !(name in <chronic>)` al celQuery de toda regla que no lleve
+# `exemptFromChronic: true`. Por eso la lista `chronic:` aparece UNA vez y las
+# expresiones de abajo se leen sin ruido. No repitas la lista a mano.
+#
+# Verificar tras cada cambio:
+#     scripts/verify-notification-coverage.py
+# falla si alguna serie que notifica hoy se quedaría muda.
+# ---------------------------------------------------------------------------
+#
+# Las reglas no se pueden provisionar con el chart (sólo providers, workflows,
+# dashboards y mapping rules), así que las aplica keep/rules/apply-job.yaml
+# contra POST/PUT /rules. El motor evalúa `celQuery` con celpy
+# (rulesengine.py:97); `sqlQuery` se almacena pero no se usa para hacer match —
+# la UI lo regenera al editar, por eso aquí va una traducción mínima.
+#
+# CEL disponible: name, severity (el normalizado por Keep), labels.<etiqueta>
+# (el valor crudo de Prometheus), annotations.<x>, source.
+#
+# OJO con severity: Keep manda a `info` toda severidad fuera de su
+# SEVERITIES_MAP, así que `page` y `warn` llegan como info. Por eso la cobertura
+# la da el NOMBRE y no la severidad — y por eso las 9 alertas `page`, que hoy no
+# llegan a Telegram, empiezan a hacerlo.
+
+# ===========================================================================
+# DEUDA CONOCIDA
+# ===========================================================================
+# Medido sobre vmsingle con:
+#   sum by (alertname) (count_over_time(ALERTS{alertstate="firing"}[7d]))
+# El porcentaje es del tiempo que llevaba disparada en los últimos 7 días
+# (>100% = varias instancias simultáneas). Umbral de corte: 20%.
+#
+# Estas NO son incidentes: son un baseline roto. Y meterlas en una regla de
+# dominio no sería sólo ruidoso, sería peligroso: con `resolveOn: all_resolved`,
+# un miembro permanentemente disparado hace que el incidente nunca se resuelva,
+# y como notificamos con `on: [create]`, cualquier alerta AGUDA que encaje en esa
+# misma regla se añadiría al incidente ya abierto sin avisar. Un
+# RabbitmqClusterPartition real entraría mudo en el incidente eterno de
+# RabbitmqDlqGrowth. Los crónicos son una píldora envenenada para su regla.
+#
+# Cómo se sale de aquí: se arregla la causa y se borra el nombre de esta lista.
+# Eso re-arma su regla de dominio automáticamente. La lista debería encoger; si
+# crece, ésa es la señal.
+#
+# Volver a medir con: scripts/alert_routing.py chronic
+chronic:
+  - InstagramLoraPrivateArtifactsStale   # 186% — varias instancias, siempre
+  - TooManyLogs                          # 139%
+  - RabbitmqDlqGrowth                    # 100% — los 7 días completos
+  - SynapseOutboxExhausted               #  90%
+  - SynapseOutboxOldestStale             #  90%
+  - SynapseScheduledWorkflowStalled      #  76%
+  - RequestErrorsToAPI                   #  62%
+  - RabbitmqFunctionalQueueNoConsumer    #  61%
+  - BlackboxProbeDown                    #  46%
+  - TargetDown                           #  46%
+  - NodeMemoryHighUtilization            #  45%
+  - ScrapePoolHasNoTargets               #  37%
+  - LibrePlayQueueFailures               #  31%
+  - AlertingRulesError                   #  31%
+  - TooManyScrapeErrors                  #  31%
+
+rules:
+  # =========================================================================
+  # DEUDA — un incidente permanente, a propósito
+  # =========================================================================
+  # `celQuery: chronic` es una palabra reservada que el script expande a la lista
+  # de arriba. `exemptFromChronic` evita que se autoexcluya a sí misma.
+  #
+  # Pendiente: un digest diario en vez de depender de mirar el incidente. Hace
+  # falta un workflow `type: interval` que consulte VictoriaMetrics, y no he
+  # verificado los nombres de parámetros de ese provider — prefiero no
+  # inventarlos que dejar un workflow que falle en silencio.
+  - ruleName: chronic-debt
+    celQuery: chronic
+    exemptFromChronic: true
+    sqlQuery:
+      sql: "((name in (:name_1, :name_2)))"
+      params:
+        name_1: RabbitmqDlqGrowth
+        name_2: SynapseOutboxExhausted
+    timeframeInSeconds: 3600
+    timeUnit: minutes
+    groupingCriteria: []
+    createOn: any
+    resolveOn: all_resolved
+    incidentPrefix: DEBT
+    incidentNameTemplate: "Deuda de alertas conocida"
+    groupDescription: >-
+      Alertas crónicas (>20% de los últimos 7 días disparadas). Un incidente
+      permanentemente abierto a propósito: no es una emergencia, es la lista de
+      lo que hay que arreglar para que el resto vuelva a significar algo.
+
+  # =========================================================================
+  # RED DE SEGURIDAD
+  # =========================================================================
+  - ruleName: critical-safety-net
+    celQuery: >-
+      (severity == "critical" || labels.severity == "page") && !(
+        name.startsWith("LibrePlay") || name.startsWith("TrackingIngestion") ||
+        name == "TrackingPage404Spike" || name.startsWith("Labels") ||
+        name.startsWith("LabelGeneration") || name.startsWith("MCP") ||
+        name.startsWith("OVHPVCHub") || name.startsWith("SiiMonthlyReport") ||
+        name.startsWith("CronAlertAnalyzer") || name.startsWith("Synapse") ||
+        name.startsWith("Rabbitmq") || name.startsWith("Keep") ||
+        name.startsWith("Alertmanager") || name.startsWith("SharedValkey") ||
+        name.startsWith("SharedDatastore") || name.startsWith("KubeNode") ||
+        name.startsWith("Node") ||
+        name in ["KubernetesDeploymentUnavailable", "KubeDeploymentReplicasMismatch",
+                 "KubePodNotReady", "KubeContainerWaiting",
+                 "KubeStatefulSetReplicasMismatch", "KubernetesStatefulSetUnavailable",
+                 "KubeletInstanceUnreachable", "TargetDown", "BlackboxProbeDown",
+                 "ScrapePoolHasNoTargets", "TooManyScrapeErrors", "AlertingRulesError",
+                 "TooManyLogs"]
+      )
+    sqlQuery:
+      sql: "((severity = :severity_1))"
+      params:
+        severity_1: critical
+    timeframeInSeconds: 600
+    timeUnit: minutes
+    groupingCriteria: [namespace]
+    createOn: any
+    resolveOn: all_resolved
+    incidentPrefix: CRIT
+    incidentNameTemplate: "Crítico en {{ namespace }}"
+    groupDescription: >-
+      Cualquier crítica sin regla de dominio propia: UPS, AffiliateApp,
+      Conversation*, WeightResolver, LlmResident, DiskRuns, SeriesLimit… Existe
+      para que añadir una alerta nueva al clúster no obligue a acordarse de nada.
+
+  # =========================================================================
+  # KUBERNETES / INFRA
+  # =========================================================================
+  # El patrón que está pasando ahora mismo: control-nexus, comfyui y ltx tienen a
+  # la vez KubernetesDeploymentUnavailable (critical), KubeDeploymentReplicas-
+  # Mismatch, KubePodNotReady y KubeContainerWaiting. 4 síntomas de un deployment
+  # que no levanta: 1 incidente por namespace, no 4 mensajes.
+  - ruleName: deployment-degraded
+    celQuery: >-
+      name in ["KubernetesDeploymentUnavailable", "KubeDeploymentReplicasMismatch",
+               "KubePodNotReady", "KubeContainerWaiting",
+               "KubeStatefulSetReplicasMismatch", "KubernetesStatefulSetUnavailable",
+               "KubePdbNotEnoughHealthyPods"]
+    sqlQuery:
+      sql: "((name in (:name_1, :name_2, :name_3, :name_4)))"
+      params:
+        name_1: KubernetesDeploymentUnavailable
+        name_2: KubeDeploymentReplicasMismatch
+        name_3: KubePodNotReady
+        name_4: KubeContainerWaiting
+    timeframeInSeconds: 900
+    timeUnit: minutes
+    groupingCriteria: [namespace]
+    createOn: any
+    resolveOn: all_resolved
+    incidentPrefix: DEPL
+    incidentNameTemplate: "Deployment degradado en {{ namespace }}"
+    groupDescription: Síntomas de workload que no arranca, por namespace.
+
+  # SIN agrupar por nodo, y no por gusto: estas alertas no traen etiqueta `node`.
+  # Sólo hay `instance` (IP:puerto del pod de node-exporter) y `pod`, y las dos
+  # cambian al recrearse el pod — agrupar por ellas crearía un incidente nuevo en
+  # cada reinicio del exporter. El incidente sigue listando las alertas
+  # afectadas: no se pierde información, sólo no cabe en el título. Para agrupar
+  # por nodo de verdad hay que añadir una etiqueta `node` en el relabeling de
+  # vmagent para el job node-exporter.
+  - ruleName: node-degraded
+    celQuery: >-
+      name.startsWith("KubeNode") || name.startsWith("Node") ||
+      name == "KubeletInstanceUnreachable"
+    sqlQuery:
+      sql: "((name like :name_1) or (name like :name_2))"
+      params:
+        name_1: KubeNode%
+        name_2: Node%
+    timeframeInSeconds: 1800
+    timeUnit: minutes
+    groupingCriteria: []
+    createOn: any
+    resolveOn: all_resolved
+    incidentPrefix: NODE
+    incidentNameTemplate: "Nodos degradados"
+    groupDescription: Presión de recursos y disponibilidad de kubelet.
+
+  # Los 6 miembros de esta regla están HOY en la lista de crónicas, así que el
+  # script la deja sin nada que hacer match. No la borro: es el estado objetivo.
+  # Cuando se arregle el scraping y salgan de `chronic`, la regla se re-arma sola
+  # y estos fallos vuelven a ser incidentes de verdad.
+  - ruleName: monitoring-degraded
+    celQuery: >-
+      name in ["TargetDown", "BlackboxProbeDown", "ScrapePoolHasNoTargets",
+               "TooManyScrapeErrors", "AlertingRulesError", "TooManyLogs",
+               "RecordingRulesNoData", "SeriesLimitHourReached",
+               "SeriesLimitDayReached", "RemoteWriteDroppingData",
+               "PersistentQueueIsDroppingData"]
+    sqlQuery:
+      sql: "((name in (:name_1, :name_2, :name_3)))"
+      params:
+        name_1: TargetDown
+        name_2: BlackboxProbeDown
+        name_3: ScrapePoolHasNoTargets
+    timeframeInSeconds: 1800
+    timeUnit: minutes
+    groupingCriteria: []
+    createOn: any
+    resolveOn: all_resolved
+    incidentPrefix: MON
+    incidentNameTemplate: "Monitorización degradada"
+    groupDescription: >-
+      Scrape, probes, reglas y remote-write. Se trata aparte porque invalida la
+      confianza en todo lo demás.
+
+  # Salud del propio hub. Aparte de monitoring-degraded porque la respuesta es
+  # distinta: si esto salta, el resto de Keep no es de fiar. Contrastar con lo que
+  # haya llegado por la lane directa de Telegram, que no depende de Keep
+  # (manifests/alertmanager-config.yaml).
+  - ruleName: keep-hub-degraded
+    celQuery: 'name.startsWith("Keep") || name.startsWith("Alertmanager")'
+    sqlQuery:
+      sql: "((name like :name_1))"
+      params:
+        name_1: Keep%
+    timeframeInSeconds: 600
+    timeUnit: minutes
+    groupingCriteria: []
+    createOn: any
+    resolveOn: all_resolved
+    incidentPrefix: HUB
+    incidentNameTemplate: "Hub de alertas degradado"
+    groupDescription: Keep o Alertmanager en mal estado.
+
+  # =========================================================================
+  # SYNAPSE
+  # =========================================================================
+  # Dos reglas y no una: el flujo de datos atascado y los servicios caídos se
+  # arreglan de formas distintas, así que merecen incidentes distintos. Nota que
+  # 4 de los miembros del pipeline (Outbox x2, ScheduledWorkflowStalled,
+  # RabbitmqDlqGrowth, RabbitmqFunctionalQueueNoConsumer) son crónicos hoy: esta
+  # regla queda casi vacía hasta que se arreglen, que es justo lo correcto —
+  # antes se habría comido cualquier fallo agudo del bus.
+  - ruleName: synapse-pipeline
+    celQuery: >-
+      name.startsWith("SynapseOutbox") || name.startsWith("SynapseJanitor") ||
+      name.startsWith("Rabbitmq") || name == "SynapseDLQBacklog" ||
+      name == "SynapseScheduledWorkflowStalled" ||
+      name == "SynapsePollFaultedBacklog" || name == "SynapseOrphanIndexEntries"
+    sqlQuery:
+      sql: "((name like :name_1) or (name like :name_2))"
+      params:
+        name_1: SynapseOutbox%
+        name_2: Rabbitmq%
+    timeframeInSeconds: 1800
+    timeUnit: minutes
+    groupingCriteria: []
+    createOn: any
+    resolveOn: all_resolved
+    incidentPrefix: SYNP
+    incidentNameTemplate: "Pipeline de Synapse degradado"
+    groupDescription: Outbox, DLQ y colas del bus.
+
+  - ruleName: synapse-control-plane
+    celQuery: >-
+      name.startsWith("Synapse") && !(
+        name.startsWith("SynapseOutbox") || name.startsWith("SynapseJanitor") ||
+        name in ["SynapseDLQBacklog", "SynapseScheduledWorkflowStalled",
+                 "SynapsePollFaultedBacklog", "SynapseOrphanIndexEntries"]
+      )
+    sqlQuery:
+      sql: "((name like :name_1))"
+      params:
+        name_1: Synapse%
+    timeframeInSeconds: 900
+    timeUnit: minutes
+    groupingCriteria: []
+    createOn: any
+    resolveOn: all_resolved
+    incidentPrefix: SYNC
+    incidentNameTemplate: "Plano de control de Synapse degradado"
+    groupDescription: >-
+      SynapseDown, CoreAbsent, DispatcherNotPublishing, AdapterTargetDown,
+      Reconcile*, OperatorRestarts. Servicios, no flujo de datos.
+
+  # =========================================================================
+  # SUBSISTEMAS DE APLICACIÓN
+  # =========================================================================
+  # Todos éstos notifican HOY (por el webhook de Synapse o su propia lane de
+  # Telegram), así que sin regla el cutover sería un downgrade para ellos. Muchos
+  # emiten `warn` o `page`, que Keep ingiere como `info`: por eso la cobertura la
+  # da el nombre y no la severidad.
+  - ruleName: libreplay-degraded
+    celQuery: 'name.startsWith("LibrePlay")'
+    sqlQuery:
+      sql: "((name like :name_1))"
+      params:
+        name_1: LibrePlay%
+    timeframeInSeconds: 1800
+    timeUnit: minutes
+    groupingCriteria: []
+    createOn: any
+    resolveOn: all_resolved
+    incidentPrefix: LPLY
+    incidentNameTemplate: "LibrePlay degradado"
+    groupDescription: >-
+      Disponibilidad, colas, SLO y sintéticos. 7 de sus 14 series emiten
+      `severity: warn`.
+
+  - ruleName: tracking-ingestion
+    celQuery: 'name.startsWith("TrackingIngestion") || name == "TrackingPage404Spike"'
+    sqlQuery:
+      sql: "((name like :name_1))"
+      params:
+        name_1: TrackingIngestion%
+    timeframeInSeconds: 1800
+    timeUnit: minutes
+    groupingCriteria: []
+    createOn: any
+    resolveOn: all_resolved
+    incidentPrefix: TRCK
+    incidentNameTemplate: "Ingesta de tracking degradada"
+    groupDescription: >-
+      Backlog, eventos malos, NATS y silencio. 5 series `warn`, y
+      TrackingIngestionNatsDown es `page`.
+
+  - ruleName: labels-pipeline
+    celQuery: 'name.startsWith("Labels") || name.startsWith("LabelGeneration")'
+    sqlQuery:
+      sql: "((name like :name_1))"
+      params:
+        name_1: Labels%
+    timeframeInSeconds: 1800
+    timeUnit: minutes
+    groupingCriteria: []
+    createOn: any
+    resolveOn: all_resolved
+    incidentPrefix: LBL
+    incidentNameTemplate: "Pipeline de etiquetas degradado"
+    groupDescription: >-
+      Valkey de labels, generación y deep-monitor. Aquí viven 5 de las 9 alertas
+      `page` del clúster, que hoy NO llegan a Telegram.
+
+  - ruleName: mcp-degraded
+    celQuery: 'name.startsWith("MCP")'
+    sqlQuery:
+      sql: "((name like :name_1))"
+      params:
+        name_1: MCP%
+    timeframeInSeconds: 900
+    timeUnit: minutes
+    groupingCriteria: []
+    createOn: any
+    resolveOn: all_resolved
+    incidentPrefix: MCP
+    incidentNameTemplate: "Backends MCP degradados"
+    groupDescription: Crashloops, OOM y gateway de los backends MCP.
+
+  - ruleName: valkey-datastore
+    celQuery: 'name.startsWith("SharedValkey") || name.startsWith("SharedDatastore")'
+    sqlQuery:
+      sql: "((name like :name_1))"
+      params:
+        name_1: Shared%
+    timeframeInSeconds: 900
+    timeUnit: minutes
+    groupingCriteria: []
+    createOn: any
+    resolveOn: all_resolved
+    incidentPrefix: DSTR
+    incidentNameTemplate: "Datastore compartido degradado"
+    groupDescription: Valkey compartido y co-locación del datastore.
+
+  - ruleName: ovh-pvc-hub
+    celQuery: 'name.startsWith("OVHPVCHub")'
+    sqlQuery:
+      sql: "((name like :name_1))"
+      params:
+        name_1: OVHPVCHub%
+    timeframeInSeconds: 3600
+    timeUnit: minutes
+    groupingCriteria: []
+    createOn: any
+    resolveOn: all_resolved
+    incidentPrefix: OVH
+    incidentNameTemplate: "OVH PVC hub desincronizado"
+    groupDescription: Sincronización y frescura del hub de PVCs de OVH.
+
+  - ruleName: sii-report
+    celQuery: 'name.startsWith("SiiMonthlyReport")'
+    sqlQuery:
+      sql: "((name like :name_1))"
+      params:
+        name_1: SiiMonthlyReport%
+    timeframeInSeconds: 3600
+    timeUnit: minutes
+    groupingCriteria: []
+    createOn: any
+    resolveOn: all_resolved
+    incidentPrefix: SII
+    incidentNameTemplate: "Informe mensual SII fallido"
+    groupDescription: Generación del informe mensual del SII.
+
+  - ruleName: cron-analyzer-health
+    celQuery: 'name.startsWith("CronAlertAnalyzer")'
+    sqlQuery:
+      sql: "((name like :name_1))"
+      params:
+        name_1: CronAlertAnalyzer%
+    timeframeInSeconds: 1800
+    timeUnit: minutes
+    groupingCriteria: []
+    createOn: any
+    resolveOn: all_resolved
+    incidentPrefix: CRON
+    incidentNameTemplate: "Analizador de cronjobs degradado"
+    groupDescription: >-
+      Salud del cron-alert-analyzer, que sigue recibiendo K8sCronJobFailed por el
+      workflow cron-analyzer-lane.

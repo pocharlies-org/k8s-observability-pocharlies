@@ -5,8 +5,11 @@ resources:
   - apps/loki.yaml
   - apps/blackbox-exporter.yaml
   - apps/alloy.yaml
+  - apps/keep.yaml
   - manifests/ingressroutes.yaml
   - manifests/alertmanager-secrets.yaml
+  - manifests/keep-secrets.yaml
+  - keep/rules/apply-job.yaml
   - manifests/alertmanager-ingest.yaml
   - manifests/alertmanager-config.yaml
   - manifests/probes.yaml
@@ -18,3 +21,17 @@ resources:
   - manifests/dgx-gpu-mem-exporter.yaml
   - manifests/kyverno-policy-exceptions.yaml
   - manifests/dgx-cluster-health-watcher.yaml
+
+# Las reglas de correlación se montan como fichero en el Job que las aplica, en
+# vez de duplicarse inline: keep/rules/correlation-rules.yaml sigue siendo la
+# única copia, legible y comentada.
+configMapGenerator:
+  - name: keepsvc-correlation-rules
+    namespace: monitoring
+    files:
+      - correlation-rules.yaml=keep/rules/correlation-rules.yaml
+generatorOptions:
+  # El Job referencia el nombre literal, sin sufijo de hash. Se recrea en cada
+  # sync (hook PostSync + BeforeHookCreation), así que siempre lee la versión
+  # actual del ConfigMap.
+  disableNameSuffixHash: true
