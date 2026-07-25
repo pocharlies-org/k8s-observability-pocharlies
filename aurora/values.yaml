@@ -1,0 +1,139 @@
+# Aurora — investigación de incidentes disparada por Keep.
+#
+# Keep correla alertas en incidentes y le pasa el incidente a Aurora, que lanza
+# agentes read-only sobre el clúster y produce un RCA. Aurora NO recibe alertas
+# sueltas: eso multiplicaría investigaciones de la misma causa.
+#
+# Seam verificado en el código de Aurora (no hace falta adaptador):
+# POST /grafana/alerts/webhook/<user_id> consume forma casi-nativa de Alertmanager
+# — alerts[], status firing|resolved, commonLabels, commonAnnotations — hace
+# fingerprint por alerta, crea incidente y dispara RCA en firing
+# (server/routes/grafana/grafana_routes.py:99 y tasks.py).
+#
+# Postura: SOLO LECTURA. Sin PRs automáticos, sin ejecutores de acción. Alineado
+# con que los CronJobs de autoheal de Synapse sigan suspendidos.
+
+# El chart compone nombres como <release>-<chart>-<componente>; sin esto los
+# Services serían `aurora-aurora-oss-server`. Importa porque el workflow de Keep
+# apunta a ese nombre por DNS.
+fullnameOverride: aurora
+
+# ---------------------------------------------------------------------------
+# Infra compartida en vez de la del chart. Ahorra ~4GB y evita duplicar bases de
+# datos que ya tienen backup y monitorización resueltos.
+# ---------------------------------------------------------------------------
+services:
+  postgres:
+    enabled: false   # -> postgres-shared (CNPG, 2 instancias, backup a MinIO)
+  minio:
+    enabled: false   # -> minio-s3.minio, bucket `aurora` con usuario propio
+  vault:
+    enabled: false   # -> vault.vault, mount KV `aurora` con política acotada
+  memgraph:
+    enabled: false   # el propio chart lo marca opcional
+  redis:
+    enabled: true    # propio: Celery contra valkey-sentinel es frágil
+  weaviate:
+    enabled: true    # lo necesita incident_feedback (memoria de incidentes)
+
+config:
+  AURORA_ENV: production
+
+  # --- Postgres compartido ---
+  POSTGRES_HOST: postgres-shared-rw.databases.svc.cluster.local
+  POSTGRES_PORT: "5432"
+  POSTGRES_DB: aurora
+  POSTGRES_SSLMODE: prefer
+
+  # --- S3 en MinIO ---
+  STORAGE_BUCKET: aurora
+  STORAGE_ENDPOINT_URL: http://minio-s3.minio.svc.cluster.local:9000
+  STORAGE_USE_SSL: "false"
+  STORAGE_VERIFY_SSL: "false"
+
+  # --- Vault: mount propio, no el compartido ---
+  # `aurora` es un mount KV v2 distinto de `secret`, y el token de Aurora está
+  # acotado por política a `aurora/*`: no puede leer los secretos del resto del
+  # clúster ni con el token en la mano.
+  SECRETS_BACKEND: vault
+  VAULT_ADDR: http://vault.vault.svc.cluster.local:8200
+  VAULT_KV_MOUNT: aurora
+  VAULT_KV_BASE_PATH: users
+
+  # --- URLs públicas ---
+  FRONTEND_URL: https://aurora.lan.e-dani.com
+  NEXT_PUBLIC_BACKEND_URL: https://aurora-api.lan.e-dani.com
+  NEXT_PUBLIC_WEBSOCKET_URL: wss://aurora-api.lan.e-dani.com
+
+  # ------------------------------------------------------------------------
+  # LLM: todo local en el DGX vía LiteLLM
+  #
+  # `direct` + un id explícito `bedrock/<alias>` es la vía documentada para el
+  # gateway mode. Verificado en bedrock_provider.py:106: con BEDROCK_BASE_URL
+  # presente construye un ChatOpenAI contra esa URL y pasa el sufijo del id tal
+  # cual, así que `bedrock/dense` llega a LiteLLM como el alias `dense`.
+  # `openai` NO sirve: openai_provider.py sólo lee OPENAI_API_KEY, sin base_url.
+  # ------------------------------------------------------------------------
+  LLM_PROVIDER_MODE: direct
+  BEDROCK_BASE_URL: http://litellm.litellm.svc.cluster.local:4000/v1
+  MAIN_MODEL: bedrock/dense              # Qwen3.6-27B NVFP4 dense
+  SUMMARIZATION_MODEL: bedrock/tooling   # trabajo mecánico al modelo rápido
+  ENRICHMENT_MODEL: bedrock/tooling
+  AGENT_RECURSION_LIMIT: "240"
+
+  # Un agente primero. El orquestador multi-agente se activa cuando los RCA de
+  # un solo agente demuestren ser buenos: con modelo local, el riesgo es que el
+  # tool-calling se atasque en cadenas largas y el síntoma sea una investigación
+  # pobre, no un error — sólo se ve leyendo los RCA.
+  ORCHESTRATOR_ENABLED: "false"
+  VISUALIZATION_ENABLED: "false"
+  RCA_OPTIMIZE_COSTS: "false"
+
+  # ------------------------------------------------------------------------
+  # Guardarraíles: activos, con el juez en el modelo rápido.
+  # OJO: el juez LLM falla CERRADO. Si el modelo local no devuelve la estructura
+  # esperada, bloquea investigaciones legítimas. Si eso pasa, dejar
+  # GUARDRAILS_SIGMA_ENABLED (reglas SigmaHQ, sin LLM) y apagar el juez.
+  # ------------------------------------------------------------------------
+  GUARDRAILS_ENABLED: "true"
+  GUARDRAILS_SIGMA_ENABLED: "true"
+  GUARDRAILS_LLM_MODEL: bedrock/tooling
+
+  # --- Aislamiento de los comandos de los agentes ---
+  # Crea el namespace `untrusted`, RBAC y una NetworkPolicy que corta el acceso
+  # de los pods de terminal a los servicios del clúster (Vault, Postgres, …).
+  ENABLE_POD_ISOLATION: "true"
+  TERMINAL_NAMESPACE: untrusted
+  TERMINAL_POD_TTL: "3600"
+  USE_UNTRUSTED_NODES: "false"
+
+  # --- Sin escritura ---
+  NEXT_PUBLIC_ENABLE_INCIDENT_PREVENTION: "false"   # sin PRs automáticos
+
+  # --- Concurrencia ---
+  GUNICORN_WORKERS: "2"
+  GUNICORN_THREADS: "4"
+  CELERY_CONCURRENCY: "2"
+  DB_POOL_MIN: "1"
+  DB_POOL_MAX: "10"
+  RATE_LIMITING_ENABLED: "false"
+
+# Todos los secretos desde ESO; ninguno en git. Ver
+# manifests/aurora-secrets.yaml.
+secrets:
+  db:
+    existingSecret: aurorasvc-db
+  backend:
+    existingSecret: aurorasvc-backend
+  app:
+    existingSecret: aurorasvc-app
+  llm:
+    existingSecret: aurorasvc-llm
+
+# Ingress propio (IngressRoute + sso-chain), como el resto de UIs de
+# observabilidad. Ver manifests/ingressroutes.yaml.
+ingress:
+  enabled: false
+
+nodeSelector:
+  node-pool: ks5-nvme

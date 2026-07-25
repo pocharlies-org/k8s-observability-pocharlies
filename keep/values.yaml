@@ -137,6 +137,41 @@ backend:
                   {{ incident.alerts_count }} alertas · {{ incident.services }}
                   https://keep.lan.e-dani.com/incidents/{{ incident.id }}
 
+      # Aurora investiga INCIDENTES, no alertas: mandarle cada alerta haría que
+      # investigase 3 veces la misma causa. El payload va con forma de
+      # Alertmanager porque su endpoint la consume nativamente
+      # (grafana_routes.py:99 lee alerts[], status, commonLabels).
+      #
+      # El user_id sale de un ExternalSecret (aurorasvc-user-id) y no está
+      # hardcodeado: no existe hasta que se registra el primer usuario en la UI
+      # de Aurora. Hasta entonces este workflow falla, y es el fallo correcto —
+      # ruidoso y localizado, no un silencio.
+      - id: aurora-investigate
+        name: Investigación en Aurora
+        description: >-
+          Manda cada incidente nuevo a Aurora, que lanza agentes read-only sobre
+          el clúster y produce un RCA.
+        triggers:
+          - type: incident
+            "on": [create]
+        actions:
+          - name: dispatch-rca
+            provider:
+              type: webhook
+              config: "{{ providers.aurora }}"
+              with:
+                method: POST
+                body:
+                  status: firing
+                  title: "{{ incident.user_generated_name or incident.ai_generated_name }}"
+                  ruleName: "{{ incident.rule_name }}"
+                  commonLabels:
+                    severity: "{{ incident.severity }}"
+                    incident_id: "{{ incident.id }}"
+                  commonAnnotations:
+                    summary: "{{ incident.user_summary or incident.generated_summary }}"
+                    keep_url: "https://keep.lan.e-dani.com/incidents/{{ incident.id }}"
+
       # Guardián de invariante: hace que una severidad fuera del vocabulario
       # canónico sea CONSULTABLE en vez de invisible. Enriquece y punto — no
       # notifica, porque con el reenvío cada minuto un aviso por alerta sería

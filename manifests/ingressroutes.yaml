@@ -137,3 +137,74 @@ spec:
           port: 8080
   tls:
     secretName: wildcard-lan-tls
+---
+# Certificado propio del namespace. El `wildcard-lan-tls` que usan las rutas de
+# monitoring está copiado a mano en 8 namespaces (su Certificate sólo existe en
+# traefik-lan), así que para uno nuevo es más limpio pedir el suyo: es el patrón
+# que ya siguen jarvis-tls y ha-dashboard-tls. Traefik exige que el secreto TLS
+# esté en el mismo namespace que el IngressRoute.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: aurora-tls
+  namespace: aurora
+spec:
+  secretName: aurora-tls
+  dnsNames:
+    - aurora.lan.e-dani.com
+    - aurora-api.lan.e-dani.com
+  issuerRef:
+    name: letsencrypt-prod
+    kind: ClusterIssuer
+    group: cert-manager.io
+  usages:
+    - digital signature
+    - key encipherment
+---
+# Aurora — UI de investigación de incidentes. Mismo patrón: CIDRs de confianza y
+# SSO, ambos detrás de sso-chain (la UI muestra output de kubectl del clúster:
+# no va sin autenticar ni desde la LAN).
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: aurora
+  namespace: aurora
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - kind: Rule
+      match: Host(`aurora.lan.e-dani.com`)
+      priority: 100
+      middlewares:
+        - name: sso-chain
+          namespace: keycloak
+      services:
+        - name: aurora-frontend
+          port: 3000
+  tls:
+    secretName: aurora-tls
+---
+# API de Aurora. El navegador la llama directamente
+# (NEXT_PUBLIC_BACKEND_URL), así que necesita la misma sesión SSO.
+# Keep NO pasa por aquí: usa el Service in-cluster.
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: aurora-api
+  namespace: aurora
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - kind: Rule
+      match: Host(`aurora-api.lan.e-dani.com`)
+      priority: 100
+      middlewares:
+        - name: sso-chain
+          namespace: keycloak
+      services:
+        - name: aurora-server
+          port: 5080
+  tls:
+    secretName: aurora-tls
