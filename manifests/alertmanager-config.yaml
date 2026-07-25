@@ -35,29 +35,35 @@ spec:
     # victoria-metrics/values.yaml) esto captura cualquier namespace.
     receiver: keep
     # ---------------------------------------------------------------------
-    # PASS-THROUGH DELIBERADO: Alertmanager aquí es transporte, no criterio.
+    # TRANSPORTE, NO CRITERIO — pero agrupando, que es sólo batching
     #
-    # `group_by: ['...']` es la sintaxis especial de Alertmanager para "agrupa
-    # por TODAS las etiquetas", o sea: una serie por combinación única de
-    # labels, sin colapsar nada. Cualquier group_by más estrecho tomaría por
-    # Keep la decisión de qué eventos son "el mismo", que es precisamente la
-    # decisión que queremos que tome Keep (dedup + correlación), donde está
-    # versionada y auditable.
+    # Aquí hubo primero un `group_by: ['...']` (agrupa por todas las etiquetas)
+    # con la idea de "no decidir por Keep qué eventos son el mismo". Era una
+    # premisa falsa, y medida en producción salió caro:
     #
-    # Los intervalos cortos son los que recomienda la propia doc de Keep para
-    # esta integración. Es un firehose a propósito: mantiene `lastReceived`
-    # fresco al minuto, lo que hace que "¿esto sigue disparado?" sea una
-    # pregunta con respuesta fiable en el sistema de récord.
+    # El provider de Prometheus de Keep hace `alerts = event.get("alerts",
+    # [event])` y recorre el array creando un AlertDto por alerta
+    # (prometheus_provider.py:182). O sea: el group_by de Alertmanager NO le
+    # esconde ninguna alerta, sólo decide cuántas viajan por POST. Agrupar es
+    # batching, no filtrado.
     #
-    # El reenvío cada minuto NO produce spam porque la notificación se dispara
-    # con `type: incident` / `on: [create]` (keep/values.yaml), no por alerta
-    # recibida. Si alguien añade un workflow con `type: alert` que notifique,
-    # tendrá que poner `only_on_change` o volverá a inundar Telegram.
+    # Con ['...'] eran ~47 POSTs/min, y Keep tarda ~5s por evento evaluando las
+    # 16 reglas de correlación: unos 2 cores permanentemente ocupados en
+    # reprocesar lo mismo. Con este group_by las mismas alertas llegan en una
+    # fracción de las peticiones, y Keep ve exactamente lo mismo.
+    #
+    # repeat_interval no aporta información (Keep deduplica por fingerprint y la
+    # notificación va por `type: incident` / `on: [create]`), pero sí
+    # resiliencia: si Keep se pierde un POST por un reinicio, el reenvío lo
+    # recupera. 15m es el equilibrio.
     # ---------------------------------------------------------------------
-    group_by: ['...']
+    group_by:
+      - alertname
+      - namespace
+      - severity
     group_wait: 15s
     group_interval: 15s
-    repeat_interval: 1m
+    repeat_interval: 15m
     routes:
       # ---------------------------------------------------------------------
       # DEAD-MAN'S SWITCH
@@ -106,6 +112,10 @@ spec:
         - url: http://keep-backend.monitoring.svc.cluster.local:8080/alerts/event/prometheus
           send_resolved: true
           max_alerts: 0
+          # Explícito y holgado: Keep tarda ~5s por evento evaluando las reglas
+          # de correlación, y un batch grande tras un reinicio puede tardar más.
+          # Con el default (10s) esto entregaba contextDeadlineExceeded.
+          timeout: 30s
           http_config:
             basic_auth:
               # Ambos son SecretKeySelector: en el operador de VictoriaMetrics
