@@ -39,7 +39,14 @@ spec:
         - /spec/podManagementPolicy
         - /spec/updateStrategy
         - /spec/revisionHistoryLimit
-        - /spec/volumeClaimTemplates/0/spec/volumeMode
+        # El array entero, no campos suyos uno a uno: el clúster le añade
+        # apiVersion, kind, status, metadata.creationTimestamp y spec.volumeMode.
+        # Y es correcto ignorarlo todo, no un parche: volumeClaimTemplates es
+        # INMUTABLE en un StatefulSet — Kubernetes rechaza cualquier cambio — así
+        # que un drift ahí es permanentemente inaccionable: no se puede
+        # sincronizar ni queriendo. Cambiar el tamaño de un PVC exige recrear el
+        # StatefulSet a mano, no un sync.
+        - /spec/volumeClaimTemplates
 
   syncPolicy:
     automated:
