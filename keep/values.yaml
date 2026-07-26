@@ -90,15 +90,58 @@ backend:
     # keep/rules/correlation-rules.yaml.
     # -------------------------------------------------------------------
     workflows:
+      # ---------------------------------------------------------------------
+      # EL RESUMEN LLM — por qué es un `step` y no el campo nativo de Keep
+      #
+      # `incident.generated_summary` NO se puede llenar en la versión OSS: el
+      # generador vivía en ee/experimental/generative_utils.py, borrado del repo
+      # público en el commit bdc8e52d (2024-11-25), y la tarea que lo invocaba
+      # (`process_summary_generation`) no tiene worker ni pool ARQ. Ni
+      # EE_ENABLED=true lo resucita. Además, los incidentes que crea el motor de
+      # correlación nunca pasan por ahí: create_incident_for_grouping_rule sólo
+      # escribe user_generated_name. Por eso las plantillas anteriores mandaban
+      # una línea vacía.
+      #
+      # Solución: el resumen se genera aquí, con el provider `litellm` nativo de
+      # Keep contra nuestro router local, y se persiste con `enrich_incident`
+      # para que quede consultable en la UI y reutilizable como
+      # {{ incident.llm_summary }}.
+      #
+      # `continue_on_error: true` NO es decorativo: sin él, un fallo del step
+      # (LiteLLM caído, alias rotado por el backend-sync, timeout) aborta el
+      # workflow entero — o sea, NINGUNA notificación. Verificado en
+      # workflow.py:97 / step.py:49. El resumen es un extra; el aviso es el
+      # trabajo. Si el LLM falla, el mensaje sale sin resumen.
+      # ---------------------------------------------------------------------
       - id: notify-incident-critical
         name: Telegram — incidentes críticos
         description: >-
-          Aviso urgente al chat principal. Reemplaza la lane emergency-telegram
-          del VMAlertmanagerConfig.
+          Aviso urgente al chat principal, con resumen del LLM local. Reemplaza
+          la lane emergency-telegram del VMAlertmanagerConfig.
         triggers:
           - type: incident
             "on": [create]
             cel: severity == "critical"
+        steps:
+          - name: llm-summary
+            continue_on_error: true
+            provider:
+              type: litellm
+              config: "{{ providers.llm }}"
+              with:
+                model: router
+                temperature: 0.1
+                max_tokens: 400
+                prompt: |
+                  Eres un SRE veterano. En 2-3 frases y en español, di qué está
+                  pasando y qué mirar primero. No inventes causas: si los datos
+                  no bastan, dilo y señala qué haría falta.
+
+                  Incidente: {{ incident.user_generated_name }}
+                  Severidad: {{ incident.severity }}
+                  Alertas: {{ incident.alerts_count }}
+                  Servicios: {{ incident.services }}
+                  Regla de correlación: {{ incident.rule_name }}
         actions:
           - name: telegram-critical
             provider:
@@ -109,9 +152,12 @@ backend:
                 parse_mode: HTML
                 message: |
                   🔴 <b>{{ incident.user_generated_name or incident.ai_generated_name }}</b>
-                  {{ incident.user_summary or incident.generated_summary }}
+                  {{ steps.llm-summary.results.response }}
                   {{ incident.alerts_count }} alertas · {{ incident.services }}
                   https://keep.lan.e-dani.com/incidents/{{ incident.id }}
+                enrich_incident:
+                  - key: llm_summary
+                    value: "{{ steps.llm-summary.results.response }}"
 
       - id: notify-incident
         name: Telegram — incidentes al tema alertas
@@ -122,6 +168,26 @@ backend:
           - type: incident
             "on": [create]
             cel: severity != "critical"
+        steps:
+          - name: llm-summary
+            continue_on_error: true
+            provider:
+              type: litellm
+              config: "{{ providers.llm }}"
+              with:
+                model: router
+                temperature: 0.1
+                max_tokens: 400
+                prompt: |
+                  Eres un SRE veterano. En 2-3 frases y en español, di qué está
+                  pasando y qué mirar primero. No inventes causas: si los datos
+                  no bastan, dilo y señala qué haría falta.
+
+                  Incidente: {{ incident.user_generated_name }}
+                  Severidad: {{ incident.severity }}
+                  Alertas: {{ incident.alerts_count }}
+                  Servicios: {{ incident.services }}
+                  Regla de correlación: {{ incident.rule_name }}
         actions:
           - name: telegram-incident
             provider:
@@ -133,9 +199,12 @@ backend:
                 parse_mode: HTML
                 message: |
                   ⚠️ <b>{{ incident.user_generated_name or incident.ai_generated_name }}</b>
-                  {{ incident.user_summary or incident.generated_summary }}
+                  {{ steps.llm-summary.results.response }}
                   {{ incident.alerts_count }} alertas · {{ incident.services }}
                   https://keep.lan.e-dani.com/incidents/{{ incident.id }}
+                enrich_incident:
+                  - key: llm_summary
+                    value: "{{ steps.llm-summary.results.response }}"
 
       # Aurora investiga INCIDENTES, no alertas: mandarle cada alerta haría que
       # investigase 3 veces la misma causa. El payload va con forma de
@@ -169,7 +238,7 @@ backend:
                     severity: "{{ incident.severity }}"
                     incident_id: "{{ incident.id }}"
                   commonAnnotations:
-                    summary: "{{ incident.user_summary or incident.generated_summary }}"
+                    summary: "{{ incident.llm_summary or incident.user_generated_name }}"
                     keep_url: "https://keep.lan.e-dani.com/incidents/{{ incident.id }}"
 
       # Guardián de invariante: hace que una severidad fuera del vocabulario
@@ -242,6 +311,20 @@ backend:
       value: "true"
     - name: PROMETHEUS_MULTIPROC_DIR
       value: /tmp/prometheus
+
+    # --- IA nativa de Keep contra el router local ---
+    # El SDK de OpenAI se construye desnudo en el código de Keep
+    # (ai_suggestion_bl.py: `OpenAI()`), así que coge base_url y api_key del
+    # entorno. La propia doc de Keep documenta OPENAI_BASE_URL como "useful for
+    # LiteLLM proxy". El `/v1` es la ruta canónica.
+    #
+    # Esto NO llena incident.generated_summary (es EE y su código fue borrado del
+    # repo público): enciende el chat de incidente y el informe, que hoy estaban
+    # muertos. El resumen de las notificaciones lo hace el step `llm-summary`.
+    - name: OPENAI_BASE_URL
+      value: http://litellm.litellm.svc.cluster.local:4000/v1
+    - name: OPENAI_MODEL_NAME
+      value: router
 
     # --- Identidad: headers del oauth2-proxy compartido ---
     # OJO: si el header de roles llega vacío, Keep devuelve 401 en TODA petición
@@ -333,6 +416,13 @@ frontend:
       value: 0.0.0.0
     - name: FRIGADE_DISABLED
       value: "true"
+    # Mismo razonamiento que en el backend. La key va por envFromSecrets con LAS
+    # DOS grafías (OPENAI_API_KEY y OPEN_AI_API_KEY): copilotkit lee la del guion
+    # bajo, los gates de UI la otra.
+    - name: OPENAI_BASE_URL
+      value: http://litellm.litellm.svc.cluster.local:4000/v1
+    - name: OPENAI_MODEL_NAME
+      value: router
 
   # NEXTAUTH_SECRET: frontend.env sólo admite valores literales (el template no
   # soporta secretKeyRef), así que entra por aquí.
