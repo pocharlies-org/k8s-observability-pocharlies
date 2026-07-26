@@ -1012,6 +1012,39 @@ spec:
               Fallos de entrega del webhook en los últimos 10 minutos. Revisar
               que keepsvc-alertmanager-apikey coincida con KEEP_DEFAULT_API_KEYS
               y que keep-backend responda en /alerts/event/prometheus.
+        - alert: KeepBackendNotSpread
+          # Las 2 réplicas de Keep en el MISMO nodo: si ese nodo cae, el hub de
+          # alertas desaparece entero y sólo sobreviven las 6 alertas del
+          # dead-man's switch.
+          #
+          # Hace falta una alerta porque el reparto NO se puede garantizar aquí.
+          # Sólo 3 nodos llevan node-pool=ks5-nvme y uno está al 99% de CPU, así
+          # que quedan 2 usables; con maxUnavailable=0 (el default de k8s para 2
+          # réplicas) y sin `strategy` expuesto en el chart, una restricción dura
+          # (podAntiAffinity required / topologySpread DoNotSchedule) mete el
+          # rollout en deadlock — ya pasó, 3h parado. La blanda
+          # (whenUnsatisfiable: ScheduleAnyway) nunca bloquea pero es sólo un
+          # peso de scoring, y de hecho perdió: ambas réplicas acabaron en cp-1.
+          #
+          # Así que el reparto es best-effort y esta alerta lo hace VISIBLE. Se
+          # arregla borrando un pod para que se reprograme, o liberando CPU en
+          # ks5-cp-2 para tener 3 nodos usables.
+          #
+          # Expresión validada en vivo con control positivo y negativo.
+          expr: |
+            kube_deployment_spec_replicas{namespace="monitoring", deployment="keep-backend"} >= 2
+              and on()
+            count(count by (node) (kube_pod_info{namespace="monitoring", pod=~"keep-backend-.*"})) < 2
+          for: 15m
+          labels:
+            severity: warning
+            area: availability
+          annotations:
+            summary: "Las réplicas de Keep están en un solo nodo"
+            description: >-
+              El hub de alertas no tiene reparto entre nodos: una caída de ese
+              nodo lo tira entero. Borrar un pod de keep-backend para que el
+              scheduler lo reubique.
         - alert: KeepIngestionSilent
           # Watchdog llega siempre (antes iba al blackhole, ahora entra a Keep).
           # Si Alertmanager deja de notificar del todo, ni fallos ni éxitos se

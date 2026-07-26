@@ -156,3 +156,24 @@ ingress:
 
 nodeSelector:
   node-pool: ks5-nvme
+
+# ---------------------------------------------------------------------------
+# celery-beat: el default del chart (256Mi) lo mata por OOM.
+#
+# Evidencia: exit=137 OOMKilled, 42 reinicios. El log muestra que importa los 25
+# módulos de tareas (GCP, AWS, Dynatrace, PagerDuty, Jenkins, Spinnaker,
+# NewRelic, Sentry, GitHub…) y muere justo al acabar. El chart asume que un
+# scheduler es ligero, pero beat corre LA MISMA IMAGEN que el worker — al que le
+# da 4Gi — y ese grafo de imports no cabe en 256Mi.
+#
+# 1Gi es holgado para lo único que hace (encolar tareas periódicas) sin
+# acercarse al worker, que es quien ejecuta los agentes.
+# ---------------------------------------------------------------------------
+resources:
+  celeryBeat:
+    requests:
+      cpu: 50m
+      memory: 512Mi
+    limits:
+      cpu: 500m
+      memory: 1Gi
