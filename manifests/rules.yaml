@@ -117,6 +117,26 @@ spec:
           annotations:
             summary: "DaemonSet unavailable"
             description: "{{ $labels.namespace }}/{{ $labels.daemonset }} has nodes without a ready daemon pod."
+        - alert: Dgx2GpuMemoryWarning
+          expr: dgx_gpu_memory_used_bytes{node="gx10-ec3d",index="0"} >= 107374182400
+          for: 0m
+          labels:
+            severity: warning
+            area: gpu
+            workload_class: gpu-hybrid
+          annotations:
+            summary: "DGX2 GPU memory reached the 100 GiB warning threshold"
+            description: "DGX2 is using {{ $value | humanize1024 }}B of unified GPU memory. The hybrid GPU arbiter cutoff is 105 GiB."
+        - alert: Dgx2GpuMemoryCutoff
+          expr: dgx_gpu_memory_used_bytes{node="gx10-ec3d",index="0"} >= 112742891520
+          for: 0m
+          labels:
+            severity: critical
+            area: gpu
+            workload_class: gpu-hybrid
+          annotations:
+            summary: "DGX2 GPU memory reached the 105 GiB cutoff"
+            description: "DGX2 is using {{ $value | humanize1024 }}B of unified GPU memory. The arbiter must abort the active on-demand workload and keep or restore dense."
         - alert: KubeHpaMaxedOut
           expr: |
             (

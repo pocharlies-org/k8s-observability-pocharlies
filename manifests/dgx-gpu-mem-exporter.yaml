@@ -210,8 +210,10 @@ spec:
   endpoints:
     - port: metrics
       path: /metrics
-      interval: 30s
-      scrapeTimeout: 20s
+      # The hybrid DGX2 arbiter admits and cuts off co-resident workloads from
+      # this metric. Five-second samples bound its reaction time.
+      interval: 5s
+      scrapeTimeout: 4s
       # keep the exporter's own labels (node, index, container=GPU-proc) instead of
       # the scrape's target labels overwriting them (e.g. container=exporter).
       honorLabels: true
