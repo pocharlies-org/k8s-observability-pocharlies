@@ -969,6 +969,66 @@ spec:
   groups:
     - name: keep.hub-health
       rules:
+        - alert: SynapseWorkflowFailed
+          # SUSTITUYE al push que hacía el ops-explainer de Synapse
+          # (POST /api/v2/alerts contra el Service alertmanager-ingest).
+          #
+          # Ese push era el último acoplamiento de Synapse con el alerting: para
+          # avisar de un fallo, Synapse tenía que conocer Alertmanager, tener un
+          # cliente HTTP, una config y una IP fija. Ahora sólo exporta métricas
+          # —como cualquier workload— y la detección vive donde le corresponde.
+          #
+          # La serie ya existe y trae los labels necesarios (verificado en
+          # vmsingle): status ∈ {completed, failed}, más `workflow` y `tenant`.
+          # Validada con control positivo (>= 0 devuelve las 2 series activas) y
+          # negativo (> 0 no devuelve nada porque ahora no hay fallos recientes).
+          expr: |
+            sum by (workflow, tenant) (
+              increase(synapse_engine_workflow_instance_duration_seconds_count{status="failed"}[10m])
+            ) > 0
+          for: 2m
+          labels:
+            severity: warning
+            area: synapse
+          annotations:
+            summary: "Workflow de Synapse fallido: {{ $labels.workflow }}"
+            description: >-
+              El engine ha finalizado con error el workflow
+              {{ $labels.workflow }} (tenant {{ $labels.tenant }}) en los últimos
+              10 minutos. Detalle en la UI de Synapse; el RCA lo produce Aurora.
+        - alert: AlertmanagerTelegramDeliveryFailed
+          # Vivía en cron-alert-analyzer.yaml, que se retira. La descripción
+          # anterior decía "se entrega por el webhook Synapse" — esa ruta ya no
+          # existe: hoy sale por el mismo Keep que vigila, así que si Keep
+          # también está roto, quien avisa es el dead-man's switch.
+          expr: sum by (reason) (increase(alertmanager_notifications_failed_total{integration="telegram"}[10m])) > 0
+          for: 1m
+          labels:
+            severity: warning
+            area: alerting
+          annotations:
+            summary: "Alertmanager no pudo entregar por Telegram"
+            description: >-
+              Fallos de entrega Telegram en los últimos 10 minutos. Afecta al
+              dead-man's switch (backstop-telegram), que es la única vía que no
+              depende de Keep: si esto falla, el backstop no protege.
+        - alert: AlertmanagerWebhookDeliveryFailed
+          # OJO: esta alerta CAMBIÓ DE SIGNIFICADO con el cutover a Keep.
+          # `integration="webhook"` ya no es Synapse — es KEEP. O sea que esto
+          # ahora significa "Alertmanager no consigue entregar al hub de alertas",
+          # y por eso está en el matcher del dead-man's switch del
+          # VMAlertmanagerConfig. Es de las más importantes del repo.
+          expr: sum by (reason) (increase(alertmanager_notifications_failed_total{integration="webhook"}[10m])) > 0
+          for: 1m
+          labels:
+            severity: warning
+            area: alerting
+          annotations:
+            summary: "Alertmanager no puede entregar a Keep"
+            description: >-
+              Fallos del webhook en los últimos 10 minutos. El webhook es la
+              ingesta de Keep: mientras dure, las alertas no se están
+              registrando. Sale por Telegram directo (backstop), no por Keep.
         - alert: KeepBackendAbsent
           # OJO con lo que se mide aquí. La primera versión usaba
           #   absent(up{namespace="monitoring", pod=~"keep-backend-.*"})

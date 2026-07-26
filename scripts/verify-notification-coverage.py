@@ -51,7 +51,6 @@ KEEP_SEVERITIES = {
 SILENCIO_DELIBERADO = {
     "Watchdog": "heartbeat de Alertmanager; se ingiere para detectar silencio",
     "InfoInhibitor": "alerta auxiliar de inhibición, nunca fue accionable",
-    "K8sCronJobFailed": "va al cron-alert-analyzer vía workflow, no a una persona",
     "CPUThrottlingHigh": "severity info: ruido de fondo conocido",
     "KubeQuotaAlmostFull": "severity info: informativa por diseño",
     "KubeQuotaFullyUsed": "severity info: informativa por diseño",

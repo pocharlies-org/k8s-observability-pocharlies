@@ -314,6 +314,60 @@ rules:
       Reconcile*, OperatorRestarts. Servicios, no flujo de datos.
 
   # =========================================================================
+  # SYNAPSE — fallos de workflow, ahora detectados por métricas
+  # =========================================================================
+  # Esta regla es la contraparte de la VMRule `SynapseWorkflowFailed` que
+  # sustituye al push que hacía el ops-explainer. Agrupa por `tenant` y no por
+  # `workflow`: si se cae una dependencia común (el brain, Shopify, la DB), fallan
+  # varios workflows del mismo tenant a la vez y eso es UN incidente, no seis.
+  #
+  # El detalle de qué workflow concreto falló va en las alertas del incidente y
+  # en el resumen del LLM; el título sólo necesita decir de quién es el problema.
+  - ruleName: synapse-workflow-failures
+    celQuery: 'name == "SynapseWorkflowFailed"'
+    sqlQuery:
+      sql: "((name = :name_1))"
+      params:
+        name_1: SynapseWorkflowFailed
+    timeframeInSeconds: 1800
+    timeUnit: minutes
+    groupingCriteria: [tenant]
+    createOn: any
+    resolveOn: all_resolved
+    incidentPrefix: SYNW
+    incidentNameTemplate: "Workflows de Synapse fallando ({{ tenant }})"
+    groupDescription: >-
+      Workflows del engine finalizados con error. Antes lo avisaba el propio
+      Synapse empujando a Alertmanager; ahora sale de sus métricas.
+
+  # =========================================================================
+  # CRONJOBS — sustituye la lane al cron-alert-analyzer
+  # =========================================================================
+  # Hasta ahora K8sCronJobFailed se reenviaba a un microservicio propio que leía
+  # los logs del pod y los analizaba con LiteLLM. Ese servicio se retira: el
+  # análisis lo hace Aurora (que además ve el clúster entero, no sólo los logs) y
+  # la notificación Keep con el resumen del router.
+  #
+  # Agrupado por namespace: varios cronjobs del mismo namespace fallando suele ser
+  # la misma causa (imagen, secreto, PVC).
+  - ruleName: cron-job-failed
+    celQuery: 'name == "K8sCronJobFailed"'
+    sqlQuery:
+      sql: "((name = :name_1))"
+      params:
+        name_1: K8sCronJobFailed
+    timeframeInSeconds: 3600
+    timeUnit: minutes
+    groupingCriteria: [namespace]
+    createOn: any
+    resolveOn: all_resolved
+    incidentPrefix: CRON
+    incidentNameTemplate: "CronJobs fallando en {{ namespace }}"
+    groupDescription: >-
+      CronJobs con Jobs fallidos. Los logs de pods efímeros que Loki pierde los
+      recupera Aurora vía kubectl-agent.
+
+  # =========================================================================
   # SUBSISTEMAS DE APLICACIÓN
   # =========================================================================
   # Todos éstos notifican HOY (por el webhook de Synapse o su propia lane de
