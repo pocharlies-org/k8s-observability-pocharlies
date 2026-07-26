@@ -267,35 +267,6 @@ backend:
                   - key: severity_drift
                     value: "{{ alert.labels.severity }}"
 
-      # Lane preservada: el analizador específico de cronjobs sigue igual, y
-      # KubeJobFailed no se reenvía (como hoy) para no duplicar. Se queda a
-      # nivel de alerta a propósito: es una integración máquina-máquina, no un
-      # aviso a una persona. `only_on_change` evita reenviarlo cada minuto.
-      - id: cron-analyzer-lane
-        name: K8sCronJobFailed → cron-alert-analyzer
-        description: >-
-          Reenvía la alerta al analizador de cronjobs con forma Alertmanager,
-          que es lo que su endpoint /alert espera.
-        triggers:
-          - type: alert
-            only_on_change: [status]
-            cel: name == "K8sCronJobFailed"
-        actions:
-          - name: forward-to-analyzer
-            provider:
-              type: webhook
-              config: "{{ providers.cron_analyzer }}"
-              with:
-                method: POST
-                body:
-                  status: "{{ alert.status }}"
-                  commonLabels:
-                    alertname: "{{ alert.name }}"
-                    namespace: "{{ alert.labels.namespace }}"
-                    owner_name: "{{ alert.labels.owner_name }}"
-                  commonAnnotations:
-                    summary: "{{ alert.annotations.summary }}"
-
   env:
     # URL pública del backend, la que el navegador usa. Con el ingress del chart
     # desactivado hay que fijarla: los helpers caerían a /backend.

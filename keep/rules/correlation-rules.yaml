@@ -133,7 +133,7 @@ rules:
         name == "TrackingPage404Spike" || name.startsWith("Labels") ||
         name.startsWith("LabelGeneration") || name.startsWith("MCP") ||
         name.startsWith("OVHPVCHub") || name.startsWith("SiiMonthlyReport") ||
-        name.startsWith("CronAlertAnalyzer") || name.startsWith("Synapse") ||
+        name.startsWith("Synapse") ||
         name.startsWith("Rabbitmq") || name.startsWith("Keep") ||
         name.startsWith("Alertmanager") || name.startsWith("SharedValkey") ||
         name.startsWith("SharedDatastore") || name.startsWith("KubeNode") ||
@@ -484,20 +484,3 @@ rules:
     incidentPrefix: SII
     incidentNameTemplate: "Informe mensual SII fallido"
     groupDescription: Generación del informe mensual del SII.
-
-  - ruleName: cron-analyzer-health
-    celQuery: 'name.startsWith("CronAlertAnalyzer")'
-    sqlQuery:
-      sql: "((name like :name_1))"
-      params:
-        name_1: CronAlertAnalyzer%
-    timeframeInSeconds: 1800
-    timeUnit: minutes
-    groupingCriteria: []
-    createOn: any
-    resolveOn: all_resolved
-    incidentPrefix: CRON
-    incidentNameTemplate: "Analizador de cronjobs degradado"
-    groupDescription: >-
-      Salud del cron-alert-analyzer, que sigue recibiendo K8sCronJobFailed por el
-      workflow cron-analyzer-lane.

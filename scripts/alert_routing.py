@@ -61,7 +61,7 @@ KEEP_DEST = {
 HEARTBEAT_ALERTS = {"Watchdog", "InfoInhibitor"}
 
 SUBSYSTEMS = (
-    "Alertmanager", "Argo", "Blackbox", "Cnpg", "CronAlertAnalyzer", "DGX", "Dgx",
+    "Alertmanager", "Argo", "Blackbox", "Cnpg", "DGX", "Dgx",
     "Harbor", "ImageStudio", "Instagram", "Keycloak", "Krea2", "Kubernetes", "Kube",
     "LabelGeneration", "Labels", "LibrePlay", "Loki", "Longhorn", "MCP", "Node", "OVH",
     "Postgres", "Rabbitmq", "ScrapePool", "Scrape", "Sii", "Synapse", "Target",
@@ -123,7 +123,6 @@ def dest_label(receiver: str) -> str:
     for needle, label in (
         ("emergency-telegram", "telegram-emergencia"),
         ("labels-deep-monitor", "telegram-labels-deep"),
-        ("cron-alert-analyzer", "cron-analyzer"),
         ("synapse-alertmanager", "synapse-webhook"),
     ):
         if needle in receiver:
