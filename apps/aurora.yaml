@@ -25,6 +25,22 @@ spec:
   destination:
     server: https://kubernetes.default.svc
     namespace: aurora
+  # Los StatefulSets del chart (redis, weaviate) no declaran estos campos, así
+  # que los rellena el API server con sus defaults y ArgoCD los lee como drift:
+  # el Application se quedaba OutOfSync para siempre con los dos pods Ready y sus
+  # PVC Bound. Con selfHeal activo eso además genera intentos de "arreglo" en
+  # bucle. Verificado que la divergencia es SÓLO estos defaults comparando el
+  # render de helm contra el objeto vivo.
+  ignoreDifferences:
+    - group: apps
+      kind: StatefulSet
+      jsonPointers:
+        - /spec/persistentVolumeClaimRetentionPolicy
+        - /spec/podManagementPolicy
+        - /spec/updateStrategy
+        - /spec/revisionHistoryLimit
+        - /spec/volumeClaimTemplates/0/spec/volumeMode
+
   syncPolicy:
     automated:
       selfHeal: true
