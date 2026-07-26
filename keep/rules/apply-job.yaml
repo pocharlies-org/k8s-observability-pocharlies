@@ -70,6 +70,13 @@ data:
         for rule in spec["rules"]:
             rule = dict(rule)
             exempt = rule.pop("exemptFromChronic", False)
+            # Obligatorio en el PUT por un bug de Keep: create_rule lo toma del
+            # DTO de Pydantic (requireApprove: bool = False, rules.py:30) pero
+            # update_rule hace body.get("requireApprove", []) (rules.py:200) —
+            # default lista vacía, que revienta el UPDATE con
+            # "unhashable type: 'list'". El POST funciona y el PUT no. Mandarlo
+            # explícito arregla ambos caminos.
+            rule.setdefault("requireApprove", False)
             if rule["celQuery"].strip() == "chronic":
                 rule["celQuery"] = f"name in [{cel_list}]"
             elif chronic and not exempt:
