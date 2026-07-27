@@ -185,10 +185,14 @@ spec:
   groups:
     - name: pocharlies.synapse
       rules:
-        # Synapse is Alertmanager's only path to Telegram. If it is down,
-        # every alert is lost silently — so this is critical and MUST be
-        # delivered via the direct-to-Telegram backup receiver (which does
-        # not depend on Synapse). See alertmanager-config.yaml.
+        # NOT about alert delivery any more: alerts go straight to Keep
+        # in-cluster and Synapse is out of that path entirely. What this still
+        # watches is the edge for the BUSINESS webhooks — synapse.e-dani.com is
+        # the only ingress for Shopify / Stripe / Telegram / Gmail / WhatsApp
+        # deliveries, and it is the only probe on that host, so it stays.
+        # The probed path moved off /webhooks/alertmanager (retired with the
+        # alerting plane) onto /webhooks/stripe, which is POST-only and answers
+        # 405 — see the http_synapse_edge module in blackbox/values.yaml.
         - alert: SynapseDown
           expr: probe_success{job="synapse-gateway"} == 0
           for: 2m
@@ -197,12 +201,12 @@ spec:
             area: availability
             component: synapse
           annotations:
-            summary: "Synapse gateway is down — alert delivery is broken"
-            description: "synapse.e-dani.com/webhooks/alertmanager is not responding for >2m. Alertmanager cannot deliver alerts to Telegram through Synapse. Check synapse-gateway (systemd --user) on sauvage."
+            summary: "Synapse gateway unreachable at the edge — business webhooks are being lost"
+            description: "synapse.e-dani.com is not answering on the gateway's webhook prefix for >2m, so Shopify / Stripe / Telegram / Gmail / WhatsApp deliveries are being dropped at the edge. Alert delivery is NOT affected: that goes to Keep in-cluster. Check deploy/synapse-gateway in the synapse namespace and the traefik-edge IngressRoute edge-synapse-legacy."
 ---
 # Synapse CORE health: the two singleton control-plane pods (engine +
 # dispatcher) plus the transactional outbox and the dead-letter graveyard.
-# SynapseDown above only probes the gateway (alert-delivery path). These
+# SynapseDown above only probes the gateway from the edge. These
 # rules watch the actual fabric: the engine that schedules workflows, the
 # dispatcher that drains the Postgres outbox onto RabbitMQ, and the DLQ
 # backlog. Series confirmed live in VM 2026-07-22 (roadmap D2, after R1

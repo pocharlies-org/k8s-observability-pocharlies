@@ -13,7 +13,6 @@ resources:
   - manifests/keep-secrets.yaml
   - manifests/aurora-secrets.yaml
   - keep/rules/apply-job.yaml
-  - manifests/alertmanager-ingest.yaml
   - manifests/alertmanager-config.yaml
   - manifests/probes.yaml
   - manifests/rules.yaml

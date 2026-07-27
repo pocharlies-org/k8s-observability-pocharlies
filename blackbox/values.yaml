@@ -33,7 +33,7 @@ config:
     # Allowed) when the gateway is up — that is the success signal here.
     # This is the exact path Alertmanager delivers to, so the probe tracks
     # the real delivery route, not a side channel.
-    http_synapse_webhook:
+    http_synapse_edge:
       prober: http
       timeout: 5s
       http:

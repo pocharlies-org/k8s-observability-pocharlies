@@ -36,6 +36,7 @@ from alert_routing import (  # noqa: E402
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
 RULES = REPO / "keep" / "rules" / "correlation-rules.yaml"
+BASELINE = pathlib.Path(__file__).resolve().parents[1] / "docs/alert-routing-baseline-pre-keep.yaml"
 
 # Cómo mapea Keep la severidad al ingerir (keep/providers/prometheus_provider.py).
 # Cualquier valor ausente cae a "info" — eso es lo que hace que `page` y `warn`
@@ -117,11 +118,20 @@ def compose(spec: dict) -> list[dict]:
 def main() -> int:
     spec = yaml.safe_load(RULES.read_text())
     rules = compose(spec)
-    old_route = (
-        yaml.safe_load(pathlib.Path(sys.argv[1]).read_text())["spec"]["route"]
-        if len(sys.argv) > 1
-        else load_route()
-    )
+    # The baseline is the FROZEN pre-Keep route, not the live one. Reading the
+    # live route was correct only until the cutover: afterwards Alertmanager is
+    # pure transport with an explicit catch-all to Keep, so nothing resolves to
+    # `blackhole`, every series counts as "notifies today", and every series
+    # without a correlation rule is reported as a regression. The gate exists to
+    # answer "would this stop notifying compared with the pre-Keep behaviour",
+    # and only the pre-Keep tree answers that. Pass a path to override; pass
+    # `--live` to deliberately read the cluster.
+    if len(sys.argv) > 1 and sys.argv[1] == "--live":
+        old_route = load_route()
+    elif len(sys.argv) > 1:
+        old_route = yaml.safe_load(pathlib.Path(sys.argv[1]).read_text())["spec"]["route"]
+    else:
+        old_route = yaml.safe_load(BASELINE.read_text())["spec"]["route"]
 
     regressions, gains = [], []
     for name, sev in load_defined():

@@ -1,0 +1,310 @@
+# FROZEN BASELINE — do not sync this file, it is not a manifest to apply.
+#
+# This is `manifests/alertmanager-config.yaml` as it stood at commit 5a0364e,
+# the last state BEFORE the Keep cutover: the 20-route allowlist tree whose last
+# child blackholed every warning.
+#
+# `scripts/verify-notification-coverage.py` needs it. That script answers "does
+# this series notify TODAY?" and it used to read the live Alertmanager route to
+# find out. That stopped working the moment the cutover landed: the live route is
+# now pure transport with an explicit catch-all to Keep, so nothing resolves to
+# `blackhole` any more, every series counts as notifying, and every series
+# without a Keep correlation rule gets reported as a regression — 76 of them,
+# all false. The question the gate exists to answer is "would this series stop
+# producing a notification compared with the pre-Keep behaviour", so the
+# pre-Keep route is the only baseline that answers it.
+#
+# Regenerate with:
+#   git show 5a0364e:manifests/alertmanager-config.yaml
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMAlertmanagerConfig
+metadata:
+  name: synapse-webhook
+  namespace: monitoring
+spec:
+  route:
+    # Default route: now that disableNamespaceMatcher is on (see
+    # victoria-metrics/values.yaml), this captures ALL alerts of any
+    # namespace — including infra (kube-state, node-exporter, etc.).
+    # Grouped by alertname+namespace+severity and rate-limited (repeat 12h)
+    # so the full infra catalogue does not flood Telegram.
+    receiver: synapse-alertmanager
+    group_by:
+      - alertname
+      - namespace
+      - severity
+    group_wait: 1m
+    group_interval: 5m
+    repeat_interval: 12h
+    routes:
+      # Pure liveness/self-test alerts are useful for Alertmanager internals,
+      # but they should never create Telegram work items.
+      - matchers:
+          - 'alertname =~ "Watchdog|InfoInhibitor"'
+        receiver: blackhole
+      # Direct emergency leg (no `continue`, so these STOP here and never reach
+      # the generic critical legs below — exactly one direct-Telegram message,
+      # no rich Synapse card): when Synapse itself is down OR its core control
+      # plane (engine/dispatcher) is degraded, the normal webhook path may not
+      # deliver the alert or its OpenClaw button, so delivery must not depend on
+      # the Synapse pipeline. SynapseCoreAbsent = a core singleton is down;
+      # SynapseDispatcherNotPublishing = the outbox is not draining onto the
+      # bus (event delivery, including alert cards, is at risk).
+      - matchers:
+          - 'alertname =~ "SynapseDown|SynapseCoreAbsent|SynapseDispatcherNotPublishing"'
+        receiver: emergency-telegram
+        group_by:
+          - alertname
+        group_wait: 30s
+        group_interval: 5m
+        repeat_interval: 30m
+      # Every OTHER critical gets a direct-Telegram BACKUP copy (continue: true)
+      # and then keeps flowing to the Synapse webhook for the clean LLM card.
+      # Incident 2026-07-20: node freeze took the synapse delivery path down
+      # with it (AlertmanagerClusterFailedToSendAlerts fired 23:20->08:10) and
+      # every critical died unseen for 9h. The emergency leg uses its own tidy
+      # template, so the old "raw dump bypasses the LLM" concern does not apply.
+      # SynapseDown is excluded here only because its dedicated leg above
+      # already delivers to emergency-telegram (no duplicate messages).
+      - matchers:
+          - "severity = critical"
+        receiver: emergency-telegram
+        continue: true
+        group_by:
+          - alertname
+          - namespace
+        group_wait: 30s
+        group_interval: 5m
+        repeat_interval: 2h
+      # `continue: true` only continues with sibling routes; it does not fall
+      # back to the parent receiver. Keep this second sibling explicit so every
+      # non-Synapse critical gets both the emergency copy and the rich Synapse
+      # card. SynapseDown stops at its dedicated route above, avoiding a loop.
+      - matchers:
+          - "severity = critical"
+        receiver: synapse-alertmanager
+        group_by:
+          - alertname
+          - namespace
+        group_wait: 30s
+        group_interval: 5m
+        repeat_interval: 2h
+      # Node-down family is severity=warning upstream (stock VM k8s-stack rule)
+      # and used to die in the warning blackhole below — the exact reason the
+      # 2026-07-20 9h node outage was silent. Direct emergency copy first, then
+      # a Synapse card for context when the webhook path is alive.
+      - matchers:
+          - 'alertname =~ "KubeNodeNotReady|KubeNodeUnreachable|KubeletInstanceUnreachable"'
+        receiver: emergency-telegram
+        continue: true
+        group_by:
+          - alertname
+        group_wait: 30s
+        group_interval: 5m
+        repeat_interval: 2h
+      - matchers:
+          - 'alertname =~ "KubeNodeNotReady|KubeNodeUnreachable|KubeletInstanceUnreachable|SharedDatastoreCoLocated"'
+        receiver: synapse-alertmanager
+        group_by:
+          - alertname
+        group_wait: 30s
+        group_interval: 5m
+        repeat_interval: 6h
+      # labels-deep-monitor publishes check result + heartbeat metrics. Route
+      # these alertnames explicitly to the current Crons topic; labels such as
+      # `topic` or `telegram_topic` do not select an Alertmanager receiver.
+      - matchers:
+          - 'alertname =~ "LabelsDeepMonitorIncident|LabelsDeepMonitorMissing"'
+        receiver: labels-deep-monitor-telegram
+        group_by:
+          - alertname
+          - namespace
+        group_wait: 30s
+        group_interval: 5m
+        repeat_interval: 6h
+      # Delivery monitoring is crossed: Telegram integration failures use the
+      # Synapse webhook; webhook/analyzer failures use direct Telegram without
+      # a topic. A failed path is never asked to report its own outage.
+      - matchers:
+          - "alertname = AlertmanagerTelegramDeliveryFailed"
+        receiver: synapse-alertmanager
+        group_by:
+          - alertname
+          - reason
+        group_wait: 30s
+        group_interval: 5m
+        repeat_interval: 2h
+      - matchers:
+          - 'alertname =~ "AlertmanagerWebhookDeliveryFailed|CronAlertAnalyzerTelegramDeliveryFailed|CronAlertAnalyzerLlmFailed|CronAlertAnalyzerMetricsMissing"'
+        receiver: emergency-telegram
+        group_by:
+          - alertname
+        group_wait: 30s
+        group_interval: 5m
+        repeat_interval: 2h
+      # Synapse application failures (pushed in by the ops-explainer) are
+      # grouped by domain and rate-limited here so a burst of the same
+      # failure collapses into one card instead of flooding Telegram.
+      - matchers:
+          - "alertname = SynapseWorkflowFailed"
+        receiver: synapse-alertmanager
+        group_by:
+          - alertname
+          - domain
+        group_wait: 30s
+        group_interval: 2m
+        repeat_interval: 12h
+      # K8s CronJob failures → cron-alert-analyzer service (in-cluster), which
+      # fetches the failed pod's logs (k8s API), runs an LLM root-cause
+      # analysis via LiteLLM, and posts the report to the Telegram
+      # "Crons" topic with a deep-link to the dashboard. Grouped by CronJob
+      # (owner_name) so repeat failures of the same cron collapse into one card.
+      - matchers:
+          - "alertname = K8sCronJobFailed"
+        receiver: cron-alert-analyzer-webhook
+        group_by:
+          - alertname
+          - namespace
+          - owner_name
+        group_wait: 30s
+        group_interval: 2m
+        repeat_interval: 6h
+      # The chart default KubeJobFailed alert is raw and duplicates CronJob
+      # failures already handled by K8sCronJobFailed + cron-alert-analyzer.
+      # Drop it here to avoid zombie retained Jobs flooding the general stream.
+      - matchers:
+          - "alertname = KubeJobFailed"
+        receiver: blackhole
+      # SII monthly fiscal report alerts are metric-based (pushed gauge, no pod
+      # logs to fetch), so the cron-alert-analyzer path does not apply. Route
+      # them to the Synapse webhook so the ops-explainer renders one LLM card to
+      # Telegram; without this, the warning leg below would blackhole
+      # SiiMonthlyReportFailed (SiiMonthlyReportMissing is critical and would
+      # reach Telegram anyway, but keep both on one deterministic route).
+      - matchers:
+          - 'alertname =~ "SiiMonthlyReport.*"'
+        receiver: synapse-alertmanager
+        group_by:
+          - alertname
+        group_wait: 30s
+        group_interval: 5m
+        repeat_interval: 24h
+      # MCP plane health (AgentGateway + bridge backends). The 2026-07-04 outage
+      # proved MCPBackendCrashLooping fires but dies in the warning blackhole
+      # below — route the whole MCPBackend.*/MCPGatewayDown family to the
+      # Synapse webhook (ops-explainer renders to the Telegram Crons topic)
+      # BEFORE the generic warning leg, same pattern as SiiMonthlyReport above.
+      - matchers:
+          - 'alertname =~ "MCPBackend.*|MCPGatewayDown"'
+        receiver: synapse-alertmanager
+        group_by:
+          - alertname
+          - namespace
+        group_wait: 30s
+        group_interval: 5m
+        repeat_interval: 6h
+      # OVH PVC-hub backup watchdog (Stale/MetricMissing) — same alertname-route
+      # pattern; these are warnings that MUST reach the Telegram Crons topic.
+      - matchers:
+          - 'alertname =~ "OVHPVCHub.*"'
+        receiver: synapse-alertmanager
+        group_by:
+          - alertname
+        group_wait: 30s
+        group_interval: 5m
+        repeat_interval: 24h
+      # DLQ growth — dead-letters accumulating means a handler is failing
+      # repeatedly; MUST reach Telegram (2026-07-21: 19 msgs sat 5 days silent).
+      - matchers:
+          - 'alertname = "RabbitmqDlqGrowth"'
+        receiver: synapse-alertmanager
+        group_by:
+          - alertname
+          - queue
+        group_wait: 30s
+        group_interval: 5m
+        repeat_interval: 12h
+      # RabbitMQ functional-queue health (no-consumer / backlog) — actionable
+      # warnings that MUST reach Telegram. Proven 2026-07-10: the queue
+      # collections-tree.shopify-events.skirmshop sat at ~957 ready messages
+      # with 0 consumers since 2026-06-26 and RabbitmqFunctionalQueueNoConsumer
+      # died in the warning blackhole below, so nobody was ever notified.
+      # Grouped per queue so distinct queues become distinct cards.
+      - matchers:
+          - 'alertname =~ "RabbitmqFunctionalQueueNoConsumer|RabbitmqQueueBacklogHigh"'
+        receiver: synapse-alertmanager
+        group_by:
+          - alertname
+          - vhost
+          - queue
+        group_wait: 30s
+        group_interval: 5m
+        repeat_interval: 24h
+      # Synapse core DLQ backlog: total dead-letter depth is slow-moving
+      # sediment, so give it its own leg with a gentle 24h re-nag (vs the 12h
+      # bundle below) to avoid fatigue on a standing graveyard. Grouped by
+      # alertname (single-series expr, no per-queue label).
+      - matchers:
+          - 'alertname = "SynapseDLQBacklog"'
+        receiver: synapse-alertmanager
+        group_by:
+          - alertname
+        group_wait: 30s
+        group_interval: 5m
+        repeat_interval: 24h
+      # Synapse core WARNING family (roadmap D2): outbox health, stalled
+      # scheduled workflows and core-adapter liveness. These are actionable
+      # warnings that MUST reach Telegram, so they are routed to the Synapse
+      # webhook BEFORE the generic warning blackhole below (same pattern as the
+      # Rabbitmq/OVHPVCHub warning legs above). Grouped by alertname so each
+      # signal is one card (tenant variants collapse together).
+      - matchers:
+          - 'alertname =~ "SynapseOutbox.*|SynapseScheduledWorkflowStalled|SynapseAdapterTargetDown"'
+        receiver: synapse-alertmanager
+        group_by:
+          - alertname
+        group_wait: 30s
+        group_interval: 5m
+        repeat_interval: 12h
+      # Generic warning alerts stay queryable in Alertmanager/Grafana but do
+      # not become Telegram work items. Only the curated warning routes above
+      # (SynapseWorkflowFailed and K8sCronJobFailed) page the monitor group.
+      - matchers:
+          - "severity = warning"
+        receiver: blackhole
+  receivers:
+    - name: blackhole
+    - name: synapse-alertmanager
+      webhook_configs:
+        - url: https://synapse.e-dani.com/webhooks/alertmanager
+          send_resolved: true
+    - name: emergency-telegram
+      telegram_configs:
+        - bot_token:
+            name: alertmanager-telegram-backup
+            key: bot_token
+          chat_id: -1003785136626
+          parse_mode: HTML
+          send_resolved: true
+          message: |-
+            {{ if eq .Status "firing" }}🔴 ALERTA{{ else }}✅ RECUPERADO{{ end }} <b>{{ .CommonLabels.alertname }}</b>
+            {{ range .Alerts }}- {{ if .Annotations.summary }}{{ .Annotations.summary }}{{ else }}{{ .Labels.alertname }}{{ end }} [{{ .Labels.severity }}{{ if .Labels.namespace }} · {{ .Labels.namespace }}{{ end }}]
+            {{ end }}
+    - name: labels-deep-monitor-telegram
+      telegram_configs:
+        - bot_token:
+            name: alertmanager-telegram-backup
+            key: bot_token
+          chat_id: -1003785136626
+          message_thread_id: 34494
+          parse_mode: HTML
+          send_resolved: true
+          message: |-
+            {{ if eq .Status "firing" }}🚨{{ else }}✅{{ end }} <b>labels-deep-monitor</b>
+            {{ range .Alerts }}- {{ .Annotations.summary }}
+            {{ .Annotations.description }}
+            {{ end }}
+    - name: cron-alert-analyzer-webhook
+      webhook_configs:
+        - url: http://cron-alert-analyzer.monitoring.svc.cluster.local:8080/alert
+          send_resolved: false

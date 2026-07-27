@@ -145,7 +145,7 @@ spec:
   jobName: synapse-gateway
   interval: 30s
   scrapeTimeout: 10s
-  module: http_synapse_webhook
+  module: http_synapse_edge
   vmProberSpec:
     url: blackbox-exporter.monitoring.svc.cluster.local:9115
     path: /probe
@@ -155,4 +155,9 @@ spec:
         scope: edge
         component: synapse
       targets:
-        - https://synapse.e-dani.com/webhooks/alertmanager
+        # POST-only route, so a GET answers 405 — which is what the module
+      # accepts. It replaces /webhooks/alertmanager: that route is being
+      # retired with the alerting plane, and this host is the edge for the
+      # business webhooks (shopify, stripe, telegram, gmail, whatsapp), so
+      # dropping the probe would have left them with no edge check at all.
+      - https://synapse.e-dani.com/webhooks/stripe
