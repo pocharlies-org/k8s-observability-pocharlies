@@ -1,6 +1,6 @@
 # Matriz de routing de alertas — estado actual y destino en Keep
 
-Generado el 2026-07-25 por `scripts/alert_routing.py matrix` desde el clúster
+Generado el 2026-07-27 por `scripts/alert_routing.py matrix` desde el clúster
 `x86-k3s`, simulando el matching de Alertmanager sobre
 `VMAlertmanagerConfig monitoring/synapse-webhook`.
 
@@ -15,20 +15,16 @@ llega a algún sitio únicamente si su `alertname` aparece listado antes.
 
 | destino hoy | series | % |
 |---|---:|---:|
-| **BLACKHOLE (se descarta)** | 118 | 42% |
-| synapse-webhook + telegram-emergencia | 101 | 36% |
-| synapse-webhook | 51 | 18% |
-| telegram-emergencia | 7 | 2% |
-| telegram-labels-deep | 2 | 1% |
-| cron-analyzer | 1 | 0% |
-| **TOTAL** | **280** | 100% |
+| keep | 278 | 98% |
+| backstop-telegram + keep | 6 | 2% |
+| **TOTAL** | **284** | 100% |
 
 ### Taxonomía de severidad realmente emitida
 
 | valor | series | ¿lo contempla el árbol? |
 |---|---:|---|
-| `warning` | 142 | sí — `severity = warning` → blackhole |
-| `critical` | 101 | sí — `severity = critical` |
+| `warning` | 143 | sí — `severity = warning` → blackhole |
+| `critical` | 104 | sí — `severity = critical` |
 | `warn` | 18 | **no** — cae al receiver raíz |
 | `page` | 9 | **no** — cae al receiver raíz |
 | `info` | 8 | **no** — cae al receiver raíz |
@@ -40,10 +36,10 @@ LibrePlay, Tracking) que nunca se alineó con el resto.
 
 ## Hallazgos accionables
 
-1. **118 series (42%) no pueden notificar a nadie.**
-   Descontando los heartbeats (InfoInhibitor, Watchdog), son 116
-   series ciegas; 9 de ellas están disparadas ahora mismo
-   (14 instancias activas).
+1. **0 series (0%) no pueden notificar a nadie.**
+   Descontando los heartbeats (InfoInhibitor, Watchdog), son 0
+   series ciegas; 0 de ellas están disparadas ahora mismo
+   (0 instancias activas).
    `Watchdog` e `InfoInhibitor` deben seguir sin notificar, pero **sí** tienen que
    llegar a Keep: son la señal de que la ingesta sigue viva.
 
@@ -102,398 +98,402 @@ despiertan a nadie pese a llamarse `page`.
 
 `firing` = instancias activas en el momento de generar. Agrupado por subsistema.
 
-### Alertmanager (11 — 3 ciegas)
+### Alertmanager (11)
 
 | alertname | sev | destino hoy | firing |
 |---|---|---|---:|
-| `AlertmanagerClusterCrashlooping` | `critical` | synapse-webhook + telegram-emergencia |  |
-| `AlertmanagerClusterDown` | `critical` | synapse-webhook + telegram-emergencia |  |
-| `AlertmanagerClusterFailedToSendAlerts` | `critical` | synapse-webhook + telegram-emergencia |  |
-| `AlertmanagerClusterFailedToSendAlerts` | `warning` | **BLACKHOLE** |  |
-| `AlertmanagerConfigInconsistent` | `critical` | synapse-webhook + telegram-emergencia |  |
-| `AlertmanagerErrors` | `warning` | **BLACKHOLE** |  |
-| `AlertmanagerFailedReload` | `critical` | synapse-webhook + telegram-emergencia |  |
-| `AlertmanagerFailedToSendAlerts` | `warning` | **BLACKHOLE** |  |
-| `AlertmanagerMembersInconsistent` | `critical` | synapse-webhook + telegram-emergencia |  |
-| `AlertmanagerTelegramDeliveryFailed` | `warning` | synapse-webhook |  |
-| `AlertmanagerWebhookDeliveryFailed` | `warning` | telegram-emergencia |  |
+| `AlertmanagerClusterCrashlooping` | `critical` | keep |  |
+| `AlertmanagerClusterDown` | `critical` | keep |  |
+| `AlertmanagerClusterFailedToSendAlerts` | `critical` | keep |  |
+| `AlertmanagerClusterFailedToSendAlerts` | `warning` | keep |  |
+| `AlertmanagerConfigInconsistent` | `critical` | keep |  |
+| `AlertmanagerErrors` | `warning` | keep |  |
+| `AlertmanagerFailedReload` | `critical` | keep |  |
+| `AlertmanagerFailedToSendAlerts` | `warning` | keep |  |
+| `AlertmanagerMembersInconsistent` | `critical` | keep |  |
+| `AlertmanagerTelegramDeliveryFailed` | `warning` | keep |  |
+| `AlertmanagerWebhookDeliveryFailed` | `warning` | backstop-telegram + keep |  |
 
-### Blackbox (1 — 1 ciegas)
-
-| alertname | sev | destino hoy | firing |
-|---|---|---|---:|
-| `BlackboxProbeDown` | `warning` | **BLACKHOLE** | 1 |
-
-### CronAlertAnalyzer (3)
+### Blackbox (1)
 
 | alertname | sev | destino hoy | firing |
 |---|---|---|---:|
-| `CronAlertAnalyzerLlmFailed` | `warning` | telegram-emergencia |  |
-| `CronAlertAnalyzerMetricsMissing` | `warning` | telegram-emergencia |  |
-| `CronAlertAnalyzerTelegramDeliveryFailed` | `warning` | telegram-emergencia |  |
+| `BlackboxProbeDown` | `warning` | keep | 1 |
 
-### ImageStudio (4 — 4 ciegas)
+### Dgx (2)
 
 | alertname | sev | destino hoy | firing |
 |---|---|---|---:|
-| `ImageStudioErrorRateHigh` | `warning` | **BLACKHOLE** |  |
-| `ImageStudioQueueStuck` | `warning` | **BLACKHOLE** |  |
-| `ImageStudioStaleCurrentRecurring` | `warning` | **BLACKHOLE** |  |
-| `ImageStudioWorkerDown` | `warning` | **BLACKHOLE** |  |
+| `Dgx2GpuMemoryCutoff` | `critical` | keep |  |
+| `Dgx2GpuMemoryWarning` | `warning` | keep |  |
 
-### Instagram (3 — 3 ciegas)
+### ImageStudio (4)
 
 | alertname | sev | destino hoy | firing |
 |---|---|---|---:|
-| `InstagramLoraCleanupFailure` | `warning` | **BLACKHOLE** |  |
-| `InstagramLoraFailureSpike` | `warning` | **BLACKHOLE** |  |
-| `InstagramLoraPrivateArtifactsStale` | `warning` | **BLACKHOLE** | 2 |
+| `ImageStudioErrorRateHigh` | `warning` | keep |  |
+| `ImageStudioQueueStuck` | `warning` | keep |  |
+| `ImageStudioStaleCurrentRecurring` | `warning` | keep |  |
+| `ImageStudioWorkerDown` | `warning` | keep |  |
 
-### Krea2 (3 — 3 ciegas)
-
-| alertname | sev | destino hoy | firing |
-|---|---|---|---:|
-| `Krea2TrainerErrorSpike` | `warning` | **BLACKHOLE** |  |
-| `Krea2TrainerQueueStalled` | `warning` | **BLACKHOLE** |  |
-| `Krea2TrainerWorkerDown` | `warning` | **BLACKHOLE** |  |
-
-### Kube (59 — 38 ciegas)
+### Instagram (3)
 
 | alertname | sev | destino hoy | firing |
 |---|---|---|---:|
-| `KubeAPIDown` | `critical` | synapse-webhook + telegram-emergencia |  |
-| `KubeAPIErrorBudgetBurn` | `critical` | synapse-webhook + telegram-emergencia |  |
-| `KubeAPIErrorBudgetBurn` | `warning` | **BLACKHOLE** |  |
-| `KubeAPIInstanceUnreachable` | `warning` | **BLACKHOLE** |  |
-| `KubeAPITerminatedRequests` | `warning` | **BLACKHOLE** |  |
-| `KubeAggregatedAPIDown` | `warning` | **BLACKHOLE** |  |
-| `KubeAggregatedAPIErrors` | `warning` | **BLACKHOLE** |  |
-| `KubeCPUOvercommit` | `warning` | **BLACKHOLE** |  |
-| `KubeCPUQuotaOvercommit` | `warning` | **BLACKHOLE** |  |
-| `KubeClientCertificateExpiration` | `critical` | synapse-webhook + telegram-emergencia |  |
-| `KubeClientCertificateExpiration` | `warning` | **BLACKHOLE** |  |
-| `KubeClientErrors` | `warning` | **BLACKHOLE** |  |
-| `KubeContainerWaiting` | `warning` | **BLACKHOLE** |  |
-| `KubeDaemonSetMisScheduled` | `warning` | **BLACKHOLE** |  |
-| `KubeDaemonSetNotScheduled` | `warning` | **BLACKHOLE** |  |
-| `KubeDaemonSetRolloutStuck` | `warning` | **BLACKHOLE** |  |
-| `KubeDeploymentGenerationMismatch` | `warning` | **BLACKHOLE** |  |
-| `KubeDeploymentReplicasMismatch` | `warning` | **BLACKHOLE** |  |
-| `KubeDeploymentRolloutStuck` | `warning` | **BLACKHOLE** |  |
-| `KubeHpaMaxedOut` | `warning` | **BLACKHOLE** |  |
-| `KubeHpaReplicasMismatch` | `warning` | **BLACKHOLE** |  |
-| `KubeJobNotCompleted` | `warning` | **BLACKHOLE** |  |
-| `KubeMemoryOvercommit` | `warning` | **BLACKHOLE** |  |
-| `KubeMemoryQuotaOvercommit` | `warning` | **BLACKHOLE** |  |
-| `KubeNodeEviction` | `info` | synapse-webhook |  |
-| `KubeNodeNotReady` | `warning` | synapse-webhook + telegram-emergencia |  |
-| `KubeNodePressure` | `info` | synapse-webhook |  |
-| `KubeNodeReadinessFlapping` | `warning` | **BLACKHOLE** |  |
-| `KubeNodeUnreachable` | `warning` | synapse-webhook + telegram-emergencia |  |
-| `KubePdbNotEnoughHealthyPods` | `warning` | **BLACKHOLE** |  |
-| `KubePersistentVolumeErrors` | `critical` | synapse-webhook + telegram-emergencia |  |
-| `KubePersistentVolumeFillingUp` | `critical` | synapse-webhook + telegram-emergencia |  |
-| `KubePersistentVolumeFillingUp` | `warning` | **BLACKHOLE** |  |
-| `KubePersistentVolumeInodesFillingUp` | `critical` | synapse-webhook + telegram-emergencia |  |
-| `KubePersistentVolumeInodesFillingUp` | `warning` | **BLACKHOLE** |  |
-| `KubePodCrashLooping` | `warning` | **BLACKHOLE** |  |
-| `KubePodNotReady` | `warning` | **BLACKHOLE** |  |
-| `KubeQuotaAlmostFull` | `info` | synapse-webhook |  |
-| `KubeQuotaExceeded` | `warning` | **BLACKHOLE** |  |
-| `KubeQuotaFullyUsed` | `info` | synapse-webhook |  |
-| `KubeStateMetricsListErrors` | `critical` | synapse-webhook + telegram-emergencia |  |
-| `KubeStateMetricsShardingMismatch` | `critical` | synapse-webhook + telegram-emergencia |  |
-| `KubeStateMetricsShardsMissing` | `critical` | synapse-webhook + telegram-emergencia |  |
-| `KubeStateMetricsWatchErrors` | `critical` | synapse-webhook + telegram-emergencia |  |
-| `KubeStatefulSetGenerationMismatch` | `warning` | **BLACKHOLE** |  |
-| `KubeStatefulSetReplicasMismatch` | `warning` | **BLACKHOLE** |  |
-| `KubeStatefulSetUpdateNotRolledOut` | `warning` | **BLACKHOLE** |  |
-| `KubeVersionMismatch` | `warning` | **BLACKHOLE** |  |
-| `KubeletClientCertificateExpiration` | `critical` | synapse-webhook + telegram-emergencia |  |
-| `KubeletClientCertificateExpiration` | `warning` | **BLACKHOLE** |  |
-| `KubeletClientCertificateRenewalErrors` | `warning` | **BLACKHOLE** |  |
-| `KubeletDown` | `critical` | synapse-webhook + telegram-emergencia |  |
-| `KubeletInstanceUnreachable` | `warning` | synapse-webhook + telegram-emergencia |  |
-| `KubeletPlegDurationHigh` | `warning` | **BLACKHOLE** |  |
-| `KubeletPodStartUpLatencyHigh` | `warning` | **BLACKHOLE** |  |
-| `KubeletServerCertificateExpiration` | `critical` | synapse-webhook + telegram-emergencia |  |
-| `KubeletServerCertificateExpiration` | `warning` | **BLACKHOLE** |  |
-| `KubeletServerCertificateRenewalErrors` | `warning` | **BLACKHOLE** |  |
-| `KubeletTooManyPods` | `info` | synapse-webhook |  |
+| `InstagramLoraCleanupFailure` | `warning` | keep |  |
+| `InstagramLoraFailureSpike` | `warning` | keep |  |
+| `InstagramLoraPrivateArtifactsStale` | `warning` | keep | 10 |
 
-### Kubernetes (3 — 1 ciegas)
+### Krea2 (3)
 
 | alertname | sev | destino hoy | firing |
 |---|---|---|---:|
-| `KubernetesDaemonSetUnavailable` | `warning` | **BLACKHOLE** |  |
-| `KubernetesDeploymentUnavailable` | `critical` | synapse-webhook + telegram-emergencia |  |
-| `KubernetesStatefulSetUnavailable` | `critical` | synapse-webhook + telegram-emergencia |  |
+| `Krea2TrainerErrorSpike` | `warning` | keep |  |
+| `Krea2TrainerQueueStalled` | `warning` | keep |  |
+| `Krea2TrainerWorkerDown` | `warning` | keep |  |
+
+### Kube (59)
+
+| alertname | sev | destino hoy | firing |
+|---|---|---|---:|
+| `KubeAPIDown` | `critical` | keep |  |
+| `KubeAPIErrorBudgetBurn` | `critical` | keep |  |
+| `KubeAPIErrorBudgetBurn` | `warning` | keep |  |
+| `KubeAPIInstanceUnreachable` | `warning` | keep |  |
+| `KubeAPITerminatedRequests` | `warning` | keep |  |
+| `KubeAggregatedAPIDown` | `warning` | keep |  |
+| `KubeAggregatedAPIErrors` | `warning` | keep |  |
+| `KubeCPUOvercommit` | `warning` | keep |  |
+| `KubeCPUQuotaOvercommit` | `warning` | keep |  |
+| `KubeClientCertificateExpiration` | `critical` | keep |  |
+| `KubeClientCertificateExpiration` | `warning` | keep |  |
+| `KubeClientErrors` | `warning` | keep |  |
+| `KubeContainerWaiting` | `warning` | keep |  |
+| `KubeDaemonSetMisScheduled` | `warning` | keep |  |
+| `KubeDaemonSetNotScheduled` | `warning` | keep |  |
+| `KubeDaemonSetRolloutStuck` | `warning` | keep |  |
+| `KubeDeploymentGenerationMismatch` | `warning` | keep |  |
+| `KubeDeploymentReplicasMismatch` | `warning` | keep |  |
+| `KubeDeploymentRolloutStuck` | `warning` | keep |  |
+| `KubeHpaMaxedOut` | `warning` | keep |  |
+| `KubeHpaReplicasMismatch` | `warning` | keep |  |
+| `KubeJobNotCompleted` | `warning` | keep |  |
+| `KubeMemoryOvercommit` | `warning` | keep |  |
+| `KubeMemoryQuotaOvercommit` | `warning` | keep |  |
+| `KubeNodeEviction` | `info` | keep |  |
+| `KubeNodeNotReady` | `warning` | backstop-telegram + keep |  |
+| `KubeNodePressure` | `info` | keep |  |
+| `KubeNodeReadinessFlapping` | `warning` | keep |  |
+| `KubeNodeUnreachable` | `warning` | backstop-telegram + keep |  |
+| `KubePdbNotEnoughHealthyPods` | `warning` | keep |  |
+| `KubePersistentVolumeErrors` | `critical` | keep |  |
+| `KubePersistentVolumeFillingUp` | `critical` | keep |  |
+| `KubePersistentVolumeFillingUp` | `warning` | keep |  |
+| `KubePersistentVolumeInodesFillingUp` | `critical` | keep |  |
+| `KubePersistentVolumeInodesFillingUp` | `warning` | keep |  |
+| `KubePodCrashLooping` | `warning` | keep | 1 |
+| `KubePodNotReady` | `warning` | keep |  |
+| `KubeQuotaAlmostFull` | `info` | keep |  |
+| `KubeQuotaExceeded` | `warning` | keep |  |
+| `KubeQuotaFullyUsed` | `info` | keep |  |
+| `KubeStateMetricsListErrors` | `critical` | keep |  |
+| `KubeStateMetricsShardingMismatch` | `critical` | keep |  |
+| `KubeStateMetricsShardsMissing` | `critical` | keep |  |
+| `KubeStateMetricsWatchErrors` | `critical` | keep |  |
+| `KubeStatefulSetGenerationMismatch` | `warning` | keep |  |
+| `KubeStatefulSetReplicasMismatch` | `warning` | keep |  |
+| `KubeStatefulSetUpdateNotRolledOut` | `warning` | keep |  |
+| `KubeVersionMismatch` | `warning` | keep |  |
+| `KubeletClientCertificateExpiration` | `critical` | keep |  |
+| `KubeletClientCertificateExpiration` | `warning` | keep |  |
+| `KubeletClientCertificateRenewalErrors` | `warning` | keep |  |
+| `KubeletDown` | `critical` | keep |  |
+| `KubeletInstanceUnreachable` | `warning` | keep |  |
+| `KubeletPlegDurationHigh` | `warning` | keep |  |
+| `KubeletPodStartUpLatencyHigh` | `warning` | keep |  |
+| `KubeletServerCertificateExpiration` | `critical` | keep |  |
+| `KubeletServerCertificateExpiration` | `warning` | keep |  |
+| `KubeletServerCertificateRenewalErrors` | `warning` | keep |  |
+| `KubeletTooManyPods` | `info` | keep |  |
+
+### Kubernetes (3)
+
+| alertname | sev | destino hoy | firing |
+|---|---|---|---:|
+| `KubernetesDaemonSetUnavailable` | `warning` | keep |  |
+| `KubernetesDeploymentUnavailable` | `critical` | keep |  |
+| `KubernetesStatefulSetUnavailable` | `critical` | keep |  |
 
 ### LabelGeneration (1)
 
 | alertname | sev | destino hoy | firing |
 |---|---|---|---:|
-| `LabelGenerationStuck` | `page` | synapse-webhook |  |
+| `LabelGenerationStuck` | `page` | keep |  |
 
 ### Labels (10)
 
 | alertname | sev | destino hoy | firing |
 |---|---|---|---:|
-| `LabelsDeepMonitorIncident` | `warning` | telegram-labels-deep |  |
-| `LabelsDeepMonitorMissing` | `warning` | telegram-labels-deep |  |
-| `LabelsValkeyEvictions` | `page` | synapse-webhook |  |
-| `LabelsValkeyExporterDown` | `page` | synapse-webhook |  |
-| `LabelsValkeyMasterCountInvalid` | `page` | synapse-webhook |  |
-| `LabelsValkeyMemoryGrowth` | `warn` | synapse-webhook |  |
-| `LabelsValkeyMemoryHigh` | `warn` | synapse-webhook |  |
-| `LabelsValkeyMetricsMissing` | `page` | synapse-webhook |  |
-| `LabelsValkeyRejectedConnections` | `page` | synapse-webhook |  |
-| `LabelsValkeyScrapeTargetsLow` | `warn` | synapse-webhook |  |
+| `LabelsDeepMonitorIncident` | `warning` | keep |  |
+| `LabelsDeepMonitorMissing` | `warning` | keep |  |
+| `LabelsValkeyEvictions` | `page` | keep |  |
+| `LabelsValkeyExporterDown` | `page` | keep |  |
+| `LabelsValkeyMasterCountInvalid` | `page` | keep |  |
+| `LabelsValkeyMemoryGrowth` | `warn` | keep |  |
+| `LabelsValkeyMemoryHigh` | `warn` | keep |  |
+| `LabelsValkeyMetricsMissing` | `page` | keep |  |
+| `LabelsValkeyRejectedConnections` | `page` | keep |  |
+| `LabelsValkeyScrapeTargetsLow` | `warn` | keep |  |
 
 ### LibrePlay (14)
 
 | alertname | sev | destino hoy | firing |
 |---|---|---|---:|
-| `LibrePlayDependencyDown` | `critical` | synapse-webhook + telegram-emergencia |  |
-| `LibrePlayDependencyLatencyHigh` | `warn` | synapse-webhook |  |
-| `LibrePlayDeploymentUnavailable` | `critical` | synapse-webhook + telegram-emergencia |  |
-| `LibrePlayMetricsScrapeMissing` | `critical` | synapse-webhook + telegram-emergencia |  |
-| `LibrePlayPostgresUnavailable` | `critical` | synapse-webhook + telegram-emergencia |  |
-| `LibrePlayQueueBacklogHigh` | `warn` | synapse-webhook |  |
-| `LibrePlayQueueFailures` | `warn` | synapse-webhook | 1 |
-| `LibrePlaySLOErrorBudgetBurnFast` | `critical` | synapse-webhook + telegram-emergencia |  |
-| `LibrePlaySLOErrorBudgetBurnMedium` | `critical` | synapse-webhook + telegram-emergencia |  |
-| `LibrePlaySLOErrorBudgetBurnSlow` | `warn` | synapse-webhook |  |
-| `LibrePlaySyntheticAvailabilityBudgetLow` | `warn` | synapse-webhook |  |
-| `LibrePlaySyntheticDown` | `critical` | synapse-webhook + telegram-emergencia |  |
-| `LibrePlaySyntheticLatencyHigh` | `warn` | synapse-webhook |  |
-| `LibrePlayWorkerOrWebRestarting` | `warn` | synapse-webhook |  |
+| `LibrePlayDependencyDown` | `critical` | keep |  |
+| `LibrePlayDependencyLatencyHigh` | `warn` | keep |  |
+| `LibrePlayDeploymentUnavailable` | `critical` | keep |  |
+| `LibrePlayMetricsScrapeMissing` | `critical` | keep |  |
+| `LibrePlayPostgresUnavailable` | `critical` | keep |  |
+| `LibrePlayQueueBacklogHigh` | `warn` | keep |  |
+| `LibrePlayQueueFailures` | `warn` | keep | 1 |
+| `LibrePlaySLOErrorBudgetBurnFast` | `critical` | keep |  |
+| `LibrePlaySLOErrorBudgetBurnMedium` | `critical` | keep |  |
+| `LibrePlaySLOErrorBudgetBurnSlow` | `warn` | keep |  |
+| `LibrePlaySyntheticAvailabilityBudgetLow` | `warn` | keep |  |
+| `LibrePlaySyntheticDown` | `critical` | keep |  |
+| `LibrePlaySyntheticLatencyHigh` | `warn` | keep |  |
+| `LibrePlayWorkerOrWebRestarting` | `warn` | keep |  |
 
 ### MCP (4)
 
 | alertname | sev | destino hoy | firing |
 |---|---|---|---:|
-| `MCPBackendCrashLooping` | `warning` | synapse-webhook |  |
-| `MCPBackendMemNearLimit` | `warning` | synapse-webhook |  |
-| `MCPBackendOOMKilled` | `critical` | synapse-webhook + telegram-emergencia |  |
-| `MCPGatewayDown` | `critical` | synapse-webhook + telegram-emergencia |  |
+| `MCPBackendCrashLooping` | `warning` | keep |  |
+| `MCPBackendMemNearLimit` | `warning` | keep |  |
+| `MCPBackendOOMKilled` | `critical` | keep |  |
+| `MCPGatewayDown` | `critical` | keep |  |
 
-### Node (28 — 21 ciegas)
+### Node (28)
 
 | alertname | sev | destino hoy | firing |
 |---|---|---|---:|
-| `NodeBecomesReadonlyIn3Days` | `warning` | **BLACKHOLE** |  |
-| `NodeBondingDegraded` | `warning` | **BLACKHOLE** |  |
-| `NodeCPUHighUsage` | `info` | synapse-webhook |  |
-| `NodeClockNotSynchronising` | `warning` | **BLACKHOLE** |  |
-| `NodeClockSkewDetected` | `warning` | **BLACKHOLE** |  |
-| `NodeDiskIOSaturation` | `warning` | **BLACKHOLE** |  |
-| `NodeFileDescriptorLimit` | `critical` | synapse-webhook + telegram-emergencia |  |
-| `NodeFileDescriptorLimit` | `warning` | **BLACKHOLE** |  |
-| `NodeFilesystemAlmostOutOfFiles` | `critical` | synapse-webhook + telegram-emergencia |  |
-| `NodeFilesystemAlmostOutOfFiles` | `warning` | **BLACKHOLE** |  |
-| `NodeFilesystemAlmostOutOfSpace` | `critical` | synapse-webhook + telegram-emergencia |  |
-| `NodeFilesystemAlmostOutOfSpace` | `warning` | **BLACKHOLE** |  |
-| `NodeFilesystemFilesFillingUp` | `critical` | synapse-webhook + telegram-emergencia |  |
-| `NodeFilesystemFilesFillingUp` | `warning` | **BLACKHOLE** |  |
-| `NodeFilesystemSpaceFillingUp` | `critical` | synapse-webhook + telegram-emergencia |  |
-| `NodeFilesystemSpaceFillingUp` | `warning` | **BLACKHOLE** |  |
-| `NodeHighNumberConntrackEntriesUsed` | `warning` | **BLACKHOLE** |  |
-| `NodeMemoryHighUtilization` | `warning` | **BLACKHOLE** |  |
-| `NodeMemoryMajorPagesFaults` | `warning` | **BLACKHOLE** |  |
-| `NodeNetworkInterfaceFlapping` | `warning` | **BLACKHOLE** |  |
-| `NodeNetworkReceiveErrs` | `warning` | **BLACKHOLE** |  |
-| `NodeNetworkTransmitErrs` | `warning` | **BLACKHOLE** |  |
-| `NodeRAIDDegraded` | `critical` | synapse-webhook + telegram-emergencia |  |
-| `NodeRAIDDiskFailure` | `warning` | **BLACKHOLE** |  |
-| `NodeSystemSaturation` | `warning` | **BLACKHOLE** | 2 |
-| `NodeSystemdServiceCrashlooping` | `warning` | **BLACKHOLE** |  |
-| `NodeSystemdServiceFailed` | `warning` | **BLACKHOLE** |  |
-| `NodeTextFileCollectorScrapeError` | `warning` | **BLACKHOLE** |  |
+| `NodeBecomesReadonlyIn3Days` | `warning` | keep |  |
+| `NodeBondingDegraded` | `warning` | keep |  |
+| `NodeCPUHighUsage` | `info` | keep |  |
+| `NodeClockNotSynchronising` | `warning` | keep |  |
+| `NodeClockSkewDetected` | `warning` | keep |  |
+| `NodeDiskIOSaturation` | `warning` | keep |  |
+| `NodeFileDescriptorLimit` | `critical` | keep |  |
+| `NodeFileDescriptorLimit` | `warning` | keep |  |
+| `NodeFilesystemAlmostOutOfFiles` | `critical` | keep |  |
+| `NodeFilesystemAlmostOutOfFiles` | `warning` | keep |  |
+| `NodeFilesystemAlmostOutOfSpace` | `critical` | keep |  |
+| `NodeFilesystemAlmostOutOfSpace` | `warning` | keep |  |
+| `NodeFilesystemFilesFillingUp` | `critical` | keep |  |
+| `NodeFilesystemFilesFillingUp` | `warning` | keep |  |
+| `NodeFilesystemSpaceFillingUp` | `critical` | keep |  |
+| `NodeFilesystemSpaceFillingUp` | `warning` | keep |  |
+| `NodeHighNumberConntrackEntriesUsed` | `warning` | keep |  |
+| `NodeMemoryHighUtilization` | `warning` | keep |  |
+| `NodeMemoryMajorPagesFaults` | `warning` | keep |  |
+| `NodeNetworkInterfaceFlapping` | `warning` | keep |  |
+| `NodeNetworkReceiveErrs` | `warning` | keep |  |
+| `NodeNetworkTransmitErrs` | `warning` | keep |  |
+| `NodeRAIDDegraded` | `critical` | keep |  |
+| `NodeRAIDDiskFailure` | `warning` | keep |  |
+| `NodeSystemSaturation` | `warning` | keep | 1 |
+| `NodeSystemdServiceCrashlooping` | `warning` | keep |  |
+| `NodeSystemdServiceFailed` | `warning` | keep |  |
+| `NodeTextFileCollectorScrapeError` | `warning` | keep |  |
 
 ### OVH (3)
 
 | alertname | sev | destino hoy | firing |
 |---|---|---|---:|
-| `OVHPVCHubMetricMissing` | `warning` | synapse-webhook |  |
-| `OVHPVCHubNeverSynced` | `warning` | synapse-webhook |  |
-| `OVHPVCHubStale` | `warning` | synapse-webhook |  |
+| `OVHPVCHubMetricMissing` | `warning` | keep |  |
+| `OVHPVCHubNeverSynced` | `warning` | keep |  |
+| `OVHPVCHubStale` | `warning` | keep |  |
 
 ### Rabbitmq (13)
 
 | alertname | sev | destino hoy | firing |
 |---|---|---|---:|
-| `RabbitmqClusterPartition` | `critical` | synapse-webhook + telegram-emergencia |  |
-| `RabbitmqClusterSizeBelowExpected` | `critical` | synapse-webhook + telegram-emergencia |  |
-| `RabbitmqDlqGrowth` | `warning` | synapse-webhook | 4 |
-| `RabbitmqFunctionalQueueNoConsumer` | `warning` | synapse-webhook | 2 |
-| `RabbitmqHeadMessageStale` | `critical` | synapse-webhook + telegram-emergencia |  |
-| `RabbitmqMemoryAlarmActive` | `critical` | synapse-webhook + telegram-emergencia |  |
-| `RabbitmqMemoryHigh` | `critical` | synapse-webhook + telegram-emergencia |  |
-| `RabbitmqMnesiaPartitionStuck` | `critical` | synapse-webhook + telegram-emergencia |  |
-| `RabbitmqNodeScrapeBlackout` | `critical` | synapse-webhook + telegram-emergencia |  |
-| `RabbitmqPeersMetricMissing` | `critical` | synapse-webhook + telegram-emergencia |  |
-| `RabbitmqQueueBacklogHigh` | `warning` | synapse-webhook |  |
-| `RabbitmqScrapeMissing` | `critical` | synapse-webhook + telegram-emergencia |  |
-| `RabbitmqUnackedStuck` | `critical` | synapse-webhook + telegram-emergencia |  |
+| `RabbitmqClusterPartition` | `critical` | keep |  |
+| `RabbitmqClusterSizeBelowExpected` | `critical` | keep |  |
+| `RabbitmqDlqGrowth` | `warning` | keep | 26 |
+| `RabbitmqFunctionalQueueNoConsumer` | `warning` | keep |  |
+| `RabbitmqHeadMessageStale` | `critical` | keep |  |
+| `RabbitmqMemoryAlarmActive` | `critical` | keep |  |
+| `RabbitmqMemoryHigh` | `critical` | keep |  |
+| `RabbitmqMnesiaPartitionStuck` | `critical` | keep |  |
+| `RabbitmqNodeScrapeBlackout` | `critical` | keep |  |
+| `RabbitmqPeersMetricMissing` | `critical` | keep |  |
+| `RabbitmqQueueBacklogHigh` | `warning` | keep |  |
+| `RabbitmqScrapeMissing` | `critical` | keep |  |
+| `RabbitmqUnackedStuck` | `critical` | keep |  |
 
-### Request (1 — 1 ciegas)
-
-| alertname | sev | destino hoy | firing |
-|---|---|---|---:|
-| `RequestErrorsToAPI` | `warning` | **BLACKHOLE** | 2 |
-
-### ScrapePool (1 — 1 ciegas)
+### Request (1)
 
 | alertname | sev | destino hoy | firing |
 |---|---|---|---:|
-| `ScrapePoolHasNoTargets` | `warning` | **BLACKHOLE** | 1 |
+| `RequestErrorsToAPI` | `warning` | keep | 2 |
+
+### ScrapePool (1)
+
+| alertname | sev | destino hoy | firing |
+|---|---|---|---:|
+| `ScrapePoolHasNoTargets` | `warning` | keep | 1 |
 
 ### Sii (2)
 
 | alertname | sev | destino hoy | firing |
 |---|---|---|---:|
-| `SiiMonthlyReportFailed` | `warning` | synapse-webhook |  |
-| `SiiMonthlyReportMissing` | `critical` | synapse-webhook + telegram-emergencia |  |
+| `SiiMonthlyReportFailed` | `warning` | keep |  |
+| `SiiMonthlyReportMissing` | `critical` | keep |  |
 
-### Synapse (16)
-
-| alertname | sev | destino hoy | firing |
-|---|---|---|---:|
-| `SynapseAdapterTargetDown` | `warning` | synapse-webhook |  |
-| `SynapseCoreAbsent` | `critical` | telegram-emergencia |  |
-| `SynapseDLQBacklog` | `warning` | synapse-webhook |  |
-| `SynapseDispatcherNotPublishing` | `critical` | telegram-emergencia |  |
-| `SynapseDown` | `critical` | telegram-emergencia |  |
-| `SynapseJanitorArchiveFailing` | `warn` | synapse-webhook |  |
-| `SynapseJanitorStalled` | `warn` | synapse-webhook |  |
-| `SynapseOperatorRestarts` | `page` | synapse-webhook |  |
-| `SynapseOrphanIndexEntries` | `page` | synapse-webhook |  |
-| `SynapseOutboxExhausted` | `warning` | synapse-webhook | 2 |
-| `SynapseOutboxOldestStale` | `warning` | synapse-webhook | 2 |
-| `SynapsePollFaultedBacklog` | `warn` | synapse-webhook |  |
-| `SynapseReconcileApplyFailed` | `critical` | synapse-webhook + telegram-emergencia |  |
-| `SynapseReconcileApplyPartial` | `critical` | synapse-webhook + telegram-emergencia |  |
-| `SynapseReconcileRevertFailed` | `critical` | synapse-webhook + telegram-emergencia |  |
-| `SynapseScheduledWorkflowStalled` | `warning` | synapse-webhook |  |
-
-### Target (1 — 1 ciegas)
+### Synapse (17)
 
 | alertname | sev | destino hoy | firing |
 |---|---|---|---:|
-| `TargetDown` | `warning` | **BLACKHOLE** | 1 |
+| `SynapseAdapterTargetDown` | `warning` | keep |  |
+| `SynapseCoreAbsent` | `critical` | keep |  |
+| `SynapseDLQBacklog` | `warning` | keep |  |
+| `SynapseDispatcherNotPublishing` | `critical` | keep |  |
+| `SynapseDown` | `critical` | keep |  |
+| `SynapseJanitorArchiveFailing` | `warn` | keep |  |
+| `SynapseJanitorStalled` | `warn` | keep |  |
+| `SynapseOperatorRestarts` | `page` | keep |  |
+| `SynapseOrphanIndexEntries` | `page` | keep |  |
+| `SynapseOutboxExhausted` | `warning` | keep | 2 |
+| `SynapseOutboxOldestStale` | `warning` | keep | 2 |
+| `SynapsePollFaultedBacklog` | `warn` | keep |  |
+| `SynapseReconcileApplyFailed` | `critical` | keep |  |
+| `SynapseReconcileApplyPartial` | `critical` | keep |  |
+| `SynapseReconcileRevertFailed` | `critical` | keep |  |
+| `SynapseScheduledWorkflowStalled` | `warning` | keep | 1 |
+| `SynapseWorkflowFailed` | `warning` | keep |  |
 
-### TooMany (7 — 5 ciegas)
+### Target (1)
 
 | alertname | sev | destino hoy | firing |
 |---|---|---|---:|
-| `TooManyLogs` | `warning` | **BLACKHOLE** | 3 |
-| `TooManyMissedIterations` | `warning` | **BLACKHOLE** |  |
-| `TooManyRemoteWriteErrors` | `warning` | **BLACKHOLE** |  |
-| `TooManyRestarts` | `critical` | synapse-webhook + telegram-emergencia |  |
-| `TooManyScrapeErrors` | `warning` | **BLACKHOLE** | 1 |
-| `TooManyTSIDMisses` | `critical` | synapse-webhook + telegram-emergencia |  |
-| `TooManyWriteErrors` | `warning` | **BLACKHOLE** |  |
+| `TargetDown` | `warning` | keep | 2 |
+
+### TooMany (7)
+
+| alertname | sev | destino hoy | firing |
+|---|---|---|---:|
+| `TooManyLogs` | `warning` | keep | 3 |
+| `TooManyMissedIterations` | `warning` | keep |  |
+| `TooManyRemoteWriteErrors` | `warning` | keep |  |
+| `TooManyRestarts` | `critical` | keep |  |
+| `TooManyScrapeErrors` | `warning` | keep | 1 |
+| `TooManyTSIDMisses` | `critical` | keep |  |
+| `TooManyWriteErrors` | `warning` | keep |  |
 
 ### Tracking (7)
 
 | alertname | sev | destino hoy | firing |
 |---|---|---|---:|
-| `TrackingIngestionBacklog` | `warn` | synapse-webhook |  |
-| `TrackingIngestionBacklogStuck` | `warn` | synapse-webhook |  |
-| `TrackingIngestionBadEvents` | `warn` | synapse-webhook |  |
-| `TrackingIngestionNatsDown` | `page` | synapse-webhook |  |
-| `TrackingIngestionResubscribeStorm` | `warn` | synapse-webhook |  |
-| `TrackingIngestionSilent` | `warn` | synapse-webhook |  |
-| `TrackingPage404Spike` | `critical` | synapse-webhook + telegram-emergencia |  |
+| `TrackingIngestionBacklog` | `warn` | keep |  |
+| `TrackingIngestionBacklogStuck` | `warn` | keep |  |
+| `TrackingIngestionBadEvents` | `warn` | keep |  |
+| `TrackingIngestionNatsDown` | `page` | keep |  |
+| `TrackingIngestionResubscribeStorm` | `warn` | keep |  |
+| `TrackingIngestionSilent` | `warn` | keep |  |
+| `TrackingPage404Spike` | `critical` | keep |  |
 
-### otros (85 — 36 ciegas)
+### otros (89)
 
 | alertname | sev | destino hoy | firing |
 |---|---|---|---:|
-| `AffiliateAppHealthLatencyHigh` | `warning` | **BLACKHOLE** |  |
-| `AffiliateAppMemoryHigh` | `warning` | **BLACKHOLE** |  |
-| `AffiliateAppNotReady` | `critical` | synapse-webhook + telegram-emergencia |  |
-| `AffiliateAppOOMKilled` | `critical` | synapse-webhook + telegram-emergencia |  |
-| `AffiliateAppPublicDown` | `critical` | synapse-webhook + telegram-emergencia |  |
-| `AffiliateAppRestartSpike` | `critical` | synapse-webhook + telegram-emergencia |  |
-| `AlertingRulesError` | `warning` | **BLACKHOLE** | 1 |
-| `CPUThrottlingHigh` | `info` | synapse-webhook |  |
-| `ConcurrentInsertsHitTheLimit` | `warning` | **BLACKHOLE** |  |
-| `ConfigurationReloadFailure` | `warning` | **BLACKHOLE** |  |
-| `ConversationAutopilotSilent24h` | `critical` | synapse-webhook + telegram-emergencia |  |
-| `ConversationDLQDepth` | `critical` | synapse-webhook + telegram-emergencia |  |
-| `ConversationHandoffSpike` | `critical` | synapse-webhook + telegram-emergencia |  |
-| `ConversationScrapeAbsent` | `critical` | synapse-webhook + telegram-emergencia |  |
-| `ConversationTimeoutRate` | `critical` | synapse-webhook + telegram-emergencia |  |
-| `DiskRunsOutOfSpace` | `critical` | synapse-webhook + telegram-emergencia |  |
-| `DiskRunsOutOfSpaceIn3Days` | `critical` | synapse-webhook + telegram-emergencia |  |
-| `HighQueueDepth` | `warning` | **BLACKHOLE** |  |
-| `IndexDBRecordsDrop` | `critical` | synapse-webhook + telegram-emergencia |  |
-| `InfoInhibitor` | `none` | **BLACKHOLE** | 1 |
-| `K8sCronJobFailed` | `warning` | cron-analyzer |  |
-| `LitellmNotReady` | `critical` | synapse-webhook + telegram-emergencia |  |
-| `LlmPoolCapabilityUnavailable` | `critical` | synapse-webhook + telegram-emergencia |  |
-| `LlmResidentDeploymentUnavailable` | `critical` | synapse-webhook + telegram-emergencia |  |
-| `LlmResidentScaledToZero` | `critical` | synapse-webhook + telegram-emergencia |  |
-| `LogErrors` | `warning` | **BLACKHOLE** |  |
-| `MetadataCacheUtilizationIsTooHigh` | `warning` | **BLACKHOLE** |  |
-| `MetricNameStatsCacheUtilizationIsTooHigh` | `warning` | **BLACKHOLE** |  |
-| `OpenClawTelegramRouterDeadLetters` | `critical` | synapse-webhook + telegram-emergencia |  |
-| `OpenClawTelegramRouterMetricsMissing` | `critical` | synapse-webhook + telegram-emergencia |  |
-| `OpenClawTelegramRouterPaused` | `warning` | **BLACKHOLE** |  |
-| `OpenClawTelegramRouterQueueBacklog` | `critical` | synapse-webhook + telegram-emergencia |  |
-| `PersistentQueueForReadsIsSaturated` | `warning` | **BLACKHOLE** |  |
-| `PersistentQueueForWritesIsSaturated` | `warning` | **BLACKHOLE** |  |
-| `PersistentQueueIsDroppingData` | `critical` | synapse-webhook + telegram-emergencia |  |
-| `PersistentQueueRunsOutOfSpaceIn12Hours` | `warning` | **BLACKHOLE** |  |
-| `PersistentQueueRunsOutOfSpaceIn4Hours` | `critical` | synapse-webhook + telegram-emergencia |  |
-| `PickerPurchaseRecommendStale` | `warning` | **BLACKHOLE** |  |
-| `PickerSignalsNeverRan` | `warning` | **BLACKHOLE** |  |
-| `PickerSignalsStale` | `warning` | **BLACKHOLE** |  |
-| `ProcessNearFDLimits` | `critical` | synapse-webhook + telegram-emergencia |  |
-| `RPCErrors` | `warning` | **BLACKHOLE** |  |
-| `ReconcileErrors` | `warning` | **BLACKHOLE** |  |
-| `RecordingRulesError` | `warning` | **BLACKHOLE** |  |
-| `RecordingRulesNoData` | `info` | synapse-webhook |  |
-| `RejectedRemoteWriteDataBlocksAreDropped` | `warning` | **BLACKHOLE** |  |
-| `RemoteWriteConnectionIsSaturated` | `warning` | **BLACKHOLE** |  |
-| `RemoteWriteDroppingData` | `critical` | synapse-webhook + telegram-emergencia |  |
-| `RemoteWriteErrors` | `warning` | **BLACKHOLE** |  |
-| `RemoteWriteQueueHighUsage` | `warning` | **BLACKHOLE** |  |
-| `RowsRejectedOnIngestion` | `warning` | **BLACKHOLE** |  |
-| `SeriesLimitDayReached` | `critical` | synapse-webhook + telegram-emergencia |  |
-| `SeriesLimitHourReached` | `critical` | synapse-webhook + telegram-emergencia |  |
-| `ServiceDown` | `critical` | synapse-webhook + telegram-emergencia |  |
-| `SharedDatastoreCoLocated` | `warning` | synapse-webhook |  |
-| `SharedDatastoreUnreachable` | `critical` | synapse-webhook + telegram-emergencia |  |
-| `SharedValkeyAofUnhealthy` | `critical` | synapse-webhook + telegram-emergencia |  |
-| `SharedValkeyEvictions` | `warning` | **BLACKHOLE** |  |
-| `SharedValkeyExporterDown` | `critical` | synapse-webhook + telegram-emergencia |  |
-| `SharedValkeyMasterCountInvalid` | `critical` | synapse-webhook + telegram-emergencia |  |
-| `SharedValkeyMemoryHigh` | `warning` | **BLACKHOLE** |  |
-| `SharedValkeyMetricsMissing` | `critical` | synapse-webhook + telegram-emergencia |  |
-| `SharedValkeyRejectedConnections` | `critical` | synapse-webhook + telegram-emergencia |  |
-| `SharedValkeyReplicaCountLow` | `critical` | synapse-webhook + telegram-emergencia |  |
-| `SharedValkeyScrapeTargetsLow` | `warning` | **BLACKHOLE** |  |
-| `StreamAggrDedupFlushTimeout` | `warning` | **BLACKHOLE** |  |
-| `StreamAggrFlushTimeout` | `warning` | **BLACKHOLE** |  |
-| `TooHighCPUUsage` | `critical` | synapse-webhook + telegram-emergencia |  |
-| `TooHighChurnRate` | `warning` | **BLACKHOLE** |  |
-| `TooHighChurnRate24h` | `warning` | **BLACKHOLE** |  |
-| `TooHighGoroutineSchedulingLatency` | `critical` | synapse-webhook + telegram-emergencia |  |
-| `TooHighMemoryUsage` | `critical` | synapse-webhook + telegram-emergencia |  |
-| `TooHighQueryLoad` | `warning` | **BLACKHOLE** |  |
-| `TooHighSlowInsertsRate` | `warning` | **BLACKHOLE** |  |
-| `UPSBatteryLow` | `critical` | synapse-webhook + telegram-emergencia |  |
-| `UPSLowCharge` | `critical` | synapse-webhook + telegram-emergencia |  |
-| `UPSMetricsAbsent` | `critical` | synapse-webhook + telegram-emergencia |  |
-| `UPSOnBattery` | `critical` | synapse-webhook + telegram-emergencia |  |
-| `UPSReplaceBattery` | `critical` | synapse-webhook + telegram-emergencia |  |
-| `VllmLaneRestartLoop` | `critical` | synapse-webhook + telegram-emergencia |  |
-| `VminsertVmstorageConnectionIsSaturated` | `warning` | **BLACKHOLE** |  |
-| `Watchdog` | `none` | **BLACKHOLE** | 1 |
-| `WeightResolverDown` | `critical` | synapse-webhook + telegram-emergencia |  |
-| `WeightResolverMetricMissing` | `critical` | synapse-webhook + telegram-emergencia |  |
-| `WeightResolverRestartSpike` | `critical` | synapse-webhook + telegram-emergencia |  |
+| `AffiliateAppHealthLatencyHigh` | `warning` | keep |  |
+| `AffiliateAppMemoryHigh` | `warning` | keep |  |
+| `AffiliateAppNotReady` | `critical` | keep |  |
+| `AffiliateAppOOMKilled` | `critical` | keep |  |
+| `AffiliateAppPublicDown` | `critical` | keep |  |
+| `AffiliateAppRestartSpike` | `critical` | keep |  |
+| `AlertingRulesError` | `warning` | keep | 1 |
+| `CPUThrottlingHigh` | `info` | keep | 2 |
+| `ConcurrentInsertsHitTheLimit` | `warning` | keep |  |
+| `ConfigurationReloadFailure` | `warning` | keep |  |
+| `ConversationAutopilotSilent24h` | `critical` | keep |  |
+| `ConversationDLQDepth` | `critical` | keep |  |
+| `ConversationHandoffSpike` | `critical` | keep |  |
+| `ConversationScrapeAbsent` | `critical` | keep |  |
+| `ConversationTimeoutRate` | `critical` | keep |  |
+| `DiskRunsOutOfSpace` | `critical` | keep |  |
+| `DiskRunsOutOfSpaceIn3Days` | `critical` | keep |  |
+| `HighQueueDepth` | `warning` | keep |  |
+| `IndexDBRecordsDrop` | `critical` | keep |  |
+| `InfoInhibitor` | `none` | keep | 3 |
+| `K8sCronJobFailed` | `warning` | keep |  |
+| `KeepBackendAbsent` | `critical` | backstop-telegram + keep |  |
+| `KeepBackendNotSpread` | `warning` | keep | 1 |
+| `KeepIngestionDown` | `critical` | backstop-telegram + keep |  |
+| `KeepIngestionSilent` | `warning` | backstop-telegram + keep |  |
+| `LitellmNotReady` | `critical` | keep |  |
+| `LlmPoolCapabilityUnavailable` | `critical` | keep |  |
+| `LlmResidentDeploymentUnavailable` | `critical` | keep |  |
+| `LlmResidentScaledToZero` | `critical` | keep |  |
+| `LogErrors` | `warning` | keep |  |
+| `MetadataCacheUtilizationIsTooHigh` | `warning` | keep |  |
+| `MetricNameStatsCacheUtilizationIsTooHigh` | `warning` | keep |  |
+| `OpenClawTelegramRouterDeadLetters` | `critical` | keep |  |
+| `OpenClawTelegramRouterMetricsMissing` | `critical` | keep |  |
+| `OpenClawTelegramRouterPaused` | `warning` | keep | 1 |
+| `OpenClawTelegramRouterQueueBacklog` | `critical` | keep |  |
+| `PersistentQueueForReadsIsSaturated` | `warning` | keep |  |
+| `PersistentQueueForWritesIsSaturated` | `warning` | keep |  |
+| `PersistentQueueIsDroppingData` | `critical` | keep |  |
+| `PersistentQueueRunsOutOfSpaceIn12Hours` | `warning` | keep |  |
+| `PersistentQueueRunsOutOfSpaceIn4Hours` | `critical` | keep |  |
+| `PickerPurchaseRecommendStale` | `warning` | keep |  |
+| `PickerSignalsNeverRan` | `warning` | keep |  |
+| `PickerSignalsStale` | `warning` | keep |  |
+| `ProcessNearFDLimits` | `critical` | keep |  |
+| `RPCErrors` | `warning` | keep |  |
+| `ReconcileErrors` | `warning` | keep |  |
+| `RecordingRulesError` | `warning` | keep |  |
+| `RecordingRulesNoData` | `info` | keep |  |
+| `RejectedRemoteWriteDataBlocksAreDropped` | `warning` | keep |  |
+| `RemoteWriteConnectionIsSaturated` | `warning` | keep |  |
+| `RemoteWriteDroppingData` | `critical` | keep |  |
+| `RemoteWriteErrors` | `warning` | keep |  |
+| `RemoteWriteQueueHighUsage` | `warning` | keep |  |
+| `RowsRejectedOnIngestion` | `warning` | keep |  |
+| `SeriesLimitDayReached` | `critical` | keep |  |
+| `SeriesLimitHourReached` | `critical` | keep |  |
+| `ServiceDown` | `critical` | keep |  |
+| `SharedDatastoreCoLocated` | `warning` | keep |  |
+| `SharedDatastoreUnreachable` | `critical` | keep |  |
+| `SharedValkeyAofUnhealthy` | `critical` | keep |  |
+| `SharedValkeyEvictions` | `warning` | keep |  |
+| `SharedValkeyExporterDown` | `critical` | keep |  |
+| `SharedValkeyMasterCountInvalid` | `critical` | keep |  |
+| `SharedValkeyMemoryHigh` | `warning` | keep |  |
+| `SharedValkeyMetricsMissing` | `critical` | keep |  |
+| `SharedValkeyRejectedConnections` | `critical` | keep |  |
+| `SharedValkeyReplicaCountLow` | `critical` | keep |  |
+| `SharedValkeyScrapeTargetsLow` | `warning` | keep |  |
+| `StreamAggrDedupFlushTimeout` | `warning` | keep |  |
+| `StreamAggrFlushTimeout` | `warning` | keep |  |
+| `TooHighCPUUsage` | `critical` | keep |  |
+| `TooHighChurnRate` | `warning` | keep |  |
+| `TooHighChurnRate24h` | `warning` | keep |  |
+| `TooHighGoroutineSchedulingLatency` | `critical` | keep |  |
+| `TooHighMemoryUsage` | `critical` | keep |  |
+| `TooHighQueryLoad` | `warning` | keep |  |
+| `TooHighSlowInsertsRate` | `warning` | keep |  |
+| `UPSBatteryLow` | `critical` | keep |  |
+| `UPSLowCharge` | `critical` | keep |  |
+| `UPSMetricsAbsent` | `critical` | keep |  |
+| `UPSOnBattery` | `critical` | keep |  |
+| `UPSReplaceBattery` | `critical` | keep |  |
+| `VllmLaneRestartLoop` | `critical` | keep |  |
+| `VminsertVmstorageConnectionIsSaturated` | `warning` | keep |  |
+| `Watchdog` | `none` | keep | 1 |
+| `WeightResolverDown` | `critical` | keep |  |
+| `WeightResolverMetricMissing` | `critical` | keep |  |
+| `WeightResolverRestartSpike` | `critical` | keep |  |
 
