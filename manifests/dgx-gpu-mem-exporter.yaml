@@ -45,7 +45,7 @@ spec:
         - { key: pool, operator: Equal, value: dev, effect: PreferNoSchedule }
       containers:
         - name: exporter
-          image: harbor.e-dani.com/homelab/dgx-node-metrics:20260611-2
+          image: harbor.e-dani.com/homelab/dgx-node-metrics:container-name-cache-20260727-d3549ebf@sha256:a4d9a51116ab97cbaf873444c6313d972ae2049e811314551ee79ffa94fa87cc
           ports:
             - { containerPort: 9108, name: metrics }
           env:
@@ -148,7 +148,7 @@ spec:
         - { key: pool, operator: Equal, value: dev, effect: PreferNoSchedule }
       containers:
         - name: exporter
-          image: harbor.e-dani.com/homelab/dgx-node-metrics:20260611-2
+          image: harbor.e-dani.com/homelab/dgx-node-metrics:container-name-cache-20260727-d3549ebf@sha256:a4d9a51116ab97cbaf873444c6313d972ae2049e811314551ee79ffa94fa87cc
           ports:
             - { containerPort: 9108, name: metrics }
           env:
