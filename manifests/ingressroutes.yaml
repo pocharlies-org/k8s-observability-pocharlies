@@ -197,6 +197,31 @@ spec:
   entryPoints:
     - websecure
   routes:
+    # El preflight de CORS va SIN la cadena SSO, y no es una excepción
+    # cosmética: el navegador manda `OPTIONS` sin credenciales por diseño (es
+    # parte del protocolo), así que oauth2-proxy lo veía sin cookie y lo
+    # redirigía a Keycloak con un 302. El navegador exige que el preflight
+    # responda 2xx con `Access-Control-Allow-Origin`; un 302 hacia otro origen
+    # lo invalida, de modo que la petición REAL nunca se enviaba. Efecto: toda
+    # llamada cliente→API de la UI fallaba con un error de red genérico — el
+    # registro de la primera organización incluido — mientras la página cargaba
+    # bien, porque Next.js la renderiza en servidor contra el Service
+    # in-cluster, sin CORS ni SSO de por medio.
+    #
+    # Dejar pasar OPTIONS sin autenticar no abre nada: la respuesta sólo
+    # publica qué métodos y cabeceras admite el endpoint, no datos, y la
+    # petición real sigue pasando por `sso-chain`. La app ya responde el
+    # preflight correctamente por su cuenta (`CORS(app, origins=FRONTEND_URL,
+    # supports_credentials=True)` en main_compute.py, que además salta la
+    # verificación de token en OPTIONS): sólo hacía falta que le llegase.
+    #
+    # `priority` por encima de la ruta general para que gane el match.
+    - kind: Rule
+      match: Host(`aurora-api.lan.e-dani.com`) && Method(`OPTIONS`)
+      priority: 200
+      services:
+        - name: aurora-server
+          port: 5080
     - kind: Rule
       match: Host(`aurora-api.lan.e-dani.com`)
       priority: 100
