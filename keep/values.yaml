@@ -314,6 +314,39 @@ backend:
     - name: KEEP_OAUTH2_PROXY_NOC_ROLES
       value: "/edani-operators"
 
+    # --- Pool de Postgres ---
+    # Incidente de saturación del 28-07-2026: postgres-shared llegó a 367/400
+    # conexiones y keep era el segundo consumidor con 64 (2 pods), de las que 21
+    # estaban `idle in transaction`, la más antigua de 17h18m.
+    #
+    # Dos problemas distintos:
+    #
+    # 1) Techo del pool. El backend arranca 5 procesos por pod (4 workers de
+    #    gunicorn + server_jobs_bg.py) y cada uno crea su propio engine con los
+    #    defaults de db_utils.py — pool_size 5 + max_overflow 10 = 15. Son 75
+    #    conexiones por pod y 150 en total para una carga que rara vez tiene una
+    #    query activa. Con 2 + 3 el techo baja a 25/pod y 50 en el rolling.
+    #
+    # 2) Fuga de transacciones. En keep/api/core/db.py::enrich_alert el upstream
+    #    hace `session.refresh(enrichment)` DESPUÉS de `session.commit()`: el
+    #    refresh abre una transacción nueva para releer la fila y la función
+    #    retorna sin commit ni rollback. La sesión la inyecta el llamante, así
+    #    que la conexión se queda idle in transaction para siempre y su xmin
+    #    bloquea el vacuum de la base `keep`. Es un bug del chart 0.1.96, no
+    #    nuestro; el corte está en el servidor, vía
+    #    `ALTER ROLE keep SET idle_in_transaction_session_timeout='5min'`
+    #    (k8s-infra-pocharlies/databases/postgres-shared/role-settings.yaml).
+    #
+    # pre-ping es obligatorio para (2): sin él, la primera reutilización de una
+    # conexión que el servidor ya cortó explota en la aplicación en vez de
+    # reponerse de forma transparente. Cuesta un SELECT 1 por checkout.
+    - name: DATABASE_POOL_SIZE
+      value: "2"
+    - name: DATABASE_MAX_OVERFLOW
+      value: "3"
+    - name: KEEP_DB_PRE_PING_ENABLED
+      value: "true"
+
   # KEEP_DEFAULT_API_KEYS (la que usa Alertmanager) y KEEP_PROVIDERS.
   envFromSecrets:
     - name: keepsvc-provisioning
