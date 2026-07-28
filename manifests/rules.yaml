@@ -604,6 +604,29 @@ spec:
           annotations:
             summary: "RabbitMQ DLQ {{ $labels.queue }} is growing"
             description: "Dead-letter queue {{ $labels.queue }} (vhost {{ $labels.vhost }}) grew in the last 6h and kept growing for 30m. New messages are dead-lettering — inspect the DLQ payloads and the owning adapter's logs."
+        - alert: SynapseUnroutableMessages
+          # A publish whose routing key matched NO binding. `events` and
+          # `commands` carry an alternate-exchange policy into the `unroutable`
+          # fanout, so instead of the broker silently dropping the message it
+          # lands here. Depth-based on purpose: a single unroutable message is
+          # already a contract break (publisher and consumer disagree on the
+          # routing key), never normal traffic. Motivation: shopify-sii-app
+          # published email.skirmshop.draft for weeks while the live consumer
+          # bound messaging.skirmshop.draft_email — every publish was ack'd,
+          # the app reported draft=queued, and the Gmail drafts never existed.
+          expr: |
+            rabbitmq_detailed_queue_messages_ready{
+              vhost="/synapse",
+              queue="synapse.unroutable"
+            } > 0
+          for: 1m
+          labels:
+            severity: warning
+            area: messaging
+            component: shared-rabbitmq
+          annotations:
+            summary: "Synapse has unroutable messages (contract break)"
+            description: "Queue synapse.unroutable holds messages: some publisher used a routing key with no binding. Inspect the payload headers for the origin (`source`, `connection_name`) and the routing key, then reconcile publisher and consumer against libs/synapse-contracts/registry.yaml. Runbook: skill synapse-contracts."
         - alert: RabbitmqFunctionalQueueNoConsumer
           # A functional queue with messages waiting and zero consumers
           # attached. This is a dead handler. Buffers (which legitimately have
