@@ -80,9 +80,23 @@ config:
   VAULT_KV_BASE_PATH: users
 
   # --- URLs públicas ---
+  #
+  # La API se sirve en el MISMO origen que la UI, bajo `/backend` (Traefik hace
+  # stripPrefix). No es una preferencia estética: el cliente de Aurora llama a
+  # `fetch()` SIN `credentials: "include"` justo en los endpoints de arranque
+  # (`/api/auth/register`, `/api/auth/login`, `/api/auth/setup-org` — verificado
+  # en los chunks del build), y el valor por defecto `same-origin` significa que
+  # en una petición cross-origin el navegador NO manda ninguna cookie, tampoco
+  # la de SSO. Con la API en otro host, oauth2-proxy las veía sin sesión y
+  # respondía 302 a Keycloak: registro y login imposibles, con un "An error
+  # occurred" genérico y cero rastro en los logs. Mismo origen ⇒ la cookie
+  # viaja por defecto, no hay preflight y todo pasa por `sso-chain` igual.
+  #
+  # El resto de la UI sí usa `credentials: "include"` (104 usos en los bundles),
+  # así que funcionaba; sólo rompía la superficie de autenticación.
   FRONTEND_URL: https://aurora.lan.e-dani.com
-  NEXT_PUBLIC_BACKEND_URL: https://aurora-api.lan.e-dani.com
-  NEXT_PUBLIC_WEBSOCKET_URL: wss://aurora-api.lan.e-dani.com
+  NEXT_PUBLIC_BACKEND_URL: https://aurora.lan.e-dani.com/backend
+  NEXT_PUBLIC_WEBSOCKET_URL: wss://aurora.lan.e-dani.com/backend
 
   # ------------------------------------------------------------------------
   # LLM: todo local en el DGX vía LiteLLM
