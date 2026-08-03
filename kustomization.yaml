@@ -2,16 +2,21 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
   - manifests/aurora-namespace.yaml
+  - manifests/k8sgpt-namespace.yaml
   - apps/victoria-metrics.yaml
   - apps/loki.yaml
   - apps/blackbox-exporter.yaml
   - apps/alloy.yaml
   - apps/keep.yaml
   - apps/aurora.yaml
+  - apps/k8sgpt.yaml
   - manifests/ingressroutes.yaml
   - manifests/alertmanager-secrets.yaml
   - manifests/keep-secrets.yaml
   - manifests/aurora-secrets.yaml
+  - manifests/k8sgpt-secrets.yaml
+  - manifests/k8sgpt-config.yaml
+  - manifests/k8sgpt-scrape.yaml
   - keep/rules/apply-job.yaml
   - manifests/alertmanager-config.yaml
   - manifests/probes.yaml

@@ -1,0 +1,71 @@
+# Values del chart k8sgpt-operator.
+#
+# El chart SÓLO despliega el operador (controller-manager). No crea ningún CR
+# `K8sGPT`: la configuración del análisis vive en manifests/k8sgpt-config.yaml,
+# aplicada por el Application padre.
+
+interplex:
+  # Caché distribuida entre varias instancias de k8sgpt. Con un solo CR no
+  # aporta nada y añade un StatefulSet más.
+  enabled: false
+
+dynamicRBAC:
+  # El operador crea ServiceAccount + ClusterRole + ClusterRoleBinding para cada
+  # workload k8sgpt que gestiona. Imprescindible aquí: el análisis es
+  # cluster-wide sin filtros, así que el pod k8sgpt necesita lectura sobre todos
+  # los namespaces, y ese RBAC lo genera el operador, no este chart.
+  enabled: true
+
+serviceMonitor:
+  # DESACTIVADO A PROPÓSITO — no es una omisión.
+  #
+  # El template crea un `monitoring.coreos.com/v1 ServiceMonitor`, y en este
+  # clúster ESA CRD NO EXISTE: la pila es VictoriaMetrics
+  # (vmservicescrapes/vmpodscrapes/vmrules.operator.victoriametrics.com).
+  # Verificado con `kubectl get crd | grep -iE 'servicemonitor|vmservicescrape'`.
+  # Activarlo dejaría el Application OutOfSync permanentemente con un recurso
+  # que el API server rechaza.
+  #
+  # El scrape equivalente, como VMServiceScrape, está en
+  # manifests/k8sgpt-scrape.yaml.
+  enabled: false
+
+grafanaDashboard:
+  # Mismo criterio: se añadirá junto al resto de dashboards del repo
+  # (manifests/dashboards.yaml) cuando haya datos reales que enseñar. Las
+  # métricas que usa son k8sgpt_number_of_results{,_by_type}.
+  enabled: false
+
+controllerManager:
+  replicas: 1
+  manager:
+    # El sink del operador es HTTP saliente. 30s es el default del chart y da
+    # margen de sobra para un POST local.
+    sinkWebhookTimeout: 30s
+    # Los hallazgos ya quedan en los CR `Result`; duplicarlos en el log del
+    # operador sólo engorda Loki sin añadir información.
+    enableResultLogging: false
+    resources:
+      limits:
+        cpu: 500m
+        memory: 256Mi
+      requests:
+        cpu: 10m
+        memory: 64Mi
+  kubeRbacProxy:
+    resources:
+      limits:
+        cpu: 500m
+        memory: 128Mi
+      requests:
+        cpu: 5m
+        memory: 64Mi
+  # Explícito, aunque hoy sea redundante: los nodos GPU (nvidia-dgx, gx10-ec3d)
+  # ya quedan fuera por su taint `dedicated`, y sauvage/ubuntu por `role`/`pool`,
+  # así que sin tolerations esto sólo puede aterrizar en los control-plane
+  # (ks5-cp-*, amd64, sin taints). Se deja escrito para que siga siendo cierto
+  # si algún día se quita un taint: el operador es un controller de Go y no
+  # tiene nada que hacer en una caja que está para servir modelos — el trabajo
+  # pesado lo hace el LLM al otro lado de LiteLLM, no este pod.
+  nodeSelector:
+    kubernetes.io/arch: amd64

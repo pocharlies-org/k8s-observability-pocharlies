@@ -1,0 +1,91 @@
+# Scrape de las métricas de k8sgpt.
+#
+# EL CAMINO NO ES DIRECTO, Y CONVIENE SABER POR QUÉ
+#
+# El controller-manager expone /metrics en `127.0.0.1:8080` — literalmente
+# loopback (verificado en el arg `--metrics-bind-address=127.0.0.1:8080` del
+# Deployment del chart). Desde fuera del pod es inalcanzable. La única puerta es
+# el sidecar `kube-rbac-proxy`, que escucha en 0.0.0.0:8443 con TLS propio y,
+# antes de dejar pasar, hace un SubjectAccessReview contra el token del que
+# scrapea.
+#
+# De ahí las tres cosas raras de este fichero:
+#   1. scheme https + insecureSkipVerify (certificado autofirmado del proxy).
+#   2. bearerTokenFile (el proxy exige identidad, no vale anónimo).
+#   3. Un ClusterRole/Binding que autoriza a vmagent sobre el nonResourceURL
+#      /metrics — sin él, el scrape da 403 y la serie nunca aparece.
+#
+# Métricas que expone k8sgpt (comprobadas en el dashboard del propio chart):
+#   k8sgpt_number_of_results          — total de hallazgos abiertos
+#   k8sgpt_number_of_results_by_type  — desglosado por label `kind`
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: k8sgpt-metrics-reader-vmagent
+  annotations:
+    argocd.argoproj.io/sync-wave: "4"
+  labels:
+    app.kubernetes.io/name: k8sgpt
+    app.kubernetes.io/component: monitoring
+# Definido aquí en vez de reutilizar el `-metrics-reader` que trae el chart:
+# aquel se llama a partir del release name y del nombre del chart
+# (k8sgpt-k8sgpt-operator-metrics-reader), así que una renombrada o un bump de
+# chart romperían el binding en silencio — y un scrape que empieza a dar 403 no
+# avisa, sólo deja de haber datos.
+rules:
+  - nonResourceURLs:
+      - /metrics
+    verbs:
+      - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: k8sgpt-metrics-reader-vmagent
+  annotations:
+    argocd.argoproj.io/sync-wave: "4"
+  labels:
+    app.kubernetes.io/name: k8sgpt
+    app.kubernetes.io/component: monitoring
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: k8sgpt-metrics-reader-vmagent
+subjects:
+  - kind: ServiceAccount
+    name: vmagent-vm-victoria-metrics-k8s-stack
+    namespace: monitoring
+---
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMServiceScrape
+metadata:
+  name: k8sgpt
+  namespace: k8sgpt
+  annotations:
+    argocd.argoproj.io/sync-wave: "5"
+  labels:
+    app.kubernetes.io/name: k8sgpt
+    app.kubernetes.io/component: monitoring
+spec:
+  # El VMAgent del clúster va con selectAllByDefault=true, así que descubre este
+  # objeto sin tener que tocar su CR.
+  selector:
+    matchLabels:
+      # Labels del Service de métricas del chart. NO se usa el nombre del
+      # Service a propósito: el template lo trunca a 20 caracteres
+      # (k8sgpt-k8sgpt-operat-controller-manager-metrics-service), y ese
+      # truncado depende del release name.
+      app.kubernetes.io/name: k8sgpt-operator
+      control-plane: controller-manager
+  endpoints:
+    - port: https
+      scheme: https
+      path: /metrics
+      # 60s: son gauges que sólo cambian cuando termina un ciclo de análisis.
+      # Scrapear más rápido no aporta resolución, sólo series.
+      interval: 60s
+      scrapeTimeout: 10s
+      bearerTokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
+      tlsConfig:
+        insecureSkipVerify: true

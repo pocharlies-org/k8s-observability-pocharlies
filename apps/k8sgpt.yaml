@@ -1,0 +1,40 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: k8sgpt
+  namespace: argocd
+  labels:
+    e-dani.com/tier: infra
+  annotations:
+    # Sync-wave 3: después de Keep (1) y Aurora (2). k8sgpt no depende de que
+    # estén arriba para arrancar, pero sus hallazgos acaban ahí vía
+    # VMRule -> Alertmanager -> Keep -> Aurora, así que el orden refleja el
+    # sentido del flujo.
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  project: default
+  sources:
+    - repoURL: https://charts.k8sgpt.ai/
+      chart: k8sgpt-operator
+      targetRevision: 0.2.27
+      helm:
+        releaseName: k8sgpt
+        valueFiles:
+          - $values/k8sgpt/values.yaml
+    - repoURL: https://github.com/pocharlies/k8s-observability-pocharlies
+      targetRevision: main
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: k8sgpt
+  syncPolicy:
+    automated:
+      selfHeal: true
+      # prune: false como el resto de apps del repo. Las CRDs
+      # (k8sgpts/results/mutations) viven en crds/ del chart y NO deben
+      # borrarse por un sync accidental: se llevarían por delante el CR de
+      # configuración y todos los Result acumulados.
+      prune: false
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

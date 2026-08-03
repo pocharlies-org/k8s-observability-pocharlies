@@ -1,0 +1,20 @@
+# Namespace de k8sgpt, creado explícitamente y ANTES que nada suyo.
+#
+# Mismo motivo que `aurora-namespace.yaml`: este Application (k8s-observability)
+# tiene destino `monitoring`, así que su CreateNamespace=true sólo crea ése, pero
+# lleva recursos que apuntan a `k8sgpt` (ExternalSecret, K8sGPT CR,
+# VMServiceScrape). El namespace lo crearía el Application `k8sgpt`... que se
+# crea en este mismo sync. Huevo y gallina.
+#
+# El sync-wave -2 garantiza que exista antes de que se aplique cualquier recurso
+# suyo, incluido el ExternalSecret que ESO necesita para materializar la key de
+# LiteLLM que el operador monta.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: k8sgpt
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+  labels:
+    app.kubernetes.io/name: k8sgpt
+    app.kubernetes.io/part-of: observability

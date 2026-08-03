@@ -1,0 +1,92 @@
+# Configuración del análisis. Este CR es lo que el operador vigila: al crearlo,
+# despliega un pod `k8sgpt` que escanea el clúster en bucle y materializa cada
+# hallazgo como un CR `Result` en este mismo namespace.
+#
+# CÓMO REPARTE EL TRABAJO (importante para entender el coste)
+#
+# Los analyzers son deterministas y van en Go: detectan el síntoma SIN IA
+# (CrashLoopBackOff, Service sin endpoints, PVC en Pending, Ingress con una
+# class que no existe...). El LLM sólo interviene DESPUÉS, para explicar en
+# lenguaje natural lo ya detectado y proponer arreglo.
+#
+# Consecuencia: el número de llamadas al modelo escala con el número de
+# PROBLEMAS, no con el tamaño del clúster. Un clúster sano ≈ cero llamadas.
+apiVersion: core.k8sgpt.ai/v1alpha1
+kind: K8sGPT
+metadata:
+  name: k8sgpt
+  namespace: k8sgpt
+  annotations:
+    # Wave 5: después del ExternalSecret (4) y, sobre todo, después de que el
+    # Application `k8sgpt` (wave 3) haya instalado la CRD `k8sgpts`.
+    argocd.argoproj.io/sync-wave: "5"
+    #
+    # En el PRIMER sync la CRD todavía no existe cuando ArgoCD valida este
+    # objeto, y el dry-run fallaría. Las sync-waves ordenan los apply dentro de
+    # este Application, pero NO esperan a que un Application hijo esté Healthy,
+    # así que la carrera es real. Con esto ArgoCD se salta el dry-run cuando el
+    # recurso aún no es conocido, y selfHeal converge en el siguiente ciclo.
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+  labels:
+    app.kubernetes.io/name: k8sgpt
+    app.kubernetes.io/part-of: observability
+spec:
+  # Imagen del CLI k8sgpt que despliega el operador (NO la del operador, que la
+  # fija el chart). v0.4.36 es la última estable, 2026-07-10.
+  version: v0.4.36
+
+  ai:
+    enabled: true
+
+    # `openai` es el backend genérico "API compatible con OpenAI", y con
+    # baseUrl apunta a donde sea. No es el openai.com de verdad: aquí no sale
+    # ni un byte del clúster.
+    backend: openai
+    baseUrl: http://litellm.litellm.svc.cluster.local:4000/v1
+
+    # k8sgpt sólo sabe hablar con UN endpoint y UN nombre de modelo: no tiene
+    # concepto de fallback ni de router. Toda la lógica de qué GPU responde vive
+    # al otro lado, en LiteLLM.
+    #
+    # `tooling` resuelve hoy a vllm-ornith-35b-nvfp4-mtp-dgx1 (Ornith 35B NVFP4
+    # en dgx1). Añadir un fallback a `dense` es un cambio SÓLO en LiteLLM
+    # (config de fallbacks del alias); este fichero no se toca.
+    #
+    # OJO: el mapeo alias -> backend lo reescribe en caliente
+    # litellm-dgx-backend-sync según readiness, y los alias `dense*` estaban
+    # deshabilitados a fecha de este commit. Resolver siempre contra
+    # `/v1/models` o el log del sync, nunca contra el nombre del alias.
+    model: tooling
+
+    secret:
+      name: k8sgptsvc-llm
+      key: litellm-key
+
+    # El default del CRD es `true`, y aquí sería contraproducente.
+    #
+    # Anonimizar sustituye nombres de recursos por placeholders antes de mandar
+    # el prompt. Existe para no filtrar topología a un proveedor externo — pero
+    # el modelo es NUESTRO, corre en dgx1 y el tráfico no sale del clúster. Lo
+    # único que conseguiría es cegarlo: sin el nombre real no puede relacionar
+    # un pod con su Deployment ni sugerir el kubectl correcto.
+    anonymized: false
+
+    language: spanish
+
+    # Techo por respuesta. 2048 da para diagnóstico + pasos de arreglo sin que
+    # una explicación desbocada ocupe la GPU compartida.
+    maxTokens: "2048"
+
+  # Caché ACTIVADA (noCache: false). El mismo hallazgo repetido entre scans no
+  # vuelve a pagar una llamada al LLM. Es la principal defensa de coste dado que
+  # abajo no hay filtros.
+  noCache: false
+
+  # SIN `filters` Y SIN `targetNamespace`: análisis de TODO el clúster, todos
+  # los namespaces, con los analyzers por defecto (Pod, Deployment, ReplicaSet,
+  # Service, Ingress, PVC, StatefulSet, CronJob, Node, HPA, PDB, NetworkPolicy).
+  #
+  # Es una decisión consciente de máxima cobertura. El precio es ruido en el
+  # primer scan — sauvage sólo ya corre ~99 pods, y Keep tiene documentada una
+  # capa de "deuda crónica" que k8sgpt volverá a encontrar por su cuenta.
+  # Si el ruido molesta, acotar aquí con `filters:` es un cambio de una línea.
