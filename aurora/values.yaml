@@ -104,12 +104,22 @@ config:
   # `direct` + un id explícito `bedrock/<alias>` es la vía documentada para el
   # gateway mode. Verificado en bedrock_provider.py:106: con BEDROCK_BASE_URL
   # presente construye un ChatOpenAI contra esa URL y pasa el sufijo del id tal
-  # cual, así que `bedrock/dense` llega a LiteLLM como el alias `dense`.
+  # cual, así que `bedrock/router` llega a LiteLLM como el alias `router`.
   # `openai` NO sirve: openai_provider.py sólo lee OPENAI_API_KEY, sin base_url.
   # ------------------------------------------------------------------------
   LLM_PROVIDER_MODE: direct
   BEDROCK_BASE_URL: http://litellm.litellm.svc.cluster.local:4000/v1
-  MAIN_MODEL: bedrock/dense              # Qwen3.6-27B NVFP4 dense
+  # `router`, no `dense`: ese alias YA NO EXISTE en LiteLLM — verificado contra
+  # /v1/models, donde no aparece ni él ni `dense-reasoning` ni
+  # `dense-uncensored`. Apuntando ahí, el primer RCA habría muerto con un
+  # model-not-found; no se vio porque Aurora nunca llegó a lanzar ninguno.
+  #
+  # `router` responde además a "¿y si rota el backend?": el sync
+  # litellm-dgx-backend-sync añade y quita alias EN CALIENTE según la readiness
+  # de los Services, así que fijar un modelo concreto es justo lo que deja una
+  # referencia huérfana cuando ese modelo sale. `router` y `auto` siempre
+  # apuntan a lo que esté sirviendo; ambos respondieron en 0,3s desde el pod.
+  MAIN_MODEL: bedrock/router
   SUMMARIZATION_MODEL: bedrock/tooling   # trabajo mecánico al modelo rápido
   ENRICHMENT_MODEL: bedrock/tooling
   AGENT_RECURSION_LIMIT: "240"
