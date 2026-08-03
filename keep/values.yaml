@@ -161,7 +161,7 @@ backend:
                 chat_id: "-1003785136626"
                 parse_mode: HTML
                 message: |
-                  🔴 <b>{{ incident.user_generated_name or incident.ai_generated_name }}</b>
+                  🔴 <b>{{#fn.na}}{{ incident.user_generated_name }}{{/fn.na}}</b>
                   {{ steps.llm-summary.results.response }}
                   {{ incident.alerts_count }} alertas · {{ incident.services }}
                   https://keep.lan.e-dani.com/incidents/{{ incident.id }}
@@ -208,7 +208,7 @@ backend:
                 message_thread_id: 34494
                 parse_mode: HTML
                 message: |
-                  ⚠️ <b>{{ incident.user_generated_name or incident.ai_generated_name }}</b>
+                  ⚠️ <b>{{#fn.na}}{{ incident.user_generated_name }}{{/fn.na}}</b>
                   {{ steps.llm-summary.results.response }}
                   {{ incident.alerts_count }} alertas · {{ incident.services }}
                   https://keep.lan.e-dani.com/incidents/{{ incident.id }}
@@ -242,13 +242,13 @@ backend:
                 method: POST
                 body:
                   status: firing
-                  title: "{{ incident.user_generated_name or incident.ai_generated_name }}"
+                  title: "{{#fn.na}}{{ incident.user_generated_name }}{{/fn.na}}"
                   ruleName: "{{ incident.rule_name }}"
                   commonLabels:
                     severity: "{{ incident.severity }}"
                     incident_id: "{{ incident.id }}"
                   commonAnnotations:
-                    summary: "{{ incident.llm_summary or incident.user_generated_name }}"
+                    summary: "{{#fn.na}}{{ incident.user_generated_name }}{{/fn.na}}"
                     keep_url: "https://keep.lan.e-dani.com/incidents/{{ incident.id }}"
 
       # Guardián de invariante: hace que una severidad fuera del vocabulario
