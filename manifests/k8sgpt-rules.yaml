@@ -1,0 +1,104 @@
+# Alertas de k8sgpt. De aquí salen hacia Keep por el catch-all `receiver: keep`
+# del árbol de Alertmanager, y de Keep a Aurora. No hace falta tocar el enrutado.
+#
+# LAS LABELS DE ESTAS EXPRESIONES ESTÁN VERIFICADAS CONTRA EL CLÚSTER, no
+# copiadas del dashboard que trae el chart — que asume otra forma. Lo real,
+# leído del endpoint /metrics del operador:
+#
+#   k8sgpt_number_of_results{k8sgpt, object_namespace}
+#       NO es un total único: es UNA SERIE POR NAMESPACE. `sum()` da el total.
+#   k8sgpt_number_of_results_by_type{k8sgpt, kind, name, object_namespace}
+#       una serie por hallazgo; `name` lleva "<ns>/<recurso>".
+#   k8sgpt_number_of_failed_backend_ai_calls{backend, deployment, k8sgpt, namespace}
+#   k8sgpt_reconcile_error_count{...}
+#
+# Escribirlas de memoria habría repetido el fallo de KeepBackendAbsent: una
+# regla sobre una serie inexistente no avisa de nada y encima parece que sí.
+#
+# POR QUÉ NO HAY UNA ALERTA DE "HAY HALLAZGOS"
+#
+# El análisis va sin filtros y el clúster arrastra deuda crónica conocida: el
+# primer scan dio 254 hallazgos, 166 de ellos ConfigMap. Una regla de
+# `sum(...) > 0` estaría disparada para siempre — ruido puro. Lo accionable es
+# el DELTA (algo ha empeorado) y que la propia tubería se rompa.
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMRule
+metadata:
+  name: pocharlies-k8sgpt
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: k8sgpt
+    app.kubernetes.io/component: alerting
+spec:
+  groups:
+    - name: pocharlies.k8sgpt
+      rules:
+        # La más importante de las tres: detecta que k8sgpt se ha quedado ciego.
+        #
+        # El RPC Analyze es todo-o-nada — un 429 o un 5xx de LiteLLM tumba el
+        # ciclo entero y NO se escribe ningún Result. Sin esta alerta, el
+        # síntoma es que los Result dejan de refrescarse en silencio, que es
+        # exactamente lo que pasó en el despliegue inicial con un rpm_limit mal
+        # dimensionado.
+        - alert: K8sGptBackendAiFailing
+          expr: increase(k8sgpt_number_of_failed_backend_ai_calls[15m]) > 0
+          for: 5m
+          labels:
+            severity: warning
+            area: aiops
+          annotations:
+            summary: "k8sgpt no consigue hablar con el LLM"
+            description: >-
+              El backend {{ $labels.backend }} ha fallado
+              {{ $value | printf "%.0f" }} veces en 15m. El análisis es
+              todo-o-nada: mientras esto ocurra NO se genera ningún Result y el
+              clúster queda sin analizar, aunque el operador siga Running.
+              Causas típicas: la virtual key de LiteLLM ha perdido el alias,
+              rate limit demasiado bajo, o el alias `tooling` sin backend vivo
+              (litellm-dgx-backend-sync lo reescribe según readiness).
+              Diagnóstico -
+              kubectl -n k8sgpt logs deploy/k8sgpt --tail=50 | grep -i "request failed"
+
+        # El operador dejó de exponer métricas: o está caído, o el scrape perdió
+        # permiso sobre el nonResourceURL /metrics del kube-rbac-proxy (un 403
+        # ahí no rompe nada visible, sólo deja de haber datos).
+        - alert: K8sGptOperatorAbsent
+          expr: |
+            up{namespace="k8sgpt"} == 0
+              or
+            absent(up{namespace="k8sgpt"})
+          for: 15m
+          labels:
+            severity: warning
+            area: aiops
+          annotations:
+            summary: "El operador de k8sgpt no responde al scrape"
+            description: >-
+              Sin métricas de k8sgpt desde hace 15m. Si el pod está Running,
+              sospechar del RBAC del scrape (ClusterRole
+              k8sgpt-metrics-reader-vmagent sobre el nonResourceURL /metrics).
+              Comprobar - kubectl -n k8sgpt get pods
+
+        # El delta, que es lo accionable: algo ha empeorado de golpe.
+        # El umbral 15 va por encima del ruido normal de pods reiniciándose y
+        # Jobs completando. Sin datos de hace 1h la expresión no devuelve nada,
+        # así que no genera falsos positivos al arrancar.
+        - alert: K8sGptFindingsSpike
+          expr: |
+            sum(k8sgpt_number_of_results)
+              - sum(k8sgpt_number_of_results offset 1h) > 15
+          for: 15m
+          labels:
+            severity: warning
+            area: aiops
+          annotations:
+            summary: "Suben mucho los hallazgos de k8sgpt"
+            description: >-
+              {{ $value | printf "%.0f" }} hallazgos más que hace una hora.
+              Las métricas sólo llevan el CONTEO; el diagnóstico y la solución
+              que escribió el LLM están en los CR Result -
+              kubectl -n k8sgpt get results
+              y para el detalle -
+              kubectl -n k8sgpt get results -o jsonpath='{.items[*].spec.details}'
+              Desglose por tipo -
+              count by (kind) (k8sgpt_number_of_results_by_type)

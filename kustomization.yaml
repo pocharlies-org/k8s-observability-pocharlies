@@ -17,6 +17,7 @@ resources:
   - manifests/k8sgpt-secrets.yaml
   - manifests/k8sgpt-config.yaml
   - manifests/k8sgpt-scrape.yaml
+  - manifests/k8sgpt-rules.yaml
   - keep/rules/apply-job.yaml
   - manifests/alertmanager-config.yaml
   - manifests/probes.yaml
