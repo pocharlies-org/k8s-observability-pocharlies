@@ -74,15 +74,25 @@ backend:
     # (keep/rules/correlation-rules.yaml): cualquier critical se convierte en
     # incidente por sí sola, así que ninguna crítica puede quedarse muda.
     #
-    # `on: [create]` y no `[create, update]` a propósito: Alertmanager reenvía
+    # La clave es `events`, NO `on`. Verificado en el código de la v0.52.1:
+    # `WorkflowManager.insert_incident` filtra con
+    # `trigger.get("events", [])` (workflowmanager.py:147-154) y el parser pasa
+    # los triggers TAL CUAL, sin traducir nada
+    # (`get_triggers_from_workflow_dict` → `workflow.get("triggers", [])`).
+    # Un trigger con `on:` deja esa lista vacía y el workflow se descarta
+    # SIEMPRE, en silencio. Con `on: [create]` estos tres workflows estuvieron
+    # registrados y con 0 ejecuciones desde el cutover: ninguna notificación de
+    # Keep llegó a salir. Sólo sobrevivió el backstop directo a Telegram del
+    # Alertmanager, que cubre 6 alertnames de "hub caído".
+    #
+    # Y el valor es `created` en pasado, no `create`: es la cadena literal que
+    # despacha el motor de reglas (`send_workflow_event(..., "created")`);
+    # las otras son `updated` y `deleted`.
+    #
+    # `[created]` y no `[created, updated]` a propósito: Alertmanager reenvía
     # cada minuto (pass-through), y notificar en update convertiría eso en un
     # mensaje por minuto. El coste es que una escalada de severidad dentro de un
     # incidente ya abierto no vuelve a avisar.
-    #
-    # Y va entre comillas — `"on"` — porque sin ellas tanto Helm (yaml.v2) como
-    # PyYAML leen `on` como el booleano true, y la clave acaba siendo "true":
-    # Keep recibiría el trigger SIN `on` y dispararía también en update, que es
-    # justo la inundación que esto evita. Comprobado renderizando el chart.
     #
     # La severidad de los CEL de aquí es la NORMALIZADA por Keep. El manejo de
     # `page` y `warn` (que Keep ingiere como `info`) está en las reglas de
@@ -120,7 +130,7 @@ backend:
           la lane emergency-telegram del VMAlertmanagerConfig.
         triggers:
           - type: incident
-            "on": [create]
+            events: [created]
             cel: severity == "critical"
         steps:
           - name: llm-summary
@@ -166,7 +176,7 @@ backend:
           el ops-explainer. Un mensaje por incidente, no por alerta.
         triggers:
           - type: incident
-            "on": [create]
+            events: [created]
             cel: severity != "critical"
         steps:
           - name: llm-summary
@@ -222,7 +232,7 @@ backend:
           el clúster y produce un RCA.
         triggers:
           - type: incident
-            "on": [create]
+            events: [created]
         actions:
           - name: dispatch-rca
             provider:
