@@ -77,6 +77,23 @@ spec:
     # una explicación desbocada ocupe la GPU compartida.
     maxTokens: "2048"
 
+    # IMPRESCINDIBLE, y aprendido a base de fallo en el primer despliegue.
+    #
+    # k8sgpt manda las explicaciones con max_concurrency=10, y el RPC `Analyze`
+    # es TODO O NADA: si una sola llamada devuelve 429, se cae la analítica
+    # entera y NO se escribe ni un Result. No degrada, desaparece.
+    #
+    # Observado tal cual con un rpm_limit de 30 en la virtual key:
+    #   "exhausted API quota ... Current limit: 30, Remaining: 0"
+    #   -> 0 Results durante 4 minutos, con el operador reintentando en bucle.
+    #
+    # Con backOff, un 429 se reintenta con espera en vez de matar el ciclo. Es
+    # lo que convierte el límite de LiteLLM en un regulador (frena) en lugar de
+    # un interruptor (corta).
+    backOff:
+      enabled: true
+      maxRetries: 5
+
   # Caché ACTIVADA (noCache: false). El mismo hallazgo repetido entre scans no
   # vuelve a pagar una llamada al LLM. Es la principal defensa de coste dado que
   # abajo no hay filtros.
