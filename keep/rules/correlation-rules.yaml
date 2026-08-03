@@ -262,6 +262,44 @@ rules:
     incidentNameTemplate: "Hub de alertas degradado"
     groupDescription: Keep o Alertmanager en mal estado.
 
+  # Salud del analizador del clúster (k8sgpt). Va junto a monitoring-degraded y
+  # keep-hub-degraded porque comparte su naturaleza: no avisa de que algo del
+  # clúster esté roto, sino de que la HERRAMIENTA que mira el clúster lo está.
+  #
+  # Sin esta regla las K8sGpt* quedaban sólo registradas y calladas (la tercera
+  # capa), verificado en los logs de Keep: "Rule ... on event
+  # K8sGptBackendAiFailing is not relevant". Y sin incidente tampoco llegan a
+  # Aurora, que consume incidentes.
+  #
+  # NO se excluye del critical-safety-net a propósito, y no rompe la
+  # INVARIANTE 1: ese safety-net sólo captura `severity == "critical"` o
+  # `labels.severity == "page"`, y las tres alertas de k8sgpt son `warning`
+  # (manifests/k8sgpt-rules.yaml). No hay solape posible hoy. Si alguna pasara a
+  # critical, habría que añadir el prefijo a su lista de exclusión — el fallo
+  # sería notificar dos veces, que es el lado correcto por el que fallar.
+  #
+  # 1800s como monitoring-degraded: el ciclo de análisis no es instantáneo y
+  # agrupar media hora evita un incidente por cada reintento del operador.
+  - ruleName: k8sgpt-degraded
+    celQuery: 'name.startsWith("K8sGpt")'
+    sqlQuery:
+      sql: "((name like :name_1))"
+      params:
+        name_1: K8sGpt%
+    timeframeInSeconds: 1800
+    timeUnit: minutes
+    groupingCriteria: []
+    createOn: any
+    resolveOn: all_resolved
+    incidentPrefix: GPT
+    incidentNameTemplate: "Análisis del clúster degradado"
+    groupDescription: >-
+      k8sgpt no puede analizar el clúster, o sus hallazgos se han disparado de
+      golpe. Ojo con la primera: el RPC Analyze es todo-o-nada, así que un fallo
+      del LLM deja el análisis a CERO con el operador aparentemente sano. El
+      detalle de cada hallazgo no viaja en la alerta (las métricas sólo llevan
+      conteos) — está en los CR Result: kubectl -n k8sgpt get results
+
   # =========================================================================
   # SYNAPSE
   # =========================================================================
