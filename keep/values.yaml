@@ -159,15 +159,12 @@ backend:
               config: "{{ providers.telegram_ops }}"
               with:
                 chat_id: "-1003785136626"
-                parse_mode: HTML
+                parse_mode: html
                 message: |
                   🔴 <b>{{#fn.na}}{{ incident.user_generated_name }}{{/fn.na}}</b>
                   {{ steps.llm-summary.results.response }}
                   {{ incident.alerts_count }} alertas · {{ incident.services }}
                   https://keep.lan.e-dani.com/incidents/{{ incident.id }}
-                enrich_incident:
-                  - key: llm_summary
-                    value: "{{ steps.llm-summary.results.response }}"
 
       - id: notify-incident
         name: Telegram — incidentes al tema alertas
@@ -206,15 +203,12 @@ backend:
               with:
                 chat_id: "-1003785136626"
                 message_thread_id: 34494
-                parse_mode: HTML
+                parse_mode: html
                 message: |
                   ⚠️ <b>{{#fn.na}}{{ incident.user_generated_name }}{{/fn.na}}</b>
                   {{ steps.llm-summary.results.response }}
                   {{ incident.alerts_count }} alertas · {{ incident.services }}
                   https://keep.lan.e-dani.com/incidents/{{ incident.id }}
-                enrich_incident:
-                  - key: llm_summary
-                    value: "{{ steps.llm-summary.results.response }}"
 
       # Aurora investiga INCIDENTES, no alertas: mandarle cada alerta haría que
       # investigase 3 veces la misma causa. El payload va con forma de
@@ -239,7 +233,6 @@ backend:
               type: webhook
               config: "{{ providers.aurora }}"
               with:
-                method: POST
                 body:
                   status: firing
                   title: "{{#fn.na}}{{ incident.user_generated_name }}{{/fn.na}}"
