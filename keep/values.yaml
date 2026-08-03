@@ -243,6 +243,30 @@ backend:
                   commonAnnotations:
                     summary: "{{#fn.na}}{{ incident.user_generated_name }}{{/fn.na}}"
                     keep_url: "https://keep.lan.e-dani.com/incidents/{{ incident.id }}"
+                  # SIN este array Aurora guarda la alerta y NO abre incidente:
+                  # tasks.py:227 hace `if not payload.get("alerts"): return` — un
+                  # descarte deliberado, porque las notificaciones de prueba de
+                  # Grafana llegan con `alerts: []`. El log lo dice tal cual:
+                  # "No alerts array in payload ... skipping incident creation".
+                  #
+                  # No se puede volcar `incident.alerts` directamente: las
+                  # plantillas de Keep no tienen filtros (`| tojson` no existe) y
+                  # renderizarían el repr de Python. Se construye un elemento con
+                  # los campos que Aurora lee de cada alerta (tasks.py:231-243):
+                  # `fingerprint`, que es su clave para casar el resolved con el
+                  # firing, y `startsAt`, con el que mide el MTTD por incidente.
+                  alerts:
+                    - status: firing
+                      fingerprint: "{{ incident.id }}"
+                      startsAt: "{{ incident.start_time }}"
+                      labels:
+                        alertname: "{{#fn.na}}{{ incident.user_generated_name }}{{/fn.na}}"
+                        severity: "{{ incident.severity }}"
+                        incident_id: "{{ incident.id }}"
+                      annotations:
+                        summary: "{{#fn.na}}{{ incident.user_generated_name }}{{/fn.na}}"
+                        description: "{{ incident.alerts_count }} alertas correlacionadas por la regla {{ incident.rule_name }}"
+                        keep_url: "https://keep.lan.e-dani.com/incidents/{{ incident.id }}"
 
       # Guardián de invariante: hace que una severidad fuera del vocabulario
       # canónico sea CONSULTABLE en vez de invisible. Enriquece y punto — no
