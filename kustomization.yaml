@@ -18,6 +18,8 @@ resources:
   - manifests/k8sgpt-config.yaml
   - manifests/k8sgpt-scrape.yaml
   - manifests/k8sgpt-rules.yaml
+  - manifests/k8sgpt-tolerations-policy.yaml
+  - manifests/aurora-storage.yaml
   - keep/rules/apply-job.yaml
   - manifests/alertmanager-config.yaml
   - manifests/probes.yaml

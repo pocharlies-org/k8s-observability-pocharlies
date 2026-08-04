@@ -60,12 +60,19 @@ controllerManager:
       requests:
         cpu: 5m
         memory: 64Mi
-  # Explícito, aunque hoy sea redundante: los nodos GPU (nvidia-dgx, gx10-ec3d)
-  # ya quedan fuera por su taint `dedicated`, y sauvage/ubuntu por `role`/`pool`,
-  # así que sin tolerations esto sólo puede aterrizar en los control-plane
-  # (ks5-cp-*, amd64, sin taints). Se deja escrito para que siga siendo cierto
-  # si algún día se quita un taint: el operador es un controller de Go y no
-  # tiene nada que hacer en una caja que está para servir modelos — el trabajo
-  # pesado lo hace el LLM al otro lado de LiteLLM, no este pod.
+  # Consolidado en sauvage.
+  #
+  # AQUÍ SÓLO ESTÁ LA MITAD DEL PIN, Y LA OTRA MITAD NO PUEDE ESTAR AQUÍ.
+  #
+  # sauvage tiene el taint `role=edge:NoSchedule`, así que esto por sí solo deja
+  # el pod Pending para siempre. Y el chart NO soporta `tolerations`: no aparece
+  # en templates/deployment.yaml ni en su values (la única aparición en todo el
+  # chart es la del subchart `interplex`, que va desactivado).
+  #
+  # El toleration lo inyecta una ClusterPolicy de Kyverno en
+  # manifests/k8sgpt-tolerations-policy.yaml, que muta cualquier pod del
+  # namespace `k8sgpt`. Se resolvió así porque el mismo problema afecta al pod
+  # de análisis que crea el operador desde el CR — cuya CRD tampoco tiene
+  # `tolerations`, sólo `nodeSelector` — y una única policy cubre los dos.
   nodeSelector:
-    kubernetes.io/arch: amd64
+    kubernetes.io/hostname: sauvage

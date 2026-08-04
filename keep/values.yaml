@@ -32,8 +32,19 @@ websocket:
 
 backend:
   enabled: true
-  # Keep pasa a ser el único notificador: una réplica en un nodo no es aceptable.
-  replicaCount: 2
+  # UNA réplica, y es un cambio de criterio consciente.
+  #
+  # Aquí ponía 2 con el razonamiento "Keep es el único notificador: una réplica
+  # en un nodo no es aceptable". Ese razonamiento sólo se sostiene si las dos
+  # réplicas caen en nodos DISTINTOS. Al consolidar Keep en `sauvage`
+  # (nodeSelector abajo), las dos vivirían en el mismo nodo: sobrevivirían a la
+  # muerte de un pod, pero no a la del nodo — que es el fallo del que protegía la
+  # segunda réplica. Mantener 2 seria pagar el doble por una HA que ya no existe.
+  #
+  # Lo que SÍ sigue cubriendo el fallo de nodo es la lane directa de Telegram de
+  # Alertmanager (`backstop-telegram` en manifests/alertmanager-config.yaml), que
+  # no pasa por Keep: si sauvage cae, KeepBackendAbsent sale por ahí.
+  replicaCount: 1
 
   # La DB es externa y ya está sana; el init container de espera asume MySQL local.
   waitForDatabase:
@@ -386,31 +397,32 @@ backend:
     repository: us-central1-docker.pkg.dev/keephq/keep/keep-api
     pullPolicy: IfNotPresent
 
+  # Consolidado en sauvage. El taint del nodo es `role=edge:NoSchedule`, así que
+  # el nodeSelector SOLO no basta: sin el toleration el pod se queda Pending.
   nodeSelector:
-    node-pool: ks5-nvme
+    kubernetes.io/hostname: sauvage
+  tolerations:
+    - key: role
+      operator: Equal
+      value: edge
+      effect: NoSchedule
 
-  # Reparto entre nodos con topologySpreadConstraints, no con podAntiAffinity.
+  # Ya NO hay topologySpreadConstraints, y conviene saber por qué estuvo aquí.
   #
-  # Historia, porque las dos alternativas fallaron de formas distintas:
+  # Existía para repartir 2 réplicas entre los 3 nodos del pool ks5-nvme, después
+  # de que las dos alternativas fallaran de formas distintas:
   #   - `required` anti-affinity: el rollout entraba en DEADLOCK. Sólo 3 nodos
-  #     llevan node-pool=ks5-nvme, uno sin CPU libre, y con maxUnavailable=0 (el
+  #     llevaban node-pool=ks5-nvme, uno sin CPU libre, y con maxUnavailable=0 (el
   #     default de k8s para 2 réplicas) el pod de surge no tenía hueco y no se
   #     retiraba ninguno viejo. Estuvo 3h parado.
   #   - `preferred` anti-affinity: desbloquea, pero durante la transición apiló
-  #     las 2 réplicas en el MISMO nodo y ahí se quedan — sin descheduler nadie
-  #     las vuelve a repartir. Peor HA que antes.
+  #     las 2 réplicas en el MISMO nodo y ahí se quedaron.
   #
-  # topologySpreadConstraints con whenUnsatisfiable: ScheduleAnyway es la
-  # primitiva pensada para esto: el scheduler minimiza el desequilibrio en cada
-  # decisión, pero nunca deja un pod sin programar.
-  topologySpreadConstraints:
-    - maxSkew: 1
-      topologyKey: kubernetes.io/hostname
-      whenUnsatisfiable: ScheduleAnyway
-      labelSelector:
-        matchLabels:
-          app.kubernetes.io/name: keep
-          app.kubernetes.io/component: backend
+  # Con 1 réplica fijada a un único nodo, repartir no significa nada: la
+  # restricción quedaba inerte (ScheduleAnyway nunca bloquea, pero tampoco hace
+  # nada). Se retira para que el fichero no describa una topología que ya no
+  # existe. Si algún día vuelven las 2 réplicas a varios nodos, esto se restaura
+  # tal cual — es la primitiva correcta, no un parche.
 
   resources:
     requests:
@@ -468,8 +480,14 @@ frontend:
     repository: us-central1-docker.pkg.dev/keephq/keep/keep-ui
     pullPolicy: IfNotPresent
 
+  # Junto al backend, en sauvage. Mismo taint, mismo toleration.
   nodeSelector:
-    node-pool: ks5-nvme
+    kubernetes.io/hostname: sauvage
+  tolerations:
+    - key: role
+      operator: Equal
+      value: edge
+      effect: NoSchedule
 
   resources:
     requests:

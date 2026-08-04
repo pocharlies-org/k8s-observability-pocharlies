@@ -35,6 +35,19 @@ spec:
   # fija el chart). v0.4.36 es la última estable, 2026-07-10.
   version: v0.4.36
 
+  # El pod de análisis, junto al operador, en sauvage.
+  #
+  # Este nodeSelector NO es el del chart: aquel fija el controller-manager, y
+  # éste el Deployment `k8sgpt` que el operador crea a partir de este CR. Son dos
+  # pods distintos y cada uno se fija por su lado.
+  #
+  # El toleration de `role=edge:NoSchedule` no cabe aquí: la CRD tiene
+  # `nodeSelector` pero NO `tolerations` (verificado contra el esquema de
+  # k8sgpt-crd.yaml 0.2.27). Lo pone Kyverno, en
+  # manifests/k8sgpt-tolerations-policy.yaml.
+  nodeSelector:
+    kubernetes.io/hostname: sauvage
+
   ai:
     enabled: true
 

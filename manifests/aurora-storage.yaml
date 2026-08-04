@@ -1,0 +1,81 @@
+# Almacenamiento de los StatefulSets de Aurora, en `local-path` sobre sauvage.
+#
+# POR QUÉ EXISTE ESTE FICHERO
+#
+# `sauvage` es el único nodo sin driver CSI de Longhorn (`kubectl get csinode`
+# le devuelve la lista vacía; todos los demás tienen driver.longhorn.io). Al
+# consolidar Aurora ahí, sus dos PVC de storageClass `longhorn` pasaban a ser
+# imposibles: pod Pending con "CSINode sauvage does not contain driver
+# driver.longhorn.io".
+#
+# Y el chart NO deja arreglarlo desde values: sus `volumeClaimTemplates` fijan
+# sólo accessModes y size, sin `storageClassName` — verificado en
+# templates/{redis,weaviate}-statefulset.yaml del chart aurora-oss 1.2.16. El
+# PVC hereda la StorageClass por defecto, que en este clúster es `longhorn`.
+#
+# LA VÍA: un StatefulSet sólo CREA el PVC si no existe.
+#
+# Si ya hay uno con el nombre exacto que genera su plantilla
+# (`<template>-<sts>-<ordinal>`), lo ADOPTA tal cual, con la StorageClass que
+# tenga. Por eso estos dos PVC llevan nombres literales y no se pueden renombrar:
+#
+#     redis-data-aurora-redis-0
+#     weaviate-data-aurora-weaviate-0
+#
+# Esto además evita tener que borrar y recrear los StatefulSets:
+# `volumeClaimTemplates` es inmutable, pero `nodeSelector`/`tolerations` del pod
+# template NO lo son, así que el chart puede moverlos a sauvage con un update
+# normal.
+#
+# CUIDADO CON EL RECLAIM POLICY
+#
+# `local-path` es reclaimPolicy=Delete (y `longhorn` era Retain). Borrar estos
+# PVC BORRA los datos, no los conserva. Lo que lo protege es que el Application
+# `k8s-observability` va con `prune: false`. No lo cambies sin mirar aquí.
+#
+# `local-path` es además WaitForFirstConsumer: el PVC se queda Pending hasta que
+# hay un pod que lo use, y entonces se materializa EN EL NODO de ese pod. Con
+# Aurora fijado a sauvage, eso es exactamente lo que queremos — pero también
+# significa que el dato queda atado a sauvage y sin réplica, a diferencia de
+# Longhorn. Backup de la migración: scratchpad, weaviate-data.tgz (28K).
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: redis-data-aurora-redis-0
+  namespace: aurora
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+  labels:
+    app.kubernetes.io/name: aurora
+    app.kubernetes.io/component: redis
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: local-path
+  resources:
+    requests:
+      # Debe coincidir con persistence.redis.size del chart (5Gi). Si divergen,
+      # el StatefulSet no reclama nada — ya adoptó este PVC — pero el fichero
+      # dejaría de describir la realidad.
+      storage: 5Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: weaviate-data-aurora-weaviate-0
+  namespace: aurora
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+  labels:
+    app.kubernetes.io/name: aurora
+    app.kubernetes.io/component: weaviate
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: local-path
+  resources:
+    requests:
+      # persistence.weaviate.size del chart. Sobredimensionado a propósito por el
+      # chart: el contenido real en el momento de migrar eran 464 KB.
+      storage: 50Gi

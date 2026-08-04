@@ -1,0 +1,67 @@
+# Inyecta el toleration de `role=edge:NoSchedule` en los pods de k8sgpt.
+#
+# POR QUÉ HACE FALTA UNA POLICY PARA ALGO TAN TONTO
+#
+# k8sgpt está consolidado en `sauvage`, y ese nodo tiene taint
+# `role=edge:NoSchedule`. Un nodeSelector sin toleration deja el pod Pending.
+# Pero NINGUNA de las dos piezas de k8sgpt permite declarar tolerations:
+#
+#   - El chart k8sgpt-operator 0.2.27 no las contempla: no aparecen en
+#     templates/deployment.yaml ni en values.yaml. La única aparición de
+#     `tolerations` en todo el chart es la del subchart `interplex`, desactivado.
+#   - La CRD `k8sgpts.core.k8sgpt.ai` tiene `spec.nodeSelector` pero NO
+#     `spec.tolerations`, así que el Deployment `k8sgpt` que el operador crea a
+#     partir del CR tampoco puede llevarlas.
+#
+# Son dos pods distintos con el mismo problema, así que una policy sobre el
+# namespace entero los cubre a ambos y seguirá cubriendo cualquier pod que el
+# operador cree en el futuro. La alternativa —reestructurar el Application a
+# kustomize+helm sólo para parchear dos líneas— es bastante peor.
+#
+# Es aditiva: `+(tolerations)` sólo añade si no existe la clave, y no toca nada
+# más del pod. Fuera del namespace `k8sgpt` esta policy no aplica.
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: k8sgpt-sauvage-toleration
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+    policies.kyverno.io/title: Toleration de sauvage para k8sgpt
+    policies.kyverno.io/category: Scheduling
+    policies.kyverno.io/description: >-
+      Ni el chart de k8sgpt-operator ni la CRD K8sGPT soportan tolerations, y
+      k8sgpt vive en sauvage, que tiene taint role=edge:NoSchedule. Esta policy
+      se lo añade en admisión.
+  labels:
+    app.kubernetes.io/name: k8sgpt
+    app.kubernetes.io/component: scheduling
+spec:
+  # Sólo muta, no valida: nada que pueda rechazar un recurso.
+  admission: true
+  # background: false — no tiene sentido reprocesar pods ya existentes. Un pod
+  # en marcha no puede cambiar de tolerations (es inmutable): lo que hace falta
+  # es que los NUEVOS nazcan bien, y de recrearlos ya se encarga el rollout.
+  background: false
+  rules:
+    - name: add-edge-toleration
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              namespaceSelector:
+                matchExpressions:
+                  - key: kubernetes.io/metadata.name
+                    operator: In
+                    values:
+                      - k8sgpt
+      mutate:
+        patchStrategicMerge:
+          spec:
+            # `+(...)` es el anchor "add if not present" de Kyverno: si alguien
+            # define tolerations a mano en el futuro, la policy no las pisa.
+            +(tolerations):
+              - key: role
+                operator: Equal
+                value: edge
+                effect: NoSchedule

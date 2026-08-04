@@ -193,8 +193,29 @@ secrets:
 ingress:
   enabled: false
 
+# Aurora entero consolidado en sauvage, StatefulSets incluidos.
+#
+# El taint del nodo es `role=edge:NoSchedule`: el nodeSelector solo no basta,
+# hace falta el toleration o todo se queda Pending. El chart aplica ambos
+# valores a TODOS los pods (global), que es justo lo que queremos aquí.
+#
+# OJO — ESTO NO FUNCIONA SIN LA MIGRACIÓN DE ALMACENAMIENTO
+#
+# `sauvage` es el ÚNICO nodo del clúster sin driver CSI de Longhorn (verificado:
+# `kubectl get csinode` le da la lista de drivers VACÍA). Cualquier PVC de
+# storageClass `longhorn` es por tanto imposible ahí: el pod queda Pending con
+# "CSINode sauvage does not contain driver driver.longhorn.io".
+#
+# aurora-redis y aurora-weaviate tienen PVC. Por eso van acompañados de
+# manifests/aurora-storage.yaml, que pre-crea sus PVC en `local-path`. Sin ese
+# fichero, fijar Aurora aquí rompe los dos StatefulSets.
 nodeSelector:
-  node-pool: ks5-nvme
+  kubernetes.io/hostname: sauvage
+tolerations:
+  - key: role
+    operator: Equal
+    value: edge
+    effect: NoSchedule
 
 # ---------------------------------------------------------------------------
 # celery-beat: el default del chart (256Mi) lo mata por OOM.
