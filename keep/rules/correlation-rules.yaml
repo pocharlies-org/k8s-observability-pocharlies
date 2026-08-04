@@ -123,6 +123,7 @@ rules:
       name in ["KubePodCrashLooping", "KubeDeploymentRolloutStuck",
                "KubeDaemonSetRolloutStuck", "KubernetesDaemonSetUnavailable",
                "KubePersistentVolumeFillingUp"]
+    sqlQuery: {"sql": "((name in (:name_1, :name_2, :name_3, :name_4, :name_5)))", "params": {"name_1": "KubePodCrashLooping", "name_2": "KubeDeploymentRolloutStuck", "name_3": "KubeDaemonSetRolloutStuck", "name_4": "KubernetesDaemonSetUnavailable", "name_5": "KubePersistentVolumeFillingUp"}}
     groupingCriteria: [namespace]
     createOn: any
     resolveOn: all_resolved
@@ -139,6 +140,7 @@ rules:
     celQuery: |
       name in ["LitellmNotReady", "Dgx2GpuMemoryWarning",
                "GpuArbiterStateObservationUnavailable"]
+    sqlQuery: {"sql": "((name in (:name_1, :name_2, :name_3)))", "params": {"name_1": "LitellmNotReady", "name_2": "Dgx2GpuMemoryWarning", "name_3": "GpuArbiterStateObservationUnavailable"}}
     groupingCriteria: []
     createOn: any
     resolveOn: all_resolved
@@ -155,6 +157,7 @@ rules:
     celQuery: |
       name in ["ImageStudioWorkerDown", "ImageStudioErrorRateHigh",
                "Krea2TrainerWorkerDown"]
+    sqlQuery: {"sql": "((name in (:name_1, :name_2, :name_3)))", "params": {"name_1": "ImageStudioWorkerDown", "name_2": "ImageStudioErrorRateHigh", "name_3": "Krea2TrainerWorkerDown"}}
     groupingCriteria: []
     createOn: any
     resolveOn: all_resolved
@@ -168,6 +171,7 @@ rules:
   - ruleName: datastore-shared
     incidentPrefix: PGSH
     celQuery: name in ["PostgresSharedBackendsWaiting"]
+    sqlQuery: {"sql": "((name in (:name_1)))", "params": {"name_1": "PostgresSharedBackendsWaiting"}}
     groupingCriteria: []
     createOn: any
     resolveOn: all_resolved
@@ -181,6 +185,7 @@ rules:
   - ruleName: k8s-control-plane
     incidentPrefix: K8S
     celQuery: name in ["KubeAggregatedAPIDown", "ReconcileErrors", "RecordingRulesError"]
+    sqlQuery: {"sql": "((name in (:name_1, :name_2, :name_3)))", "params": {"name_1": "KubeAggregatedAPIDown", "name_2": "ReconcileErrors", "name_3": "RecordingRulesError"}}
     groupingCriteria: []
     createOn: any
     resolveOn: all_resolved
@@ -195,6 +200,7 @@ rules:
   - ruleName: openclaw-degraded
     incidentPrefix: OCLW
     celQuery: name.startsWith("OpenClaw")
+    sqlQuery: {"sql": "((name like :name_1))", "params": {"name_1": "OpenClaw%"}}
     groupingCriteria: []
     createOn: any
     resolveOn: all_resolved
