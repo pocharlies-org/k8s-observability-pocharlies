@@ -1,0 +1,26 @@
+# Token del kubectl-agent de Aurora, desde Vault.
+#
+# El token lo emite Aurora y vive en su tabla `kubectl_agent_tokens` (formato
+# `aurora_kubectl_` + 48 bytes urlsafe, igual que su `generate_token()`). El
+# agente lo presenta como `Authorization: Bearer` al abrir el WebSocket, y el
+# handler de aurora-chatbot lo resuelve contra esa tabla.
+#
+# Prefijo `aurorasvc-` como el resto de los secretos de Aurora en este repo.
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: aurorasvc-kubectl-agent
+  namespace: aurora
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: vault-backend
+    kind: ClusterSecretStore
+  target:
+    name: aurorasvc-kubectl-agent
+    creationPolicy: Owner
+  data:
+    - secretKey: AURORA_AGENT_TOKEN
+      remoteRef:
+        key: secret/aurora
+        property: KUBECTL_AGENT_TOKEN
