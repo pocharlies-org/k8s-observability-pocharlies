@@ -1,0 +1,147 @@
+# kubectl-agent de Aurora: los ojos que le faltaban.
+#
+# Hasta ahora Aurora producía RCA honestos pero ciegos — literalmente
+# "no investigation transcript... no evidence". Este agente es lo que le permite
+# ejecutar kubectl de sólo lectura contra el clúster y citar salida real.
+#
+# CONEXIÓN IN-CLUSTER, no por el ingress. El agente abre un WebSocket SALIENTE
+# hacia aurora-chatbot (no al server: el handler vive en main_chatbot.py:914, y
+# `websockets.serve` escucha en WS_PORT=5006). Al ir por el Service evitamos la
+# cadena SSO del ingress, que rechazaría el handshake, y no hace falta TLS.
+# El servidor no enruta por path: despacha por la cabecera `Authorization:
+# Bearer`, así que el path del endpoint es irrelevante.
+aurora:
+  backendUrl: "http://aurora-server.aurora.svc.cluster.local:5080"
+  wsEndpoint: "ws://aurora-chatbot.aurora.svc.cluster.local:5006"
+  # VACÍO A PROPÓSITO, y el mecanismo importa: el chart NO tiene opción de
+  # `existingSecret`. Su templates/secret.yaml siempre crea un Secret con
+  # `AURORA_AGENT_TOKEN: {{ .Values.aurora.agentToken }}`, así que poner el token
+  # aquí lo dejaría en git.
+  #
+  # El valor real se inyecta abajo por `agent.env` con un secretKeyRef. Funciona
+  # porque el deployment monta el Secret del chart con `envFrom` y además expone
+  # `env`, y en Kubernetes una variable declarada en `env` GANA sobre la misma
+  # variable venida de `envFrom`. El Secret del chart aporta la cadena vacía y el
+  # secretKeyRef la sobrescribe con la de Vault.
+  agentToken: ""
+
+agent:
+  replicaCount: 1
+
+  # El token, desde Vault vía ESO. Ver manifests/aurora-kubectl-agent.yaml.
+  env:
+    - name: AURORA_AGENT_TOKEN
+      valueFrom:
+        secretKeyRef:
+          name: aurorasvc-kubectl-agent
+          key: AURORA_AGENT_TOKEN
+  image:
+    # Imagen del propio vendor, verificada como pública y multi-arch
+    # (amd64 + arm64) contra el registry: manifest de 1.0.3 -> HTTP 200.
+    # No hace falta construirla ni republicarla en Harbor.
+    repository: gcr.io/sublime-flux-414616/aurora-kubectl-agent
+    tag: "1.0.3"
+    pullPolicy: IfNotPresent
+
+  # Va a los nodos core amd64, donde vive el resto del plano de control.
+  nodeSelector:
+    kubernetes.io/arch: amd64
+
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    fsGroup: 1000
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: ["ALL"]
+
+# ---------------------------------------------------------------------------
+# RBAC — RECORTADO respecto al default del chart, y el recorte es el punto.
+#
+# El chart trae `secrets` con get/list/watch en el bloque de recursos core. Eso
+# daría a Aurora lectura del CONTENIDO de todos los Secrets del clúster: el
+# token de Vault, las credenciales del Postgres compartido, la key de LiteLLM,
+# los bot tokens de Telegram. Y no se queda ahí: lo que el agente lee entra en
+# el contexto de un LLM y acaba resumido en un mensaje de Telegram.
+#
+# Para diagnosticar un incidente nunca hace falta el contenido de un secreto —
+# como mucho saber si existe, y para eso no hace falta `get`. Fuera.
+#
+# Todo lo demás es get/list/watch: ningún verbo de escritura, en ningún grupo.
+# Alineado con la postura de Aurora en este clúster (sin PRs automáticos,
+# NEXT_PUBLIC_ENABLE_INCIDENT_PREVENTION=false, autoheal suspendido).
+# ---------------------------------------------------------------------------
+rbac:
+  create: true
+  serviceAccountName: ""
+  rules:
+    - apiGroups: [""]
+      resources:
+        - pods
+        - pods/log
+        - pods/status
+        - services
+        - endpoints
+        - nodes
+        - namespaces
+        - events
+        - configmaps
+        - persistentvolumes
+        - persistentvolumeclaims
+        - resourcequotas
+        - limitranges
+        # `secrets` retirado a propósito. Ver el bloque de arriba.
+      verbs: ["get", "list", "watch"]
+
+    - apiGroups: ["apps"]
+      resources: [deployments, daemonsets, replicasets, statefulsets]
+      verbs: ["get", "list", "watch"]
+
+    - apiGroups: ["batch"]
+      resources: [jobs, cronjobs]
+      verbs: ["get", "list", "watch"]
+
+    - apiGroups: ["networking.k8s.io"]
+      resources: [ingresses, networkpolicies]
+      verbs: ["get", "list", "watch"]
+
+    - apiGroups: ["autoscaling"]
+      resources: [horizontalpodautoscalers]
+      verbs: ["get", "list", "watch"]
+
+    - apiGroups: ["policy"]
+      resources: [poddisruptionbudgets]
+      verbs: ["get", "list", "watch"]
+
+    - apiGroups: ["storage.k8s.io"]
+      resources: [storageclasses, volumeattachments]
+      verbs: ["get", "list", "watch"]
+
+    # Añadidos sobre el default porque en ESTE clúster son donde vive la verdad
+    # operativa: las alertas y reglas de VictoriaMetrics, el estado de las apps
+    # de ArgoCD y los clusters de CNPG. Sin ellos, un RCA sobre "por qué no
+    # arrancó Postgres" no podría mirar el objeto que lo explica.
+    - apiGroups: ["operator.victoriametrics.com"]
+      resources: ["*"]
+      verbs: ["get", "list", "watch"]
+    - apiGroups: ["argoproj.io"]
+      resources: [applications, appprojects]
+      verbs: ["get", "list", "watch"]
+    - apiGroups: ["postgresql.cnpg.io"]
+      resources: [clusters, databases, poolers]
+      verbs: ["get", "list", "watch"]
+    - apiGroups: ["external-secrets.io"]
+      # Los ExternalSecret describen QUÉ secreto se sincroniza y su estado, sin
+      # exponer el valor. Es la información útil sin el riesgo.
+      resources: [externalsecrets, clustersecretstores]
+      verbs: ["get", "list", "watch"]
