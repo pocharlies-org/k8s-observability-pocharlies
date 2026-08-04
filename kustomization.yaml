@@ -25,6 +25,7 @@ resources:
   - manifests/probes.yaml
   - manifests/rules.yaml
   - manifests/keep-scrape.yaml
+  - manifests/grafana-keep.yaml
   - manifests/dashboards.yaml
   - manifests/dcgm-scrape.yaml
   - manifests/rabbitmq-scrape.yaml
