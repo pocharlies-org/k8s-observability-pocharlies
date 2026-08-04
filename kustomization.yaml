@@ -9,11 +9,13 @@ resources:
   - apps/alloy.yaml
   - apps/keep.yaml
   - apps/aurora.yaml
+  - apps/aurora-kubectl-agent.yaml
   - apps/k8sgpt.yaml
   - manifests/ingressroutes.yaml
   - manifests/alertmanager-secrets.yaml
   - manifests/keep-secrets.yaml
   - manifests/aurora-secrets.yaml
+  - manifests/aurora-kubectl-agent.yaml
   - manifests/k8sgpt-secrets.yaml
   - manifests/k8sgpt-config.yaml
   - manifests/k8sgpt-scrape.yaml
