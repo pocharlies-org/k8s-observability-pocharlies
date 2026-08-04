@@ -1,0 +1,49 @@
+# kubectl-agent de Aurora: lo que convierte sus RCA de plausibles en fundados.
+#
+# Sin él, Aurora redacta el informe a partir del título de la alerta y lo dice de
+# sí misma: "no investigation transcript... no evidence". Con él ejecuta kubectl
+# de sólo lectura y cita salida real.
+#
+# El chart NO está en el repo de Helm de Aurora (gh-pages sólo publica
+# `aurora-oss`): vive dentro del repo de código, en kubectl-agent/chart. Por eso
+# la fuente es git y no un chart repo.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: aurora-kubectl-agent
+  namespace: argocd
+  labels:
+    e-dani.com/tier: infra
+  annotations:
+    # Sync-wave 3: después de aurora (2), que es a quien se conecta. Si el agente
+    # arranca antes que el chatbot, reintenta el WebSocket, pero no hay razón para
+    # provocarlo.
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  project: default
+  sources:
+    - repoURL: https://github.com/Arvo-AI/aurora
+      # PINEADO a un commit, no a `main`. El chart vive en el repo de código de un
+      # tercero: con `main`, dos syncs del mismo commit NUESTRO podrían desplegar
+      # plantillas distintas, y en la pieza que da acceso de lectura al clúster
+      # entero eso no es aceptable. Al subir el pin, releer templates/rbac.yaml y
+      # values.yaml: los permisos salen de `.Values.rbac.rules`, así que un cambio
+      # upstream en los defaults no nos afecta, pero uno en el template sí.
+      targetRevision: 8d3c5462cf28e606db3a9128f39b65c6ffee2d5c
+      path: kubectl-agent/chart
+      helm:
+        releaseName: aurora-kubectl-agent
+        valueFiles:
+          - $values/aurora/kubectl-agent-values.yaml
+    - repoURL: https://github.com/pocharlies/k8s-observability-pocharlies
+      targetRevision: main
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: aurora
+  syncPolicy:
+    automated:
+      selfHeal: true
+      prune: false
+    syncOptions:
+      - ServerSideApply=true
