@@ -1,0 +1,174 @@
+# Visibilidad del hub de alertas en Grafana.
+#
+# POR QUÉ SOBRE POSTGRES Y NO SOBRE MÉTRICAS: el endpoint /metrics de keep-backend
+# está roto en la v0.52.1. Devuelve 500 incluso con API key válida, y el 500 ni
+# siquiera es el error real: el manejador de excepciones de Keep (api.py:346)
+# revienta con `AttributeError: 'State' object has no attribute 'tenant_id'` al
+# intentar formatear el mensaje, así que enmascara la causa. El VMServiceScrape que
+# apuntaba ahí llevaba desde su creación en health=down con 401, sin traer ni una
+# serie, y de paso ensuciaba el log de Keep con un "Failed to validate API Key" cada
+# 30 segundos.
+#
+# Los hechos que importan viven en la BBDD de Keep de todas formas, y son mejores que
+# unas métricas HTTP: cuántas alertas entran, cuántos incidentes se crean por regla, y
+# —el que habría cambiado esta historia— cuántas ejecuciones de workflow hay por
+# estado. Los tres workflows de incidente estuvieron 9 días registrados y con CERO
+# ejecuciones sin que nada lo dijera.
+#
+# La contraseña llega de Vault por ESO. El precedente del estate
+# (grafana-datasource-litellm-pg) la lleva en claro dentro de un ConfigMap; aquí no.
+# El sidecar de Grafana acepta Secrets porque corre con RESOURCE=both.
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: grafana-datasource-keep-pg
+  namespace: monitoring
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: vault-backend
+    kind: ClusterSecretStore
+  target:
+    name: grafana-datasource-keep-pg
+    creationPolicy: Owner
+    template:
+      metadata:
+        labels:
+          # Lo que hace que el sidecar lo recoja y lo escriba en
+          # /etc/grafana/provisioning/datasources.
+          grafana_datasource: "1"
+      data:
+        keep-pg.yaml: |
+          apiVersion: 1
+          datasources:
+            - name: keep-pg
+              uid: keep-pg
+              type: postgres
+              access: proxy
+              url: postgres-shared-rw.databases.svc.cluster.local:5432
+              database: keep
+              user: "{{ .db_user }}"
+              editable: false
+              jsonData:
+                sslmode: require
+                postgresVersion: 1600
+                timescaledb: false
+              secureJsonData:
+                password: "{{ .db_password }}"
+  data:
+    - secretKey: db_user
+      remoteRef:
+        key: secret/keep
+        property: DB_USER
+    - secretKey: db_password
+      remoteRef:
+        key: secret/keep
+        property: DB_PASSWORD
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-keep-hub
+  namespace: monitoring
+  labels:
+    grafana_dashboard: "1"
+data:
+  keep-hub.json: |
+    {
+      "title": "Keep — hub de alertas",
+      "uid": "keep-hub",
+      "editable": true,
+      "schemaVersion": 39,
+      "refresh": "1m",
+      "time": { "from": "now-24h", "to": "now" },
+      "panels": [
+        {
+          "id": 1,
+          "title": "Ejecuciones de workflow por estado",
+          "description": "EL panel que faltaba. Los 3 workflows de incidente estuvieron 9 días registrados y con 0 ejecuciones: aquí eso se ve como una línea plana en cero. Un workflow que aparece en la UI y nunca corre es indistinguible de uno sano si sólo miras que exista.",
+          "type": "timeseries",
+          "datasource": { "type": "postgres", "uid": "keep-pg" },
+          "gridPos": { "h": 9, "w": 24, "x": 0, "y": 0 },
+          "fieldConfig": { "defaults": { "custom": { "drawStyle": "bars", "fillOpacity": 60, "stacking": { "mode": "normal" } } } },
+          "targets": [
+            {
+              "format": "time_series",
+              "rawSql": "SELECT $__timeGroupAlias(e.started, '1h'), w.name || ' — ' || e.status AS metric, count(*) AS value FROM workflowexecution e JOIN workflow w ON w.id = e.workflow_id WHERE $__timeFilter(e.started) GROUP BY 1, 2 ORDER BY 1",
+              "rawQuery": true
+            }
+          ]
+        },
+        {
+          "id": 2,
+          "title": "Alertas ingeridas por severidad",
+          "type": "timeseries",
+          "datasource": { "type": "postgres", "uid": "keep-pg" },
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 9 },
+          "targets": [
+            {
+              "format": "time_series",
+              "rawSql": "SELECT $__timeGroupAlias(timestamp, '1h'), coalesce(event->>'severity', 'sin severidad') AS metric, count(*) AS value FROM alert WHERE $__timeFilter(timestamp) GROUP BY 1, 2 ORDER BY 1",
+              "rawQuery": true
+            }
+          ]
+        },
+        {
+          "id": 3,
+          "title": "Incidentes creados por regla de correlación",
+          "type": "timeseries",
+          "datasource": { "type": "postgres", "uid": "keep-pg" },
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 9 },
+          "targets": [
+            {
+              "format": "time_series",
+              "rawSql": "SELECT $__timeGroupAlias(i.creation_time, '1h'), coalesce(r.name, 'sin regla') AS metric, count(*) AS value FROM incident i LEFT JOIN rule r ON r.id = i.rule_id WHERE $__timeFilter(i.creation_time) GROUP BY 1, 2 ORDER BY 1",
+              "rawQuery": true
+            }
+          ]
+        },
+        {
+          "id": 4,
+          "title": "AGUJEROS DE COBERTURA — familias de alerta que no producen incidente",
+          "description": "Cada fila es una familia que entra en Keep y no casa con ninguna regla: se registra y se calla. Así se encontraron las 16 huérfanas del 2026-08-04, KubePodCrashLooping entre ellas con 158 eventos. Si aquí aparece algo nuevo, es cobertura que falta.",
+          "type": "table",
+          "datasource": { "type": "postgres", "uid": "keep-pg" },
+          "gridPos": { "h": 10, "w": 24, "x": 0, "y": 17 },
+          "targets": [
+            {
+              "format": "table",
+              "rawSql": "SELECT a.event->>'name' AS \"familia\", coalesce(a.event->>'severity', '-') AS \"severidad\", count(*) AS \"eventos sin incidente\", max(a.timestamp) AS \"último\" FROM alert a LEFT JOIN lastalerttoincident li ON li.fingerprint = a.fingerprint WHERE li.fingerprint IS NULL AND $__timeFilter(a.timestamp) GROUP BY 1, 2 ORDER BY 3 DESC",
+              "rawQuery": true
+            }
+          ]
+        },
+        {
+          "id": 5,
+          "title": "Reglas de correlación sin incidentes en la ventana",
+          "description": "El complemento del panel anterior: una regla configurada que nunca agrupa nada. Puede ser sana (no ha pasado nada de eso) o estar muerta — monitoring-degraded lo estaba, porque sus 6 alertas están todas en la lista de crónicas que el Job excluye de cada regla.",
+          "type": "table",
+          "datasource": { "type": "postgres", "uid": "keep-pg" },
+          "gridPos": { "h": 9, "w": 12, "x": 0, "y": 27 },
+          "targets": [
+            {
+              "format": "table",
+              "rawSql": "SELECT r.name AS \"regla\", count(i.id) AS \"incidentes\" FROM rule r LEFT JOIN incident i ON i.rule_id = r.id AND $__timeFilter(i.creation_time) GROUP BY r.name ORDER BY 2 ASC, 1",
+              "rawQuery": true
+            }
+          ]
+        },
+        {
+          "id": 6,
+          "title": "Incidentes abiertos por severidad",
+          "type": "table",
+          "datasource": { "type": "postgres", "uid": "keep-pg" },
+          "gridPos": { "h": 9, "w": 12, "x": 12, "y": 27 },
+          "targets": [
+            {
+              "format": "table",
+              "rawSql": "SELECT coalesce(user_generated_name, ai_generated_name, '(sin nombre)') AS \"incidente\", severity AS \"sev\", status AS \"estado\", alerts_count AS \"alertas\", creation_time AS \"creado\" FROM incident WHERE status = 'firing' ORDER BY severity DESC, creation_time DESC LIMIT 40",
+              "rawQuery": true
+            }
+          ]
+        }
+      ]
+    }
