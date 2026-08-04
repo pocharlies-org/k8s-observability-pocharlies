@@ -92,6 +92,40 @@ spec:
         repeat_interval: 30m
 
       # ---------------------------------------------------------------------
+      # FALLOS SILENCIOSOS DE PROCESAMIENTO (2026-08-04)
+      #
+      # Estas cuatro NO son un dead-man's switch: Keep las recibe igual (de ahí
+      # el `continue: true`, igual que arriba). Van también por Telegram porque
+      # su modo de fallo es invisible por definición y ya ha costado caro tres
+      # veces: el consumidor de RabbitMQ muere, el pod sigue vivo, las probes
+      # siguen en verde y NADA se cae — así que ningún aviso de salud dispara.
+      #
+      # El caso que motivó esto: el 31-07 el adapter de gmail perdió su canal
+      # tras un reinicio del broker y estuvo 9,5 h sin procesar correo, con 588
+      # mensajes encolados. RabbitmqFunctionalQueueNoConsumer detectó el estado
+      # correctamente; nadie lo miró. Antes ya había pasado con whatsapp
+      # (19-21 jul) y expenses (16-21 jul).
+      #
+      # Son de bajo ruido por construcción: las cuatro llevan `for` de 10-30m y
+      # excluyen los buffers sin consumidor legítimo, así que un rollout normal
+      # (hueco de segundos) no las activa. Medido el 04-08: 0 series activas en
+      # estado estable.
+      #
+      # Si alguna se vuelve ruidosa, la respuesta correcta es arreglar la cola o
+      # afinar SU expresión — no sacarla de aquí y volver a quedarse ciego.
+      # ---------------------------------------------------------------------
+      - matchers:
+          - 'alertname =~ "RabbitmqFunctionalQueueNoConsumer|RabbitmqUnackedStuck|RabbitmqHeadMessageStale|SynapseUnroutableMessages"'
+        receiver: backstop-telegram
+        continue: true
+        group_by:
+          - alertname
+          - queue
+        group_wait: 30s
+        group_interval: 5m
+        repeat_interval: 1h
+
+      # ---------------------------------------------------------------------
       # CATCH-ALL EXPLÍCITO — no borrar, no es redundante
       #
       # `receiver: keep` en la ruta padre NO basta: Alertmanager usa el receiver
