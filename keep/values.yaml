@@ -154,6 +154,8 @@ backend:
                   Regla de correlación: {{ incident.rule_name }}
         actions:
           - name: telegram-critical
+            # Ver el comentario del trigger: `cel` no filtra en incidentes, `if` si.
+            if: "'{{ incident.severity }}' == 'critical'"
             provider:
               type: telegram
               config: "{{ providers.telegram_ops }}"
@@ -197,6 +199,8 @@ backend:
                   Regla de correlación: {{ incident.rule_name }}
         actions:
           - name: telegram-incident
+            # Complementario del anterior: sin esto ambos workflows notifican todo.
+            if: "'{{ incident.severity }}' != 'critical'"
             provider:
               type: telegram
               config: "{{ providers.telegram_ops }}"
