@@ -407,6 +407,43 @@ backend:
       value: edge
       effect: NoSchedule
 
+  # startupProbe, y sin ella el traslado a sauvage NO funciona.
+  #
+  # Los defaults del chart para liveness son initialDelaySeconds 60 +
+  # failureThreshold 5 × periodSeconds 10 = el contenedor muere a los ~110s si
+  # no responde /healthcheck. En los nodos ks5 arrancaba justo por debajo; en
+  # sauvage no. Medido en el pod real durante el traslado:
+  #
+  #   12:08:31  Starting background server jobs / Building providers cache
+  #   12:10:04  Providers cache built successfully      <- 93s SOLO en esto
+  #             ...y el API aún tenía que levantar
+  #
+  # Resultado: liveness mataba el contenedor antes de que la API existiera,
+  # reinicio, y vuelta a empezar — 6 reinicios en bucle, Keep caído. No es
+  # lentitud anómala de sauvage: son 158 pods y disco más lento, y Keep importa
+  # el catálogo entero de providers al arrancar.
+  #
+  # La primitiva correcta es startupProbe, no subir el initialDelay de liveness:
+  # mientras startupProbe no pase, liveness y readiness quedan DESACTIVADAS, y
+  # en cuanto pasa, liveness recupera su sensibilidad normal. Subir el
+  # initialDelay habría hecho al pod insensible a cuelgues para siempre.
+  #
+  # 10 minutos de margen (60 × 10s) con la vista puesta en el caso peor: nodo
+  # frío, imagen recién bajada y CPU disputada.
+  #
+  # La plantilla hace `toYaml` del mapa `probes` entero
+  # (templates/backend.yaml:166), así que acepta esta clave aunque el chart no
+  # la documente; readinessProbe y livenessProbe siguen viniendo de sus defaults.
+  healthCheck:
+    probes:
+      startupProbe:
+        httpGet:
+          path: /healthcheck
+          port: 8080
+        periodSeconds: 10
+        failureThreshold: 60
+        successThreshold: 1
+
   # Ya NO hay topologySpreadConstraints, y conviene saber por qué estuvo aquí.
   #
   # Existía para repartir 2 réplicas entre los 3 nodos del pool ks5-nvme, después
