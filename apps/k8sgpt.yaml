@@ -27,6 +27,26 @@ spec:
   destination:
     server: https://kubernetes.default.svc
     namespace: k8sgpt
+
+  # El toleration de sauvage lo pone Kyverno, no el chart — y sin esto ArgoCD lo
+  # borraría en cada sync.
+  #
+  # El chart no soporta `tolerations` (ver k8sgpt/values.yaml), así que la
+  # ClusterPolicy `k8sgpt-sauvage-toleration` lo inyecta en admisión. Pero eso
+  # crea una diferencia permanente contra git: ArgoCD ve un campo que su
+  # manifiesto no tiene, lo considera drift y con selfHeal lo revierte — dejando
+  # el pod sin toleration y Pending en un nodo con taint. Se observó exactamente
+  # eso: el Deployment del pod de análisis (que crea el operador, fuera de
+  # ArgoCD) SÍ conservaba el toleration, y el del controller-manager no.
+  #
+  # Ignorar sólo ese path deja que Kyverno gane donde debe, sin renunciar al
+  # control de git sobre el resto del pod template.
+  ignoreDifferences:
+    - group: apps
+      kind: Deployment
+      jsonPointers:
+        - /spec/template/spec/tolerations
+
   syncPolicy:
     automated:
       selfHeal: true
