@@ -136,6 +136,15 @@ config:
   # pobre, no un error — sólo se ve leyendo los RCA.
   ORCHESTRATOR_ENABLED: "false"
   VISUALIZATION_ENABLED: "false"
+  # RCA_MODEL hay que fijarlo EXPLÍCITAMENTE: su default no cae a MAIN_MODEL.
+  # En llm.py:46 es `os.getenv("RCA_MODEL") or (... if RCA_OPTIMIZE_COSTS else
+  # "anthropic/claude-opus-4.6")`, así que con RCA_OPTIMIZE_COSTS=false y la
+  # variable sin poner, el RCA de fondo pedía un modelo de Anthropic — sin
+  # credencial y fuera de LiteLLM. El error real en el celery-worker era
+  # `RuntimeError: Provider 'anthropic' is not available for model
+  # 'anthropic/claude-opus-4.6'`, y tumbaba el chat del incidente, que es lo que
+  # produce el resumen.
+  RCA_MODEL: bedrock/tooling
   RCA_OPTIMIZE_COSTS: "false"
 
   # ------------------------------------------------------------------------
