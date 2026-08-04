@@ -103,6 +103,107 @@ rules:
   # falta un workflow `type: interval` que consulte VictoriaMetrics, y no he
   # verificado los nombres de parámetros de ese provider — prefiero no
   # inventarlos que dejar un workflow que falle en silencio.
+
+  # ---------------------------------------------------------------------------
+  # COBERTURA DE HUÉRFANAS (2026-08-04)
+  #
+  # Estas 16 familias llegaban a Keep, se ingerían bien y no casaban con NINGUNA
+  # regla: 0 incidentes, 0 Telegram, 0 Aurora. Medido sobre 9 días de tráfico
+  # real con un LEFT JOIN de alert contra lastalerttoincident. La más sangrante
+  # era KubePodCrashLooping con 158 eventos — un pod en crashloop no avisaba a
+  # nadie — y LitellmNotReady, que es la pasarela de la que dependen los resúmenes
+  # de Keep, los RCA de Aurora y k8sgpt.
+  #
+  # No se tocan las que deben seguir calladas: InfoInhibitor (4073) y Watchdog son
+  # fontanería de Alertmanager, y CPUThrottlingHigh (1181, info) es ruido crónico.
+  # ---------------------------------------------------------------------------
+  - ruleName: workload-degraded
+    incidentPrefix: WORK
+    celQuery: |
+      name in ["KubePodCrashLooping", "KubeDeploymentRolloutStuck",
+               "KubeDaemonSetRolloutStuck", "KubernetesDaemonSetUnavailable",
+               "KubePersistentVolumeFillingUp"]
+    groupingCriteria: [namespace]
+    createOn: any
+    resolveOn: all_resolved
+    timeframeInSeconds: 900
+    timeUnit: minutes
+    incidentNameTemplate: "Workloads degradados en {{ namespace }}"
+    groupDescription: >-
+      Pods en crashloop, rollouts atascados y volúmenes llenándose. Se agrupa por
+      namespace porque un nodo o un despliegue malo tumba varios a la vez y son
+      el mismo incidente, no cinco.
+
+  - ruleName: llm-plane
+    incidentPrefix: LLM
+    celQuery: |
+      name in ["LitellmNotReady", "Dgx2GpuMemoryWarning",
+               "GpuArbiterStateObservationUnavailable"]
+    groupingCriteria: []
+    createOn: any
+    resolveOn: all_resolved
+    timeframeInSeconds: 900
+    timeUnit: minutes
+    incidentNameTemplate: "Plano LLM degradado"
+    groupDescription: >-
+      La pasarela LiteLLM y el arbitraje de GPU. Es infraestructura de la que
+      dependen los resúmenes de Keep, los RCA de Aurora y k8sgpt: si cae, las
+      alertas siguen llegando pero llegan sin contexto.
+
+  - ruleName: imagestudio-degraded
+    incidentPrefix: IMG
+    celQuery: |
+      name in ["ImageStudioWorkerDown", "ImageStudioErrorRateHigh",
+               "Krea2TrainerWorkerDown"]
+    groupingCriteria: []
+    createOn: any
+    resolveOn: all_resolved
+    timeframeInSeconds: 900
+    timeUnit: minutes
+    incidentNameTemplate: "Image Studio degradado"
+    groupDescription: >-
+      Workers y tasa de error del dominio de generación de imagen, incluido el
+      entrenador de Krea. Van juntos porque comparten cola y GPU.
+
+  - ruleName: datastore-shared
+    incidentPrefix: PGSH
+    celQuery: name in ["PostgresSharedBackendsWaiting"]
+    groupingCriteria: []
+    createOn: any
+    resolveOn: all_resolved
+    timeframeInSeconds: 900
+    timeUnit: minutes
+    incidentNameTemplate: "Postgres compartido saturado"
+    groupDescription: >-
+      Backends esperando en el CNPG compartido. Lo usan Synapse, Keep, Aurora y
+      la tienda: la saturación aquí se manifiesta como lentitud en todo lo demás.
+
+  - ruleName: k8s-control-plane
+    incidentPrefix: K8S
+    celQuery: name in ["KubeAggregatedAPIDown", "ReconcileErrors", "RecordingRulesError"]
+    groupingCriteria: []
+    createOn: any
+    resolveOn: all_resolved
+    timeframeInSeconds: 900
+    timeUnit: minutes
+    incidentNameTemplate: "Plano de control de Kubernetes degradado"
+    groupDescription: >-
+      API agregada caída, errores de reconciliación y reglas de grabación
+      fallando. OJO: `RecordingRulesError` NO estaba en monitoring-degraded, que
+      lista `RecordingRulesNoData` — otro nombre. Se cubre aquí.
+
+  - ruleName: openclaw-degraded
+    incidentPrefix: OCLW
+    celQuery: name.startsWith("OpenClaw")
+    groupingCriteria: []
+    createOn: any
+    resolveOn: all_resolved
+    timeframeInSeconds: 900
+    timeUnit: minutes
+    incidentNameTemplate: "OpenClaw degradado"
+    groupDescription: >-
+      Router de Telegram de OpenClaw pausado y demás alertas del dominio.
+
   - ruleName: chronic-debt
     celQuery: chronic
     exemptFromChronic: true
