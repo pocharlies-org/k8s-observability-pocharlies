@@ -1,25 +1,21 @@
-# Scrape de Keep. Faltaba, y su ausencia convirtió la primera versión de
-# KeepBackendAbsent en un falso positivo permanente: la regla preguntaba por
-# `up{pod=~"keep-backend-.*"}`, una serie que no existía porque nadie recogía
-# esas métricas.
+# NO hay scrape de Keep, y es deliberado.
 #
-# Keep expone /metrics en el puerto del API (usa PROMETHEUS_MULTIPROC_DIR para
-# agregar entre los workers de gunicorn).
-apiVersion: operator.victoriametrics.com/v1beta1
-kind: VMServiceScrape
-metadata:
-  name: keep
-  namespace: monitoring
-  labels:
-    app.kubernetes.io/name: keep
-    app.kubernetes.io/component: monitoring
-spec:
-  selector:
-    matchLabels:
-      app.kubernetes.io/name: keep
-      app.kubernetes.io/component: backend
-  endpoints:
-    - port: http
-      path: /metrics
-      interval: 30s
-      scrapeTimeout: 10s
+# Aquí vivía un VMServiceScrape contra keep-backend:8080/metrics. Llevaba desde su
+# creación en health=down: ese endpoint exige la API key, así que devolvía 401 en cada
+# intento — un target permanentemente caído y un "Failed to validate API Key" en el
+# log de Keep cada 30 segundos, durante días, sin traer ni una serie.
+#
+# Y añadirle la credencial no lo arregla: con API key válida devuelve 500. El 500
+# tampoco es el error real — el manejador de excepciones de Keep (api.py:346) revienta
+# con `AttributeError: 'State' object has no attribute 'tenant_id'` al formatear el
+# mensaje, y enmascara la causa. Está roto upstream en la v0.52.1.
+#
+# La visibilidad se resuelve mejor por otro lado: manifests/grafana-keep.yaml monta un
+# datasource Postgres contra la propia BBDD de Keep y un dashboard con los hechos que
+# importan — ejecuciones de workflow por estado, alertas sin incidente, reglas que no
+# agrupan nada. Son mejores señales que unas métricas HTTP: el fallo que estuvo 9 días
+# oculto (tres workflows registrados con 0 ejecuciones) se ve de un vistazo ahí y no
+# habría aparecido en /metrics de ninguna forma.
+#
+# Si algún día upstream arregla /metrics, el scrape vuelve con `bearerTokenSecret`
+# apuntando a keepsvc-provisioning.
