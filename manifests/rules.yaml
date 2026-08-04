@@ -631,19 +631,35 @@ spec:
           # A functional queue with messages waiting and zero consumers
           # attached. This is a dead handler. Buffers (which legitimately have
           # no consumer) are excluded.
+          #
+          # DEDUPE (2026-08-04): every queue is scraped TWICE — the shared-rabbitmq
+          # and shared-rabbitmq-headless Services both point at the same broker, so
+          # each series exists once per job (measured: 406 series for 203 queues).
+          # Without `max by (vhost, queue)` this alert fired twice per dead queue,
+          # doubling the noise for the same incident. Same fix the
+          # synapse-conversation VMRule already documents for its scoped DLQ alert.
+          #
+          # `max` and not `min` on the consumer side on purpose: if the two scrapes
+          # disagree (one still sees a consumer), max keeps the optimistic value and
+          # the alert stays quiet. Better a late alert than a false one during the
+          # seconds-long consumer gap of a normal rollout.
           expr: |
             (
-              rabbitmq_detailed_queue_consumers{
-                vhost="/synapse",
-                queue!~"dlq\\..+|archive\\..+|adapter\\.[^.]+"
-              } == 0
+              max by (vhost, queue) (
+                rabbitmq_detailed_queue_consumers{
+                  vhost="/synapse",
+                  queue!~"dlq\\..+|archive\\..+|adapter\\.[^.]+"
+                }
+              ) == 0
             )
             and on (vhost, queue)
             (
-              rabbitmq_detailed_queue_messages_ready{
-                vhost="/synapse",
-                queue!~"dlq\\..+|archive\\..+|adapter\\.[^.]+"
-              } > 0
+              max by (vhost, queue) (
+                rabbitmq_detailed_queue_messages_ready{
+                  vhost="/synapse",
+                  queue!~"dlq\\..+|archive\\..+|adapter\\.[^.]+"
+                }
+              ) > 0
             )
           for: 10m
           labels:
