@@ -109,7 +109,7 @@ config:
   # ------------------------------------------------------------------------
   LLM_PROVIDER_MODE: direct
   BEDROCK_BASE_URL: http://litellm.litellm.svc.cluster.local:4000/v1
-  # UN SOLO ALIAS PARA TODO: `tooling`.
+  # UN SOLO ALIAS PARA TODO: `tooling-ha`.
   #
   # Antes esto era `dense` (alias que dejó de existir) y luego `router`. Se
   # unifica en `tooling` por decisión explícita: un único alias, sin indirección
@@ -118,16 +118,32 @@ config:
   # vllm-ornith-35b-nvfp4-mtp-dgx1 (Ornith 35B NVFP4 en dgx1), el mismo backend
   # al que apuntaba `router`, así que el cambio no mueve de GPU: quita una capa.
   #
-  # Contrapartida asumida, y conviene tenerla escrita: `router`/`auto` seguían
-  # automáticamente a lo que estuviera sirviendo, porque
-  # litellm-dgx-backend-sync añade y quita alias EN CALIENTE según la readiness
-  # de los Services. Con un alias fijo, si `tooling` se quedara sin backend
-  # Aurora daría model-not-found en vez de degradar sola. El aviso llega igual:
-  # la alerta la da k8sgpt/LiteLLM, no Aurora — y resolver el alias contra
-  # /v1/models o el log del sync sigue siendo obligatorio antes de asumir nada.
-  MAIN_MODEL: bedrock/tooling
-  SUMMARIZATION_MODEL: bedrock/tooling   # trabajo mecánico al modelo rápido
-  ENRICHMENT_MODEL: bedrock/tooling
+  # La contrapartida que este bloque documentaba como asumida SE COBRÓ, y por eso
+  # ahora el alias lleva sufijo `-ha`. Decía: «con un alias fijo, si `tooling` se
+  # quedara sin backend Aurora daría model-not-found en vez de degradar sola».
+  # Pasó el 2026-08-04 19:11 — dgx1 cambió de modelo residente y Aurora murió a
+  # los 40 s, a mitad de un incidente real, con «no healthy deployments for this
+  # model». Aurora no puede cubrirse a sí misma: no tiene ni un `with_fallbacks`
+  # en todo su árbol, su `max_retries` reintenta contra el MISMO modelo, y bedrock
+  # es su único provider disponible.
+  #
+  # `tooling-ha` = «prefiero `tooling`, pero prefiero vivo». Lo resuelve el hook
+  # litellm_strip_params (repo k8s-litellm-pocharlies) con la cadena
+  # tooling -> dense -> qwen3-coder, verificando cada salto. NO lo busques en
+  # /v1/models: no es un deployment registrado, y funciona porque el hook corre en
+  # pre_call_hook, antes del gate de nombre de modelo del proxy.
+  #
+  # Sigue NO siendo el smart router: `router`/`auto` reclasifican por forma de
+  # petición (con tool -> dense), y eso es justo lo que esta decisión quitó. Aquí
+  # el modelo lo elige Aurora y sólo cambia si el elegido no está.
+  #
+  # La otra mitad de la red vive en la config de LiteLLM
+  # (`router_settings.fallbacks: [{tooling: [dense]}]`, un solo sentido) y cubre el
+  # modo que el hook no ve: alias registrado pero sin deployment sano. Son dos
+  # modos de fallo con dos errores distintos y hacen falta las dos capas.
+  MAIN_MODEL: bedrock/tooling-ha
+  SUMMARIZATION_MODEL: bedrock/tooling-ha   # trabajo mecánico al modelo rápido
+  ENRICHMENT_MODEL: bedrock/tooling-ha
   AGENT_RECURSION_LIMIT: "240"
 
   # Un agente primero. El orquestador multi-agente se activa cuando los RCA de
@@ -144,7 +160,7 @@ config:
   # `RuntimeError: Provider 'anthropic' is not available for model
   # 'anthropic/claude-opus-4.6'`, y tumbaba el chat del incidente, que es lo que
   # produce el resumen.
-  RCA_MODEL: bedrock/tooling
+  RCA_MODEL: bedrock/tooling-ha
   RCA_OPTIMIZE_COSTS: "false"
 
   # ------------------------------------------------------------------------
@@ -155,7 +171,7 @@ config:
   # ------------------------------------------------------------------------
   GUARDRAILS_ENABLED: "true"
   GUARDRAILS_SIGMA_ENABLED: "true"
-  GUARDRAILS_LLM_MODEL: bedrock/tooling
+  GUARDRAILS_LLM_MODEL: bedrock/tooling-ha
 
   # --- Aislamiento de los comandos de los agentes ---
   # Crea el namespace `untrusted`, RBAC y una NetworkPolicy que corta el acceso
