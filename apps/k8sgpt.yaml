@@ -21,7 +21,7 @@ spec:
         releaseName: k8sgpt
         valueFiles:
           - $values/k8sgpt/values.yaml
-    - repoURL: https://github.com/pocharlies/k8s-observability-pocharlies
+    - repoURL: https://github.com/pocharlies-org/k8s-observability-pocharlies
       targetRevision: main
       ref: values
   destination:

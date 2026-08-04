@@ -17,7 +17,7 @@ spec:
         releaseName: blackbox-exporter
         valueFiles:
           - $values/blackbox/values.yaml
-    - repoURL: https://github.com/pocharlies/k8s-observability-pocharlies
+    - repoURL: https://github.com/pocharlies-org/k8s-observability-pocharlies
       targetRevision: main
       ref: values
   destination:

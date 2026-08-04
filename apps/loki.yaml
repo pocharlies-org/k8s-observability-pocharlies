@@ -17,7 +17,7 @@ spec:
         releaseName: loki
         valueFiles:
           - $values/loki/values.yaml
-    - repoURL: https://github.com/pocharlies/k8s-observability-pocharlies
+    - repoURL: https://github.com/pocharlies-org/k8s-observability-pocharlies
       targetRevision: main
       ref: values
   destination:
