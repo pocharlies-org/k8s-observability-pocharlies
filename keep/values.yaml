@@ -386,12 +386,15 @@ backend:
       # RETURNING, así que sólo salen las filas que ESTA pasada ha conseguido
       # marcar. Dos ejecuciones simultáneas no pueden publicar el mismo análisis.
       #
-      # Contrapartida asumida: es at-most-once. Si Telegram falla DESPUÉS del
-      # reclamo, ese análisis no se reintenta. Se acepta porque el fallo queda
-      # registrado como ejecución errónea del workflow —visible en el panel de
-      # Grafana `keep-hub`, que grafica ejecuciones por estado— mientras que un
-      # duplicado no avisa de nada. La ventana de 24 h del reclamo es el margen
-      # para RCA lentos, no un filtro de frescura.
+      # Contrapartida asumida: es at-most-once. El reclamo ya está hecho cuando
+      # se envía, así que un envío que agote los reintentos NO se republica. La
+      # acción lleva `on-failure.retry` (4 envíos, ver allí) para que un fallo
+      # transitorio de Telegram no baste para perderlo, pero eso reduce la
+      # probabilidad, no cambia la garantía: sigue siendo at-most-once. Se acepta
+      # porque el fallo queda registrado como ejecución errónea del workflow
+      # —visible en el panel de Grafana `keep-hub`, que grafica ejecuciones por
+      # estado— mientras que un duplicado no avisa de nada. La ventana de 24 h
+      # del reclamo es el margen para RCA lentos, no un filtro de frescura.
       # ---------------------------------------------------------------------
       - id: aurora-report-back
         name: Aurora — análisis de vuelta al grupo
@@ -440,6 +443,24 @@ backend:
             # {{ foreach.value.N }}: la notación con corchetes devuelve cadena
             # vacía en silencio, comprobado contra el IOHandler real.
             foreach: "{{ steps.finished-rcas.results }}"
+            # Mismo reintento que la familia de notificación de incidentes (ver
+            # notify-incident-critical). Aquí importa MÁS que allí, porque el
+            # reclamo en keep_bridge.reported ya se ha hecho: un envío perdido no
+            # se republica nunca. En 7 días este envío falló 4 veces (2 "Timed
+            # out", 2 "Can't ...").
+            #
+            # El reintento es POR ELEMENTO, no por lote, y eso es lo que lo hace
+            # seguro con `foreach`: _run_foreach (step.py:127-155) itera y llama a
+            # _run_single POR CADA item, y el bucle range(count+1) vive DENTRO de
+            # _run_single (step.py:337-371). Reintentar el RCA nº3 no reenvía el
+            # nº1 ni el nº2 — no hay duplicados, y la semántica del reclamo no
+            # cambia. Además _run_foreach captura por item y hace `continue`
+            # (step.py:148), así que un RCA que agote los reintentos no se lleva
+            # por delante a los demás de la misma pasada.
+            on-failure:
+              retry:
+                count: 3
+                interval: 15
             provider:
               type: telegram
               config: "{{ providers.telegram_ops }}"
