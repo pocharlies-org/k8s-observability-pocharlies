@@ -3,14 +3,14 @@
 # POR QUÉ UN POSTSTART INYECTADO POR POLICY Y NO ALGO MENOS RARO
 #
 # El desplegable "Choose Model" del chat NO sale de ningún endpoint: está
-# hardcodeado en el bundle del frontend (array `B` en
-# .next/static/chunks/app/chat/page-*.js) con cuatro modelos cloud
-# (openai/gpt-5.5, anthropic/claude-sonnet-4.6, anthropic/claude-opus-4.7,
-# google/gemini-3.1-pro-preview). Y la selección SÍ se aplica: main_chatbot.py
-# la pasa a llm.py por encima de MAIN_MODEL, así que elegir cualquiera de ellos
-# rompe el chat con "Provider 'openai' is not available" — aquí no hay ninguna
-# key cloud, todo va por BEDROCK_BASE_URL → LiteLLM (verificado 2026-08-05
-# dentro del pod: los cuatro ids stock fallan; bedrock/<alias> responde).
+# hardcodeado en el bundle del frontend (array `B` en los chunks de app/chat)
+# con cuatro modelos cloud (openai/gpt-5.5, anthropic/claude-sonnet-4.6,
+# anthropic/claude-opus-4.7, google/gemini-3.1-pro-preview). Y la selección SÍ
+# se aplica: main_chatbot.py la pasa a llm.py por encima de MAIN_MODEL, así que
+# elegir cualquiera de ellos rompía el chat con "Provider 'openai' is not
+# available" — aquí no hay ninguna key cloud, todo va por BEDROCK_BASE_URL →
+# LiteLLM (verificado 2026-08-05 dentro del pod: los cuatro ids stock fallan;
+# bedrock/<alias> responde).
 #
 # Alternativas descartadas:
 #   - values del chart: aurora-oss 1.2.16 no expone lifecycle/initContainers
@@ -19,16 +19,22 @@
 #     revertiría en bucle. Los Pods no los trackea, así que se muta el Pod.
 #   - Forkear la imagen: mantener un build propio por 4 literales es peor.
 #
-# El postStart reescribe los cuatro objetos del catálogo por aliases LiteLLM
-# vivos (verificados contra /v1/chat/completions con la key de Aurora el
-# 2026-08-05), y añade un quinto: `gpt-5.5-chatgpt`, que NO corre en el DGX —
-# sale a chatgpt.com por el codex-bridge con la suscripción del usuario. Ese
-# comparte cuota con el Codex interactivo y OpenAI estrangula por cliente, así
-# que es para chat manual; los RCA siguen en los modelos locales.
-# Es idempotente y falla en blando: si una versión futura del
-# frontend cambia los literales, el script no encuentra nada, no toca nada y el
-# desplegable vuelve al catálogo stock — sin tumbar el pod (|| true).
-# Al subir la versión del chart, revisar que los literales sigan existiendo.
+# El postStart reescribe el catálogo con aliases LiteLLM vivos (verificados
+# contra /v1/chat/completions con la key de Aurora) y añade un quinto:
+# `gpt-5.5-chatgpt`, que NO corre en el DGX — sale a chatgpt.com por el
+# codex-bridge con la suscripción del usuario. Ese comparte cuota con el Codex
+# interactivo y OpenAI estrangula por cliente, así que es para chat manual; los
+# RCA siguen en los modelos locales.
+#
+# OJO — hay que parchear DOS sitios. `.next/static/chunks` es lo que descarga el
+# navegador, pero `.next/server` es el bundle de SSR: con App Router el
+# desplegable se pinta primero en el servidor, así que parchear solo el estático
+# deja el catálogo viejo en el HTML inicial. Por eso el script recorre ambos.
+#
+# Es idempotente y falla en blando: si una versión futura del frontend cambia
+# los literales, el script no encuentra nada, no toca nada y el desplegable
+# vuelve al catálogo stock — sin tumbar el pod (|| true). Al subir la versión
+# del chart, revisar que los literales sigan existiendo.
 apiVersion: kyverno.io/v1
 kind: ClusterPolicy
 metadata:
@@ -80,8 +86,13 @@ spec:
                         - -c
                         - |
                           cat > /tmp/patch-models.js <<"XEOF"
+                          // Reescribe el catálogo de modelos del chat de Aurora con los del LiteLLM.
+                          // Cubre el bundle de cliente Y el de servidor: con App Router el desplegable se
+                          // pinta primero en SSR, así que parchear solo /static/chunks deja el catálogo
+                          // viejo en el HTML inicial. Idempotente y no fatal.
                           const fs = require("fs");
                           const path = require("path");
+
                           const REPLACEMENTS = [
                             [
                               '{id:"openai/gpt-5.5",name:"gpt-5.5",displayName:"GPT-5.5",provider:"OpenAI",tier:"premium",contextLength:"1M",hasReasoning:!0}',
@@ -100,17 +111,49 @@ spec:
                               '{id:"bedrock/dense-uncensored",name:"dense-uncensored",displayName:"Qwen3.6 27B Uncensored (DGX)",provider:"LiteLLM",tier:"pro",contextLength:"224K",hasReasoning:!0},{id:"bedrock/gpt-5.5-chatgpt",name:"gpt-5.5-chatgpt",displayName:"GPT-5.5 (ChatGPT Pro)",provider:"OpenAI",tier:"premium",contextLength:"",hasReasoning:!0}',
                             ],
                           ];
-                          const dir = "/app/.next/static/chunks/app/chat";
-                          for (const f of fs.readdirSync(dir)) {
-                            if (!f.endsWith(".js")) continue;
-                            const p = path.join(dir, f);
-                            let data = fs.readFileSync(p, "utf8");
-                            if (data.includes('id:"bedrock/tooling-ha"')) continue;
-                            let hits = 0;
-                            for (const [oldS, newS] of REPLACEMENTS) {
-                              if (data.includes(oldS)) { data = data.split(oldS).join(newS); hits++; }
+
+                          const ROOTS = ["/app/.next/static/chunks", "/app/.next/server"];
+
+                          function walk(dir, out) {
+                            let entries;
+                            try {
+                              entries = fs.readdirSync(dir, { withFileTypes: true });
+                            } catch (e) {
+                              return out;
                             }
-                            if (hits > 0) fs.writeFileSync(p, data);
+                            for (const entry of entries) {
+                              const p = path.join(dir, entry.name);
+                              if (entry.isDirectory()) walk(p, out);
+                              else if (entry.name.endsWith(".js")) out.push(p);
+                            }
+                            return out;
                           }
+
+                          let patched = 0;
+                          for (const root of ROOTS) {
+                            for (const file of walk(root, [])) {
+                              let data;
+                              try {
+                                data = fs.readFileSync(file, "utf8");
+                              } catch (e) {
+                                continue;
+                              }
+                              if (data.indexOf('displayName:"GPT-5.5"') === -1) continue;
+                              if (data.indexOf('id:"bedrock/tooling-ha"') !== -1) continue;
+                              let hits = 0;
+                              for (const [oldS, newS] of REPLACEMENTS) {
+                                if (data.includes(oldS)) {
+                                  data = data.split(oldS).join(newS);
+                                  hits++;
+                                }
+                              }
+                              if (hits > 0) {
+                                fs.writeFileSync(file, data);
+                                console.log("PATCHED " + file + " (" + hits + "/4)");
+                                patched++;
+                              }
+                            }
+                          }
+                          console.log("total ficheros parcheados: " + patched);
                           XEOF
                           node /tmp/patch-models.js || true
