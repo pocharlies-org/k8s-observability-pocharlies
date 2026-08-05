@@ -371,6 +371,15 @@ backend:
                   # los campos que Aurora lee de cada alerta (tasks.py:231-243):
                   # `fingerprint`, que es su clave para casar el resolved con el
                   # firing, y `startsAt`, con el que mide el MTTD por incidente.
+                  #
+                  # Para incidentes SYNF el detalle (last_error, instance_id)
+                  # viaja por el ledger SRE de synapse, no por aquí: Keep no
+                  # puede serializar incident.alerts en sus plantillas.
+                  # Comprobado en vivo contra Keep 0.52.1: no existe un campo
+                  # agregado `incident.alerts_description` — `alerts` es una
+                  # property que devuelve List[AlertDto] vía query a DB
+                  # (api/models/incident.py:139) y chevron la renderiza como
+                  # repr de Python, igual que arriba.
                   alerts:
                     - status: firing
                       fingerprint: "{{ incident.id }}"
