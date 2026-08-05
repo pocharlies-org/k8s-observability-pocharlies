@@ -567,10 +567,10 @@ spec:
                 # deseado vacío se llevaría por delante la KB entera.
                 - { name: MIN_EXPECTED_NOTES, value: "1000" }
                 - { name: MAX_DELETES, value: "10" }
-                # Primer despliegue en seco: imprime la tabla de particiones y no toca la
-                # KB. Se pasa a "0" en el commit siguiente, ya sabiendo cuántos
-                # documentos van a entrar contra el techo de 100 de la org.
-                - { name: DRY_RUN, value: "1" }
+                # Medido en seco el 2026-08-05: 7.379 notas -> 22 documentos, muy por
+                # debajo del techo de 100 de la org. Para volver a seco (p.ej. antes
+                # de un cambio de formato), poner "1" y lanzar el job a mano.
+                - { name: DRY_RUN, value: "0" }
               volumeMounts:
                 - { name: scripts, mountPath: /scripts, readOnly: true }
                 - { name: memory, mountPath: /memory, readOnly: true }
