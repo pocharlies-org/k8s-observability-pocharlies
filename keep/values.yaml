@@ -225,6 +225,98 @@ backend:
                   {{ incident.alerts_count }} alertas · {{ incident.services }}
                   https://keep.lan.e-dani.com/incidents/{{ incident.id }}
 
+      # ---------------------------------------------------------------------
+      # LA VUELTA DEL BUCLE: el análisis de Aurora regresa al grupo.
+      #
+      # Hasta ahora la cadena era de ida solamente — Keep notificaba y despachaba
+      # a Aurora, y el RCA se quedaba en la UI de Aurora, donde nadie lo miraba.
+      #
+      # POR QUÉ SQL Y NO LA API DE AURORA. Su API exige DOS cabeceras:
+      # `X-Internal-Secret` (main_compute.py:254) y `X-User-ID`
+      # (stateless_auth.py:108, que se confía verbatim). El provider `webhook` de
+      # Keep sólo admite `url` en authentication; las cabeceras se pasan en el
+      # `with:`, o sea en ESTE fichero, o sea en git. No se mete ahí el secreto
+      # interno de Aurora. Por SQL las credenciales viven en el ExternalSecret.
+      #
+      # POR QUÉ EL set_config. Las tablas de Aurora tienen RLS *forzada*
+      # (relforcerowsecurity=true, así que ni el owner se la salta) con la política
+      # `select_by_org`, que compara org_id contra current_setting('myapp.current_org_id').
+      # Sin fijarlo, un SELECT devuelve CERO filas sin error ninguno — silencio, no
+      # fallo. Se fija con una subconsulta a `organizations`, que NO tiene RLS, para
+      # no hardcodear ningún id aquí. Van las dos sentencias en un solo `query`
+      # porque psycopg2 las ejecuta ambas y `fetchall()` devuelve el último
+      # resultado, que es el SELECT.
+      #
+      # POR QUÉ EL ESCAPADO VA EN SQL. parse_mode HTML hace que Telegram rechace
+      # con 400 cualquier mensaje con `<`, `>` o `&` sueltos, y el resumen lo
+      # escribe un LLM: antes o después mete uno. Escapar en SQL es la única capa
+      # que lo garantiza — el provider no escapa nada y la plantilla mustache
+      # tampoco.
+      #
+      # IDEMPOTENCIA, y es un trade-off consciente: la ventana temporal
+      # (analyzed_at > now() - 6 min con intervalo de 5) es lo que evita repetir.
+      # No hay marca persistente porque no la hay dónde poner: no se escribe en el
+      # esquema de Aurora (es de un tercero) y una marca en la BBDD de Keep no se
+      # puede consultar desde esta query, que va contra OTRA base de datos del
+      # mismo clúster. La ventana es 1 min más ancha que el intervalo A PROPÓSITO:
+      # si una pasada se retrasa, prefiero un análisis duplicado a perderlo.
+      # ---------------------------------------------------------------------
+      - id: aurora-report-back
+        name: Aurora — análisis de vuelta al grupo
+        description: >-
+          Cada 5 minutos busca RCA que Aurora haya terminado y publica su análisis
+          en el grupo, citando el incidente de Keep que lo originó.
+        triggers:
+          - type: interval
+            value: 300
+        steps:
+          - name: finished-rcas
+            provider:
+              type: postgres
+              config: "{{ providers.aurora_db }}"
+              with:
+                query: >-
+                  SELECT set_config('myapp.current_org_id',
+                                    (SELECT id::text FROM organizations
+                                      ORDER BY created_at LIMIT 1), false);
+                  SELECT alert_metadata->>'fingerprint',
+                         replace(replace(replace(coalesce(alert_title,'sin título'),
+                                 '&','&amp;'),'<','&lt;'),'>','&gt;'),
+                         left(replace(replace(replace(aurora_summary,
+                                 '&','&amp;'),'<','&lt;'),'>','&gt;'), 2800),
+                         severity
+                    FROM incidents
+                   WHERE aurora_status = 'complete'
+                     AND aurora_summary IS NOT NULL
+                     AND alert_metadata->>'fingerprint' IS NOT NULL
+                     AND analyzed_at > now() - interval '6 minutes'
+                   ORDER BY analyzed_at
+        actions:
+          - name: telegram-rca
+            # `foreach` sólo entiende rutas con puntos (step.py:110-111), y el
+            # elemento actual es una TUPLA de psycopg2 — el provider usa
+            # conn.cursor() plano, no RealDictCursor. Se indexa con
+            # {{ foreach.value.N }}: la notación con corchetes devuelve cadena
+            # vacía en silencio, comprobado contra el IOHandler real.
+            foreach: "{{ steps.finished-rcas.results }}"
+            provider:
+              type: telegram
+              config: "{{ providers.telegram_ops }}"
+              with:
+                chat_id: "-1003785136626"
+                # `topic_id`, NO `message_thread_id`: el _notify del provider
+                # declara topic_id, y cualquier otro nombre cae en **kwargs y se
+                # descarta sin avisar.
+                topic_id: 34494
+                parse_mode: html
+                message: |
+                  🔍 <b>Aurora — análisis de {{ foreach.value.1 }}</b>
+
+                  {{ foreach.value.2 }}
+
+                  Severidad: {{ foreach.value.3 }}
+                  Incidente en Keep: https://keep.lan.e-dani.com/incidents/{{ foreach.value.0 }}
+
       # Aurora investiga INCIDENTES, no alertas: mandarle cada alerta haría que
       # investigase 3 veces la misma causa. El payload va con forma de
       # Alertmanager porque su endpoint la consume nativamente
