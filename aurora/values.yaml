@@ -123,6 +123,27 @@ config:
   # cual, así que `bedrock/tooling` llega a LiteLLM como el alias `tooling`.
   # `openai` NO sirve: openai_provider.py sólo lee OPENAI_API_KEY, sin base_url.
   # ------------------------------------------------------------------------
+  # --- Búsqueda ---
+  #
+  # Instancia propia de SearXNG (manifests/aurora-searxng-brain.yaml) en vez de la
+  # del chart, para que `web_search` consulte también el brain — la memoria de
+  # sesiones sobre este clúster. Es la única vía sin forkear Aurora: el agente
+  # tiene una sola herramienta de búsqueda y un solo backend configurable.
+  #
+  # No se pierde nada por el camino: medido el 2026-08-05, el SearXNG del chart
+  # devolvía CERO resultados para una consulta técnica normal (duckduckgo y
+  # startpage responden CAPTCHA desde IPs de datacenter, y google/bing tampoco
+  # contestan). O sea que `web_search` llevaba tiempo siendo una herramienta
+  # muerta; con el brain al menos devuelve algo útil. Los motores web siguen
+  # declarados por si algún día vuelven a funcionar.
+  #
+  # OJO: este valor acaba en el ConfigMap `aurora-config`, del que cuelga la
+  # anotación checksum/config de 7 deployments -> tocarlo los REINICIA. Es
+  # necesario: WebSearchService lee os.getenv("SEARXNG_URL") en su __init__, no en
+  # cada búsqueda. El aurora-searxng del chart se queda vivo e intacto: revertir
+  # esta línea es el rollback completo.
+  SEARXNG_URL: http://aurorasvc-searxng:8080
+
   LLM_PROVIDER_MODE: direct
   BEDROCK_BASE_URL: http://litellm.litellm.svc.cluster.local:4000/v1
   # UN SOLO ALIAS PARA TODO: `tooling-ha`.
