@@ -89,7 +89,7 @@ data:
     # solo Job. El script sube lo que quepa, informa de lo que falta y sale con éxito;
     # la ejecución siguiente continúa donde ésta lo dejó, porque la reconciliación es
     # por nombre y por tanto reanudable.
-    TIME_BUDGET_S = int(os.environ.get("TIME_BUDGET_S", "1500"))
+    TIME_BUDGET_S = int(os.environ.get("TIME_BUDGET_S", "3000"))
     # Margen amplio a propósito: si el poll abandona antes de que Aurora termine, el
     # script pasa al siguiente documento y los indexados se solapan, saturan al worker
     # de Celery y acaban marcándose `failed` en cascada. Fue exactamente lo que pasó
@@ -389,7 +389,10 @@ data:
                 pendientes += 1
                 continue
             cur = existing.get(name)
-            if cur and cur.get("status") == "ready":
+            # `ready` NO basta: Aurora marca así también los documentos cuya indexación
+            # falló entera (insert_chunks no propaga el error), y quedarían invisibles
+            # para el agente para siempre porque el sync los daría por buenos.
+            if cur and cur.get("status") == "ready" and (cur.get("chunk_count") or 0) > 0:
                 continue
             if cur:                                   # existe pero failed/processing
                 kb("DELETE", f"/documents/{cur['id']}")
@@ -404,8 +407,17 @@ data:
                 log(f"ERROR indexando {name}: estado={status}")
                 errors += 1
                 continue
+            # Aurora puede decir `ready` con cero chunks: el estado no prueba nada.
+            st_doc, body_doc = kb("GET", f"/documents/{doc_id}")
+            doc = (body_doc.get("document", body_doc) if isinstance(body_doc, dict) else {}) or {}
+            chunks = doc.get("chunk_count") or 0
+            if chunks == 0:
+                log(f"ERROR {name}: ready pero con 0 chunks (la indexación falló en "
+                    f"silencio; suele ser el vectorizador sin CPU suficiente)")
+                errors += 1
+                continue
             uploaded += 1
-            log(f"subido {name}")
+            log(f"subido {name} ({chunks} chunks)")
             # Sólo AHORA se retiran las versiones viejas de ESTA partición: subir antes
             # de borrar significa que el agente nunca se queda sin esas notas.
             key = part_key(name)
@@ -603,7 +615,7 @@ spec:
                 # presupuesto, avisa de lo que falta y la ejecución siguiente
                 # continúa. Después del primer llenado, el trabajo diario es de uno
                 # o dos documentos.
-                - { name: TIME_BUDGET_S, value: "1500" }
+                - { name: TIME_BUDGET_S, value: "3000" }
               volumeMounts:
                 - { name: scripts, mountPath: /scripts, readOnly: true }
                 - { name: memory, mountPath: /memory, readOnly: true }

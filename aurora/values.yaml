@@ -312,3 +312,43 @@ resources:
     limits:
       cpu: 500m
       memory: 1Gi
+
+  # ---------------------------------------------------------------------------
+  # El vectorizador de la Knowledge Base, con CPU suficiente para que la ingesta
+  # no falle en silencio.
+  #
+  # El default del chart es `limits.cpu: 500m` — medio core — para all-MiniLM-L6
+  # corriendo en CPU (ENABLE_CUDA=0). Medido el 2026-08-05 contra el pod con el
+  # sistema ocioso: 1,6 s por chunk de ~520 caracteres, y el throughput NO mejora
+  # con concurrencia (0,30 vec/s con 1 hilo, 0,32 con 8): es cuota de CPU, no
+  # contención. Además el contenedor ve los 48 cores del nodo y abre 289 hilos
+  # que se pelean por ese medio core.
+  #
+  # POR QUÉ ROMPÍA LA INGESTA, Y ADEMÁS SIN AVISAR
+  # weaviate_client.py fija un timeout de inserción de 60 s y usa batch dinámico,
+  # que con esta versión del cliente son lotes de 48 objetos. 48 x 1,6 s = 77 s >
+  # 60 s: el lote SIEMPRE expiraba, incluso con el vectorizador en reposo. Y
+  # `insert_chunks` no propaga el fallo, así que `tasks.py` marcaba el documento
+  # como `ready` con `chunk_count=0`: 13 documentos subidos, cero indexados, cero
+  # errores a la vista. Con estos límites un lote baja a ~15 s y queda margen 4x.
+  #
+  # Cabe de sobra: sauvage tiene 48 CPU con los limits al 37 %.
+  transformers:
+    requests:
+      cpu: "2"
+      memory: 1Gi
+    limits:
+      cpu: "8"
+      memory: 4Gi
+
+  # Weaviate con el default (500m / 1Gi) era el siguiente cuello: va a recibir
+  # ~7.400 vectores y a construir el índice HNSW.
+  weaviate:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+      ephemeral-storage: 100Mi
+    limits:
+      cpu: "2"
+      memory: 2Gi
+      ephemeral-storage: 2Gi
