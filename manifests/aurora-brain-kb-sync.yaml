@@ -1,0 +1,594 @@
+# Exporta las notas curadas del brain (FINDING / GOTCHA / DECISION) a la Knowledge
+# Base de Aurora, para que el agente las encuentre con `knowledge_base_search` en
+# vez de re-descubrir en cada incidente trampas que ya están escritas.
+#
+# POR QUÉ UN CRONJOB Y NO UNA INTEGRACIÓN
+# La KB de Aurora no tiene ingesta push ni upsert: sólo POST /upload multipart, y
+# si ya existe un fichero con el mismo nombre devuelve 409. La única forma de
+# mantenerla al día es reconciliar desde fuera: subir lo nuevo y retirar lo viejo.
+#
+# POR QUÉ EL HASH VA EN EL NOMBRE DEL FICHERO
+# La API no acepta metadata ni tags, así que el nombre es el ÚNICO sitio donde cabe
+# una huella del contenido. Con el hash dentro, "¿cambió esta partición?" es
+# comparar dos listas de nombres, y además permite SUBIR ANTES DE BORRAR: el agente
+# nunca se queda sin esas notas durante la resubida.
+#
+# POR QUÉ X-User-ID Y NO SÓLO X-Org-ID
+# La tool del agente se envuelve con with_user_context, que inyecta user_id y NUNCA
+# org_id: el filtro efectivo de búsqueda es sólo user_id. Subir con otro usuario
+# produciría una KB llena y un agente que no encuentra nada, sin ningún error.
+#
+# POR QUÉ SÓLO STDLIB
+# Sin `pip install`: el pod no necesita salida a PyPI y no puede fallar por un
+# mirror caído. urllib construye el multipart a mano.
+#
+# PARTICIÓN: tipo x trimestre x parte (<=400 notas)
+# Por tipo porque el nombre del fichero es lo que el agente imprime en `Source:`.
+# Por trimestre porque un trimestre cerrado no cambia -> su hash es estable -> no se
+# vuelve a subir nunca. El corte a 400 notas no es cosmético: el procesado es
+# asíncrono y Aurora marca `failed` lo que tarde más de 3 minutos, y un documento
+# con miles de notas es candidato a superarlo.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: aurorasvc-brain-kb-sync
+  namespace: aurora
+  labels:
+    app.kubernetes.io/name: aurora
+    app.kubernetes.io/component: brain-kb-sync
+data:
+  sync_brain_kb.py: |
+    """Exporta las notas curadas del brain a la Knowledge Base de Aurora.
+
+    Origen: Qdrant (colección del brain), filtrando por `source` = *-hook-tag, que es
+    donde los hooks depositan las notas [FINDING] / [GOTCHA] / [DECISION]. Se filtra
+    por `source` y no por `tags` porque `source` está indexado y `tags` no (full-scan
+    de segundos contra milisegundos).
+
+    Destino: POST /api/knowledge-base/upload. Esa API no tiene upsert (mismo nombre
+    de fichero -> 409) ni acepta metadata, así que la sincronización es una
+    reconciliación por NOMBRE: el hash del contenido va dentro del nombre del
+    fichero, y con eso "¿cambió esta partición?" se responde comparando dos listas.
+
+    Idempotente: una segunda ejecución sin notas nuevas no escribe nada.
+    """
+
+    import base64
+    import hashlib
+    import json
+    import os
+    import re
+    import sys
+    import time
+    import urllib.error
+    import urllib.request
+    from collections import Counter, defaultdict
+    from datetime import datetime, timezone
+    from uuid import uuid4
+
+    QDRANT = os.environ["QDRANT_URL"].rstrip("/")
+    QDRANT_KEY = os.environ["QDRANT_API_KEY"]
+    COLLECTIONS = [c.strip() for c in os.environ["QDRANT_COLLECTIONS"].split(",") if c.strip()]
+    KB = os.environ["AURORA_URL"].rstrip("/") + "/api/knowledge-base"
+    HDRS = {
+        "X-Internal-Secret": os.environ["INTERNAL_API_SECRET"],
+        # El filtro EFECTIVO de la tool del agente es user_id: with_user_context nunca
+        # inyecta org_id. Subir con otro usuario llenaría la KB de documentos que el
+        # agente no vería jamás, y sin ningún error por medio.
+        "X-User-ID": os.environ["AURORA_USER_ID"],
+        "X-Org-ID": os.environ["AURORA_ORG_ID"],
+    }
+    MEMORY_FILE = os.environ.get("MEMORY_FILE", "/memory/brain-kb-memory.md")
+    DRY_RUN = os.environ.get("DRY_RUN", "0") == "1"
+    MAX_DOCS = int(os.environ.get("MAX_DOCS", "60"))
+    MAX_DELETES = int(os.environ.get("MAX_DELETES", "10"))
+    MIN_EXPECTED_NOTES = int(os.environ.get("MIN_EXPECTED_NOTES", "1000"))
+    MAX_NOTES_PER_DOC = int(os.environ.get("MAX_NOTES_PER_DOC", "400"))
+    KINDS = ("FINDING", "GOTCHA", "DECISION")
+
+    # Sólo se borra lo que case con esto. Es la garantía de que este job no puede
+    # tocar un documento subido a mano por una persona.
+    OURS = re.compile(r"^brain-(FINDING|GOTCHA|DECISION)-(\d{4}Q[1-4]|sinfecha)-p\d{2}-[0-9a-f]{8}\.md$")
+    NOTE_RE = re.compile(r"^\s*\[(FINDING|GOTCHA|DECISION)\]\s*(.*)$", re.S)
+    HEADING = re.compile(r"^(\s{0,3})(#{1,6}\s)", re.M)
+
+    # El brain guarda sesiones enteras: pueden llevar credenciales pegadas. Exportarlas
+    # ensancharía la exposición a cualquiera con acceso a esa org de Aurora.
+    SECRETS = [re.compile(p) for p in (
+        r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b",
+        r"\bghp_[A-Za-z0-9]{20,}\b",
+        r"\bgithub_pat_[A-Za-z0-9_]{20,}\b",
+        r"\bsk-[A-Za-z0-9_\-]{20,}\b",
+        r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b",
+        r"\beyJ[A-Za-z0-9_\-]{20,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]+\b",
+        r"-----BEGIN [A-Z ]*PRIVATE KEY-----",
+        r"(?i)\b(api[_-]?key|token|password|passwd|secret)\s*[:=]\s*[\"']?[^\s\"',]{12,}",
+    )]
+
+    _redactions = 0
+
+
+    def log(msg):
+        print(msg, flush=True)
+
+
+    def die(msg):
+        log(f"ABORTA: {msg}")
+        sys.exit(1)
+
+
+    def http(method, url, headers, body=None, ctype=None, timeout=90, retries=3):
+        hdrs = dict(headers)
+        if ctype:
+            hdrs["Content-Type"] = ctype
+        last = None
+        for attempt in range(retries):
+            req = urllib.request.Request(url, data=body, method=method, headers=hdrs)
+            try:
+                with urllib.request.urlopen(req, timeout=timeout) as r:
+                    raw = r.read()
+                    try:
+                        return r.status, json.loads(raw)
+                    except json.JSONDecodeError:
+                        return r.status, raw
+            except urllib.error.HTTPError as e:
+                detail = e.read()[:300].decode(errors="replace")
+                if e.code < 500:            # 4xx no se reintenta: no va a cambiar
+                    return e.code, detail
+                last = f"{e.code} {detail}"
+            except Exception as e:          # red: sí se reintenta
+                last = repr(e)
+            time.sleep(2 ** attempt)
+        return 0, f"sin respuesta tras {retries} intentos: {last}"
+
+
+    def qdrant(path, payload):
+        st, body = http("POST", QDRANT + path, {"api-key": QDRANT_KEY},
+                        json.dumps(payload).encode(), "application/json")
+        if st != 200:
+            die(f"Qdrant {path} -> {st} {str(body)[:200]}")
+        return body
+
+
+    def kb(method, path, body=None, ctype=None):
+        return http(method, KB + path, HDRS, body, ctype)
+
+
+    # --------------------------------------------------------------------------
+    # 1. Origen
+    # --------------------------------------------------------------------------
+
+    FILTER = {"should": [{"key": "source", "match": {"value": "claude-hook-tag"}},
+                         {"key": "source", "match": {"value": "codex-hook-tag"}}]}
+
+
+    def scroll(collection):
+        offset = None
+        while True:
+            payload = {"limit": 256, "with_payload": True, "with_vector": False, "filter": FILTER}
+            if offset is not None:
+                payload["offset"] = offset
+            res = qdrant(f"/collections/{collection}/points/scroll", payload)["result"]
+            points = res.get("points") or []
+            if not points:
+                return
+            for p in points:
+                yield p.get("payload") or {}
+            offset = res.get("next_page_offset")
+            if offset is None:
+                return
+
+
+    def parse_ts(payload):
+        for key in ("timestamp", "session_timestamp", "session_date"):
+            v = payload.get(key)
+            if not v:
+                continue
+            if isinstance(v, (int, float)):
+                secs = v / 1000 if v > 1e11 else v
+                return datetime.fromtimestamp(secs, timezone.utc)
+            try:
+                return datetime.fromisoformat(str(v).replace("Z", "+00:00"))
+            except ValueError:
+                continue
+        return None
+
+
+    def redact(text):
+        global _redactions
+        for rx in SECRETS:
+            text, n = rx.subn("[REDACTADO]", text)
+            _redactions += n
+        return text
+
+
+    def title_of(body):
+        for line in body.splitlines():
+            line = re.sub(r"[`*_#>\[\]]", "", line).strip()
+            if line:
+                if len(line) > 90:
+                    cut = line[:90].rsplit(" ", 1)[0]
+                    return cut + "…"
+                return line
+        return "(sin título)"
+
+
+    def parse(payload):
+        m = NOTE_RE.match(payload.get("text") or "")
+        if not m:
+            return None
+        kind, body = m.group(1), m.group(2).strip()
+        if not body:
+            return None
+        ts = parse_ts(payload)
+        tags = payload.get("tags") or []
+        tags = sorted(t for t in tags if isinstance(t, str) and t not in KINDS)
+        return {
+            "kind": kind,
+            "body": redact(body),
+            "ts": ts,
+            "date": ts.strftime("%Y-%m-%d") if ts else "sinfecha",
+            "hhmm": ts.strftime("%H:%M") if ts else "",
+            "period": f"{ts.year}Q{(ts.month - 1) // 3 + 1}" if ts else "sinfecha",
+            "instance": payload.get("instance_id") or "",
+            "host": payload.get("host") or payload.get("source_host") or "",
+            "cwd": payload.get("cwd") or "",
+            "tags": tags,
+            "sid": (payload.get("source_id") or "")[-8:],
+            "sort": (ts.timestamp() if ts else 0, payload.get("source_id") or ""),
+        }
+
+
+    # --------------------------------------------------------------------------
+    # 2. Render
+    # --------------------------------------------------------------------------
+
+    def render(kind, period, part_no, part_total, notes):
+        out = [f"# {kind} · {period}", ""]
+        out.append(f"Notas curadas del brain, tipo {kind}, periodo {period}, "
+                   f"parte {part_no} de {part_total}. Las genera el CronJob "
+                   f"`aurorasvc-brain-kb-sync`; no editar a mano, se regeneran enteras.")
+        out.append("")
+        last_date = None
+        for n in notes:
+            if n["date"] != last_date:
+                out.append(f"## {n['date']}")
+                out.append("")
+                last_date = n["date"]
+            out.append(f"### {title_of(n['body'])}")
+            out.append("")
+            meta = [f"{n['kind']}", n["date"] + (f" {n['hhmm']}" if n["hhmm"] else "")]
+            if n["instance"]:
+                meta.append(n["instance"])
+            if n["host"]:
+                meta.append(f"host `{n['host']}`")
+            if n["cwd"]:
+                meta.append(f"cwd `{n['cwd']}`")
+            if n["tags"]:
+                meta.append("tags: " + ", ".join(n["tags"]))
+            if n["sid"]:
+                meta.append(f"id `{n['sid']}`")
+            if n.get("seen", 1) > 1:
+                meta.append(f"visto {n['seen']} veces")
+            out.append("*" + " · ".join(meta) + "*")
+            out.append("")
+            # Un `#` al principio de línea dentro del cuerpo haría que el chunker de
+            # Aurora partiera la nota por ahí con un heading_context inventado.
+            out.append(HEADING.sub(r"\1\\\2", n["body"]))
+            out.append("")
+        return "\n".join(out)
+
+
+    def build():
+        notes, seen = [], {}
+        for coll in COLLECTIONS:
+            for payload in scroll(coll):
+                n = parse(payload)
+                if not n:
+                    continue
+                key = (n["kind"], " ".join(n["body"].split()).lower())
+                if key in seen:                      # la recurrencia es señal, no ruido
+                    seen[key]["seen"] = seen[key].get("seen", 1) + 1
+                    continue
+                n["seen"] = 1
+                seen[key] = n
+                notes.append(n)
+
+        notes.sort(key=lambda n: n["sort"])
+        groups = defaultdict(list)
+        for n in notes:
+            groups[(n["kind"], n["period"])].append(n)
+
+        desired = {}
+        for (kind, period), items in sorted(groups.items()):
+            parts = [items[i:i + MAX_NOTES_PER_DOC] for i in range(0, len(items), MAX_NOTES_PER_DOC)]
+            for i, chunk in enumerate(parts, 1):
+                content = render(kind, period, i, len(parts), chunk).encode()
+                h = hashlib.sha256(content).hexdigest()[:8]
+                desired[f"brain-{kind}-{period}-p{i:02d}-{h}.md"] = content
+
+        stats = {"notas": len(notes), "docs": len(desired), "redacciones": _redactions,
+                 "por_tipo": Counter(n["kind"] for n in notes)}
+        return desired, stats
+
+
+    # --------------------------------------------------------------------------
+    # 3. Destino
+    # --------------------------------------------------------------------------
+
+    def kb_list():
+        st, body = kb("GET", "/documents")
+        if st != 200:
+            die(f"GET /documents -> {st} {str(body)[:200]}")
+        docs = body.get("documents", body) if isinstance(body, dict) else body
+        return {d["original_filename"]: d for d in docs}
+
+
+    def kb_upload(filename, content):
+        boundary = "----brainkb" + uuid4().hex
+        body = (f"--{boundary}\r\n"
+                f'Content-Disposition: form-data; name="file"; filename="{filename}"\r\n'
+                f"Content-Type: text/markdown\r\n\r\n").encode() + content + \
+               f"\r\n--{boundary}--\r\n".encode()
+        return kb("POST", "/upload", body, f"multipart/form-data; boundary={boundary}")
+
+
+    def poll_ready(doc_id, timeout=240, every=5):
+        # 240 s > los 180 s del cleanup de Aurora, así que siempre se observa un estado
+        # terminal en vez de abandonar en 'processing'.
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            st, body = kb("GET", f"/documents/{doc_id}")
+            if st == 200 and isinstance(body, dict):
+                doc = body.get("document", body)
+                status = doc.get("status")
+                if status in ("ready", "failed"):
+                    return status
+            time.sleep(every)
+        return "timeout"
+
+
+    def part_key(name):
+        m = OURS.match(name)
+        return m.group(0).rsplit("-", 1)[0] if m else None
+
+
+    def main():
+        desired, stats = build()
+        log(f"origen: {stats['notas']} notas ({dict(stats['por_tipo'])}), "
+            f"{stats['docs']} documentos, {stats['redacciones']} redacciones")
+        for name in sorted(desired):
+            log(f"   {name}  ({len(desired[name])//1024} KB)")
+
+        # Guardas ANTES de mutar nada.
+        if stats["notas"] < MIN_EXPECTED_NOTES:
+            die(f"sólo {stats['notas']} notas (< {MIN_EXPECTED_NOTES}). El origen está roto; "
+                f"sin esta guarda el conjunto deseado vacío borraría la KB entera.")
+        if stats["docs"] > MAX_DOCS:
+            die(f"{stats['docs']} documentos > MAX_DOCS={MAX_DOCS} (techo de la org: 100)")
+        if DRY_RUN:
+            log("DRY_RUN=1: no se toca la KB.")
+            return 0
+
+        existing = kb_list()
+        log(f"en la KB ahora: {len(existing)} documentos ({sum(1 for n in existing if OURS.match(n))} nuestros)")
+
+        errors = uploaded = deleted = 0
+        for name, content in sorted(desired.items()):
+            cur = existing.get(name)
+            if cur and cur.get("status") == "ready":
+                continue
+            if cur:                                   # existe pero failed/processing
+                kb("DELETE", f"/documents/{cur['id']}")
+            st, body = kb_upload(name, content)
+            if st not in (200, 201):
+                log(f"ERROR subiendo {name}: {st} {str(body)[:160]}")
+                errors += 1
+                continue
+            doc_id = (body or {}).get("id") if isinstance(body, dict) else None
+            status = poll_ready(doc_id) if doc_id else "sin-id"
+            if status != "ready":
+                log(f"ERROR indexando {name}: estado={status}")
+                errors += 1
+                continue
+            uploaded += 1
+            log(f"subido {name}")
+            # Sólo AHORA se retiran las versiones viejas de ESTA partición: subir antes
+            # de borrar significa que el agente nunca se queda sin esas notas.
+            key = part_key(name)
+            for old, doc in list(existing.items()):
+                if old != name and OURS.match(old) and part_key(old) == key:
+                    if kb("DELETE", f"/documents/{doc['id']}")[0] in (200, 204):
+                        deleted += 1
+                        existing.pop(old, None)
+                        log(f"   retirada la versión anterior {old}")
+
+        # Particiones que ya no existen en el origen (un trimestre que desapareció).
+        huerfanos = [n for n in existing if OURS.match(n) and n not in desired
+                     and part_key(n) not in {part_key(d) for d in desired}]
+        if len(huerfanos) > MAX_DELETES:
+            log(f"AVISO: {len(huerfanos)} huérfanos > MAX_DELETES={MAX_DELETES}; no se borra ninguno")
+        else:
+            for n in huerfanos:
+                if kb("DELETE", f"/documents/{existing[n]['id']}")[0] in (200, 204):
+                    deleted += 1
+                    log(f"   borrado huérfano {n}")
+
+        # 4. La memoria que se inyecta en el prompt del agente.
+        try:
+            tpl = open(MEMORY_FILE, encoding="utf-8").read()
+            memoria = (tpl
+                       .replace("{n_notas}", str(stats["notas"]))
+                       .replace("{n_docs}", str(stats["docs"]))
+                       .replace("{n_finding}", str(stats["por_tipo"].get("FINDING", 0)))
+                       .replace("{n_gotcha}", str(stats["por_tipo"].get("GOTCHA", 0)))
+                       .replace("{n_decision}", str(stats["por_tipo"].get("DECISION", 0)))
+                       .replace("{sync}", datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")))
+            if len(memoria) > 5000:
+                log(f"ERROR: /memory rendido a {len(memoria)} chars > 5000; NO se actualiza "
+                    f"(truncar en silencio un system prompt es peor que no tocarlo)")
+                errors += 1
+            else:
+                st, actual = kb("GET", "/memory")
+                if not (st == 200 and isinstance(actual, dict) and actual.get("content") == memoria):
+                    st, body = kb("PUT", "/memory", json.dumps({"content": memoria}).encode(),
+                                  "application/json")
+                    log("memoria actualizada" if st == 200 else f"ERROR en /memory: {st} {str(body)[:160]}")
+                    if st != 200:
+                        errors += 1
+        except FileNotFoundError:
+            log(f"AVISO: no hay plantilla en {MEMORY_FILE}; se deja /memory como estaba")
+
+        log(f"RESUMEN notas={stats['notas']} docs={stats['docs']} subidos={uploaded} "
+            f"borrados={deleted} redacciones={stats['redacciones']} errores={errors}")
+        return 1 if errors else 0
+
+
+    if __name__ == "__main__":
+        sys.exit(main())
+---
+# Credenciales del sincronizador.
+#
+# Secret PROPIO y no una clave más en `aurorasvc-app`: rotar la api-key de Qdrant no
+# debe tocar el Secret del que cuelgan aurora-server y los workers.
+#
+# Se apunta a las MISMAS rutas de Vault que ya usan sus dueños (el brain para
+# qdrant_api_key, Keep para AURORA_USER_ID) en vez de duplicar valores: así una
+# rotación se propaga sola y no hay dos fuentes de verdad.
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: aurorasvc-brain-sync
+  namespace: aurora
+  labels:
+    app.kubernetes.io/name: aurora
+    app.kubernetes.io/component: brain-kb-sync
+spec:
+  refreshInterval: "1h"
+  secretStoreRef:
+    name: vault-backend
+    kind: ClusterSecretStore
+  target:
+    name: aurorasvc-brain-sync
+    creationPolicy: Owner
+    deletionPolicy: Retain
+  data:
+    - secretKey: QDRANT_API_KEY
+      remoteRef:
+        key: skirmshop-brain/prod/app
+        property: qdrant_api_key
+    - secretKey: AURORA_USER_ID
+      remoteRef:
+        key: secret/aurora
+        property: AURORA_USER_ID
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: aurorasvc-brain-kb-sync
+  namespace: aurora
+  labels:
+    app.kubernetes.io/name: aurora
+    app.kubernetes.io/component: brain-kb-sync
+spec:
+  # 05:15 Madrid: las notas se crean al CERRAR sesiones de Claude/Codex, o sea a lo
+  # largo del día; a esta hora el día anterior ya está completo. Después de la
+  # ventana de mantenimiento (04:00-05:00) y antes del tráfico de usuario, que
+  # compite por los mismos workers de Celery que chunkean y embeben.
+  #
+  # Diario y no más frecuente: cada nota nueva obliga a re-embeber la partición
+  # entera que la contiene, y una GOTCHA no caduca en seis horas.
+  schedule: "15 5 * * *"
+  timeZone: Europe/Madrid
+  # Dos sincronizaciones a la vez se pisarían entre ellas.
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  startingDeadlineSeconds: 600
+  jobTemplate:
+    spec:
+      # Cada intento es una sincronización completa e idempotente, así que
+      # reintentar es seguro. Dos bastan: un fallo real debe verse, no enmascararse.
+      backoffLimit: 2
+      # Sin esto, un poll colgado dejaría el Job vivo para siempre y, con
+      # concurrencyPolicy Forbid, TODAS las ejecuciones siguientes se saltarían en
+      # silencio. El peor fallo posible: dejar de sincronizar sin que nadie se entere.
+      activeDeadlineSeconds: 1800
+      ttlSecondsAfterFinished: 86400
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: aurora
+            app.kubernetes.io/component: brain-kb-sync
+        spec:
+          restartPolicy: Never
+          nodeSelector:
+            kubernetes.io/hostname: sauvage
+          tolerations:
+            - key: role
+              operator: Equal
+              value: edge
+              effect: NoSchedule
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+          containers:
+            - name: sync
+              image: python:3.12-slim
+              imagePullPolicy: IfNotPresent
+              command: ["python3", "-u", "/scripts/sync_brain_kb.py"]
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              env:
+                - { name: TZ, value: Europe/Madrid }
+                # Services in-cluster: ni ingress ni SSO por medio.
+                - { name: QDRANT_URL, value: "http://aiops-qdrant.aiops.svc.cluster.local:6333" }
+                - { name: QDRANT_COLLECTIONS, value: "claude-personal_documents" }
+                - { name: AURORA_URL, value: "http://aurora-server.aurora.svc.cluster.local:5080" }
+                - { name: AURORA_ORG_ID, value: "668ddf97-9cde-4e50-b9ff-e45f6bcefdee" }
+                - name: INTERNAL_API_SECRET
+                  valueFrom:
+                    secretKeyRef: { name: aurorasvc-app, key: INTERNAL_API_SECRET }
+                - name: AURORA_USER_ID
+                  valueFrom:
+                    secretKeyRef: { name: aurorasvc-brain-sync, key: AURORA_USER_ID }
+                - name: QDRANT_API_KEY
+                  valueFrom:
+                    secretKeyRef: { name: aurorasvc-brain-sync, key: QDRANT_API_KEY }
+                # Reserva deliberada: el techo de la org son 100 documentos y la KB
+                # se comparte con lo que suba una persona a mano.
+                - { name: MAX_DOCS, value: "60" }
+                - { name: MAX_NOTES_PER_DOC, value: "400" }
+                # Si el scroll devuelve menos que esto, el origen se rompió (índice,
+                # filtro o colección) y el script aborta SIN borrar: un conjunto
+                # deseado vacío se llevaría por delante la KB entera.
+                - { name: MIN_EXPECTED_NOTES, value: "1000" }
+                - { name: MAX_DELETES, value: "10" }
+                # Primer despliegue en seco: imprime la tabla de particiones y no toca la
+                # KB. Se pasa a "0" en el commit siguiente, ya sabiendo cuántos
+                # documentos van a entrar contra el techo de 100 de la org.
+                - { name: DRY_RUN, value: "1" }
+              volumeMounts:
+                - { name: scripts, mountPath: /scripts, readOnly: true }
+                - { name: memory, mountPath: /memory, readOnly: true }
+                # readOnlyRootFilesystem deja /tmp inutilizable y un traceback de
+                # Python puede necesitarlo.
+                - { name: tmp, mountPath: /tmp }
+              resources:
+                requests: { cpu: 50m, memory: 64Mi }
+                # 384Mi y no los 128Mi de los otros CronJobs: éste mantiene ~7.5k
+                # notas en memoria más el markdown renderizado.
+                limits: { cpu: 500m, memory: 384Mi }
+          volumes:
+            - name: scripts
+              configMap: { name: aurorasvc-brain-kb-sync }
+            # La prosa que va al system prompt del agente vive en un fichero propio
+            # (aurora/brain-kb-memory.md) y no inline aquí: es texto que se itera a
+            # mano y no debe pelearse con la indentación del YAML.
+            - name: memory
+              configMap: { name: aurorasvc-brain-kb-memory }
+            - name: tmp
+              emptyDir: { sizeLimit: 16Mi }

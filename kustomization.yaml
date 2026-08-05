@@ -28,6 +28,10 @@ resources:
   # `.Values`) y el Application `aurora` tiene selfHeal: cualquier parche a su
   # ConfigMap se revierte solo.
   - manifests/aurora-searxng-brain.yaml
+  # Exporta las notas curadas del brain (FINDING/GOTCHA/DECISION) a la Knowledge
+  # Base de Aurora: sin esto el agente re-descubre en cada incidente trampas que
+  # llevan meses escritas.
+  - manifests/aurora-brain-kb-sync.yaml
   - keep/rules/apply-job.yaml
   # Ventana de mantenimiento diaria de las 04:00: las de Keep no tienen
   # recurrencia (start_time/end_time y punto), así que un CronJob la reprograma.
@@ -52,6 +56,13 @@ configMapGenerator:
     namespace: monitoring
     files:
       - correlation-rules.yaml=keep/rules/correlation-rules.yaml
+  # El texto que el sincronizador escribe en /memory de Aurora, y que acaba
+  # inyectado entero en el system prompt del agente. Va como fichero suelto y no
+  # inline en el manifiesto porque es prosa que se itera a mano.
+  - name: aurorasvc-brain-kb-memory
+    namespace: aurora
+    files:
+      - brain-kb-memory.md=aurora/brain-kb-memory.md
 generatorOptions:
   # El Job referencia el nombre literal, sin sufijo de hash. Se recrea en cada
   # sync (hook PostSync + BeforeHookCreation), así que siempre lee la versión
