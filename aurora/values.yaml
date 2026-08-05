@@ -119,9 +119,15 @@ config:
   # Antes esto era `dense` (alias que dejó de existir) y luego `router`. Se
   # unifica en `tooling` por decisión explícita: un único alias, sin indirección
   # y sin que el modelo que razona un RCA dependa de lo que decida el smart
-  # router en ese momento. Hoy `tooling` resuelve a
-  # vllm-ornith-35b-nvfp4-mtp-dgx1 (Ornith 35B NVFP4 en dgx1), el mismo backend
-  # al que apuntaba `router`, así que el cambio no mueve de GPU: quita una capa.
+  # router en ese momento.
+  #
+  # NO ANOTES AQUÍ QUÉ MODELO HAY DETRÁS. Ése es el sentido del alias:
+  # `litellm-dgx-backend-sync` repunta `tooling` a lo que esté residente en dgx1,
+  # y sólo cabe un vLLM grande por GPU, así que el modelo rota. Este comentario
+  # llegó a decir «tooling resuelve a Ornith 35B» y envejeció mal: hoy resuelve a
+  # `dgx1-nvidia-qwen36-35b-nvfp4-tooling`. Si necesitas saber quién responde
+  # AHORA, míralo, no lo leas:
+  #     kubectl -n litellm logs deploy/litellm-dgx-backend-sync | grep 'for alias tooling'
   #
   # La contrapartida que este bloque documentaba como asumida SE COBRÓ, y por eso
   # ahora el alias lleva sufijo `-ha`. Decía: «con un alias fijo, si `tooling` se
