@@ -10,8 +10,19 @@
 # fingerprint por alerta, crea incidente y dispara RCA en firing
 # (server/routes/grafana/grafana_routes.py:99 y tasks.py).
 #
-# Postura: SOLO LECTURA. Sin PRs automáticos, sin ejecutores de acción. Alineado
-# con que los CronJobs de autoheal de Synapse sigan suspendidos.
+# Postura: SOLO LECTURA. Sin PRs automáticos, sin ejecutores de acción.
+#
+# Esa postura ya NO significa que en el estado no toque nadie: desde 2026-08-05
+# la ejecución mutante vive en el AutoFixExecutor del adapter ops-explainer de
+# Synapse (allowlist cerrada de 4 acciones, precondiciones en los ejecutores
+# auditados, circuit-breaker por fingerprint y ledger en synapse.autofix_ledger).
+# Aurora sigue sin ejecutar nada: hace el RCA y ahí acaba su parte. Los CronJobs
+# de autoheal de Synapse siguen suspendidos, pero ahora porque el AutoFixExecutor
+# los sustituye, no porque nadie repare.
+#
+# El reparto es: Aurora analiza (read-only) → el ops-explainer ejecuta lo que la
+# allowlist admite → el humano recibe la tarjeta. Dar herramientas de escritura a
+# Aurora sería un cambio de postura, no una extensión de ésta.
 
 # El chart compone nombres como <release>-<chart>-<componente>; sin esto los
 # Services serían `aurora-aurora-oss-server`. Importa porque el workflow de Keep
