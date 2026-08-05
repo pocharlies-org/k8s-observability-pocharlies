@@ -108,15 +108,69 @@ spec:
       maxRetries: 5
 
   # Caché ACTIVADA (noCache: false). El mismo hallazgo repetido entre scans no
-  # vuelve a pagar una llamada al LLM. Es la principal defensa de coste dado que
-  # abajo no hay filtros.
+  # vuelve a pagar una llamada al LLM.
   noCache: false
 
-  # SIN `filters` Y SIN `targetNamespace`: análisis de TODO el clúster, todos
-  # los namespaces, con los analyzers por defecto (Pod, Deployment, ReplicaSet,
-  # Service, Ingress, PVC, StatefulSet, CronJob, Node, HPA, PDB, NetworkPolicy).
+  # `filters` ES UNA LISTA BLANCA, NO UNA LISTA NEGRA.
   #
-  # Es una decisión consciente de máxima cobertura. El precio es ruido en el
-  # primer scan — sauvage sólo ya corre ~99 pods, y Keep tiene documentada una
-  # capa de "deuda crónica" que k8sgpt volverá a encontrar por su cuenta.
-  # Si el ruido molesta, acotar aquí con `filters:` es un cambio de una línea.
+  # Verificado en pkg/analysis/analysis.go (RunAnalysis): con `filters` no vacío
+  # sólo se ejecutan los analyzers enumerados; con la lista vacía corren los 14
+  # de core. Por eso para quitar TRES hay que escribir los ONCE que se quedan.
+  # Escribir aquí los que quieres excluir apagaría todo lo demás en silencio.
+  #
+  # SIN `targetNamespace`: el análisis sigue siendo de todo el clúster.
+  #
+  # ---------------------------------------------------------------------------
+  # POR QUÉ FALTAN ConfigMap, CronJob E Ingress
+  #
+  # Se arrancó a propósito sin filtros para MEDIR en vez de suponer. Medido sobre
+  # 261 hallazgos reales del clúster, los tres tenían 100% de falsos positivos y
+  # sumaban ~200 (77% del total):
+  #
+  #   ConfigMap (178) — 90 son "ConfigMap kube-root-ca.crt is not used by any
+  #     pods", y la solución que redacta el LLM es literalmente
+  #     `kubectl delete configmap kube-root-ca.crt -n <ns>`. Es FALSO y
+  #     destructivo: lo publica Kubernetes en CADA namespace vía el controlador
+  #     root-ca-cert-publisher (comprobado: 90 namespaces, 90 copias), lleva el
+  #     CA bundle del kube-apiserver y se recrea solo. El analyzer no ve
+  #     referencias porque los pods lo consumen por proyección del
+  #     ServiceAccount, no como volumen configMap. Los otros 85 son el mismo
+  #     heurístico "no usado", igual de flojo: un ConfigMap puede consumirlo un
+  #     operador, un CRD, ArgoCD o un dashboard por label sin montarlo nunca.
+  #
+  #   CronJob (16) — los 16 son "CronJob is suspended". El clúster tiene
+  #     exactamente 16 CronJobs suspendidos y suspenderlos fue deliberado (los
+  #     de autoheal de Synapse, entre otros). Marcar una decisión como error.
+  #
+  #   Ingress (6) — los 6 dicen que la IngressClass no existe. Existe:
+  #     `ha-dashboard` declara `ingressClassName: traefik-lan` y traefik-lan está
+  #     registrada y además es la default. Falso positivo puro.
+  #
+  # Lo que se queda ya ha demostrado valor en este clúster: Job (backups
+  # semanales y retención de clickhouse fallando de verdad), Pod (readiness de
+  # litellm contra el 4000, backups S3 de synapse con exit 5), StatefulSet
+  # (minio declara `serviceName: minio` y los services son minio-s3 y
+  # minio-console — real), Service (17 de 40 son "no endpoints" legítimos).
+  #
+  # OJO con Service: los otros 23 no son problemas de endpoints, son EVENTOS de
+  # Kyverno (require-resource-limits, restrict-image-registries) que el analyzer
+  # recoge del objeto y el LLM narra como si fueran el fallo del Service — de ahí
+  # salían diagnósticos de "falta límite de memoria" en un Service, que no
+  # encajan. Se mantiene porque los 17 buenos compensan, pero si algún día
+  # molesta, ésa es la causa y no un fallo del analyzer.
+  #
+  # PersistentVolumeClaim y Node hoy dan cero hallazgos. Se quedan porque no
+  # cuestan nada: un analyzer sólo gasta LLM cuando encuentra algo.
+  # ---------------------------------------------------------------------------
+  filters:
+    - Pod
+    - Deployment
+    - ReplicaSet
+    - DaemonSet
+    - StatefulSet
+    - Service
+    - Job
+    - PersistentVolumeClaim
+    - Node
+    - ValidatingWebhookConfiguration
+    - MutatingWebhookConfiguration
