@@ -208,12 +208,24 @@ spec:
     #
     # Va detrás de sso-chain como todo lo demás: Traefik hace el upgrade a
     # WebSocket después de que forwardAuth valide la cookie.
+    #
+    # `aurora-ws-drop-authorization` NO es opcional. `sso-forward-auth` declara
+    # `Authorization` en sus authResponseHeaders, así que Traefik copia el
+    # Bearer de Keycloak a la petición que llega al chatbot. Y handle_connection
+    # despacha por esa cabecera: si empieza por "Bearer " asume que quien llama
+    # es un agente kubectl, busca el token en kubectl_agent_tokens, no lo
+    # encuentra y cierra con 1008 "Invalid token" (agent_ws_handler.py:105).
+    # Resultado: el socket se abría y moría a los 200 ms, y la UI mostraba
+    # "Connection not ready" en bucle. El usuario del navegador se autentica con
+    # el JWT del query string, no con esa cabecera, así que quitarla es seguro;
+    # los agentes kubectl de verdad van in-cluster y no pasan por aquí.
     - kind: Rule
       match: Host(`aurora.lan.e-dani.com`) && PathPrefix(`/ws`)
       priority: 200
       middlewares:
         - name: sso-chain
           namespace: keycloak
+        - name: aurora-ws-drop-authorization
         - name: aurora-strip-ws
       services:
         - name: aurora-chatbot
@@ -249,6 +261,20 @@ spec:
   stripPrefix:
     prefixes:
       - /ws
+---
+# Borra la cabecera Authorization que el SSO inyecta, sólo en la ruta del
+# WebSocket. En Traefik, un customRequestHeader con valor vacío ELIMINA la
+# cabecera; va después de sso-chain para que la autenticación siga ocurriendo y
+# lo único que cambie sea lo que ve el backend.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: aurora-ws-drop-authorization
+  namespace: aurora
+spec:
+  headers:
+    customRequestHeaders:
+      Authorization: ""
 ---
 # API de Aurora en su propio host. YA NO la usa la UI: el navegador la llama en
 # el mismo origen, bajo `aurora.lan.e-dani.com/backend` (ver arriba el motivo).
