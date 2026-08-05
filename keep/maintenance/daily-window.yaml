@@ -1,0 +1,175 @@
+# Ventana de mantenimiento diaria de las 04:00 (Europe/Madrid).
+#
+# POR QUÉ ESTO ES UN CRONJOB Y NO CONFIGURACIÓN. El modelo de Keep
+# (MaintenanceWindowRule) tiene start_time, end_time y duration_seconds y NINGÚN
+# campo de recurrencia: sus ventanas son de un solo uso. No existe "cada día a
+# las 4" de forma nativa, y tampoco es provisionable como código — la doc de
+# provisioning sólo cubre KEEP_PROVIDERS, KEEP_WORKFLOW(S), KEEP_DASHBOARDS y
+# KEEP_MAPPINGS_DIRECTORY. Alguien tiene que empujar la ventana cada día, y este
+# es ese alguien.
+#
+# POR QUÉ timeZone Y NO UTC. 04:00 de Madrid son 02:00 UTC en verano y 03:00 en
+# invierno. Una expresión cron en UTC se desfasaría una hora media año, justo en
+# la ventana donde nadie está mirando. `spec.timeZone` de CronJob (GA desde k8s
+# 1.27; aquí corre 1.33) resuelve el horario de verano solo.
+#
+# IDEMPOTENTE POR DISEÑO: reutiliza la MISMA regla por nombre. Si existe hace
+# PUT con la fecha de hoy; sólo hace POST la primera vez. Sin esto acumularía una
+# regla nueva cada día hasta llenar la tabla.
+#
+# suppress: true a propósito — la alerta se REGISTRA marcada como suprimida en
+# vez de desaparecer. Es la misma postura que el resto del hub: todo queda
+# auditado, sólo que no suena.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: keepsvc-maintenance-window
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: keep
+    app.kubernetes.io/component: maintenance
+data:
+  apply_window.py: |
+    """Crea o actualiza la ventana de mantenimiento diaria en Keep."""
+    import datetime
+    import json
+    import os
+    import sys
+    import urllib.error
+    import urllib.request
+
+    BASE = os.environ["KEEP_API_URL"].rstrip("/")
+    KEY = os.environ["KEEP_API_KEY"]
+    NAME = os.environ.get("WINDOW_NAME", "Mantenimiento diario 04:00")
+    DURATION = int(os.environ.get("WINDOW_DURATION_SECONDS", "3600"))
+    CEL = os.environ.get("WINDOW_CEL", "true")
+
+    def call(method, path, payload=None):
+        req = urllib.request.Request(
+            f"{BASE}{path}",
+            method=method,
+            data=json.dumps(payload).encode() if payload is not None else None,
+            headers={"x-api-key": KEY, "Content-Type": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                body = r.read()
+                return r.status, (json.loads(body) if body else None)
+        except urllib.error.HTTPError as e:
+            print(f"  {method} {path} -> {e.code} {e.read()[:300]!r}", file=sys.stderr)
+            raise
+
+    # La hora la fija el CronJob, no este script: se ejecuta minutos antes de las
+    # 04:00 locales gracias a spec.timeZone, así que "hoy a las 04:00" en la zona
+    # del contenedor (TZ=Europe/Madrid) es la ventana correcta, con su offset.
+    now = datetime.datetime.now().astimezone()
+    start = now.replace(hour=4, minute=0, second=0, microsecond=0)
+    if start < now:
+        # Arranque tardío: no reabrir una ventana que ya pasó, programar la de
+        # mañana. Sin esto un reintento a las 04:30 crearía una ventana muerta.
+        start += datetime.timedelta(days=1)
+
+    payload = {
+        "name": NAME,
+        "description": (
+            "Ventana diaria de mantenimiento. La gestiona el CronJob "
+            "keepsvc-maintenance-window; no editar a mano, se sobrescribe cada día."
+        ),
+        "cel_query": CEL,
+        "start_time": start.isoformat(),
+        "duration_seconds": DURATION,
+        "suppress": True,
+        "enabled": True,
+    }
+
+    _, existing = call("GET", "/maintenance")
+    mine = [r for r in (existing or []) if r.get("name") == NAME]
+
+    if mine:
+        rule_id = mine[0]["id"]
+        call("PUT", f"/maintenance/{rule_id}", payload)
+        print(f"ventana {rule_id} actualizada -> {start.isoformat()} +{DURATION}s")
+    else:
+        _, created = call("POST", "/maintenance", payload)
+        print(f"ventana creada -> {start.isoformat()} +{DURATION}s")
+
+    if len(mine) > 1:
+        # No debería pasar nunca, pero si alguien duplicó la regla a mano las
+        # sobrantes suprimirían fuera de hora sin que nadie lo note.
+        print(f"AVISO: hay {len(mine)} reglas con el nombre {NAME!r}", file=sys.stderr)
+        sys.exit(1)
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: keepsvc-maintenance-window
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: keep
+    app.kubernetes.io/component: maintenance
+spec:
+  # 03:50 hora de Madrid: diez minutos de margen para que la ventana esté puesta
+  # antes de que empiece el mantenimiento, y suficiente para reintentar si Keep
+  # está arrancando.
+  schedule: "50 3 * * *"
+  timeZone: Europe/Madrid
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  startingDeadlineSeconds: 600
+  jobTemplate:
+    spec:
+      backoffLimit: 3
+      ttlSecondsAfterFinished: 86400
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: keep
+            app.kubernetes.io/component: maintenance
+        spec:
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+          containers:
+            - name: apply-window
+              image: python:3.12-slim
+              command: ["python3", "/scripts/apply_window.py"]
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              env:
+                # El contenedor tiene que estar en la MISMA zona que el schedule:
+                # el script calcula "hoy a las 04:00" con la hora local del pod.
+                - name: TZ
+                  value: Europe/Madrid
+                - name: KEEP_API_URL
+                  value: http://keep-backend.monitoring.svc.cluster.local:8080
+                - name: KEEP_API_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: keepsvc-provisioning
+                      key: API_KEY_PROVISIONER
+                - name: WINDOW_DURATION_SECONDS
+                  value: "3600"
+                # `true` suprime TODO durante la ventana. Si el mantenimiento sólo
+                # toca una parte del estate, acotarlo aquí con CEL es mejor que
+                # cegar el hub entero una hora.
+                - name: WINDOW_CEL
+                  value: "true"
+              resources:
+                requests:
+                  cpu: 10m
+                  memory: 64Mi
+                limits:
+                  cpu: 200m
+                  memory: 128Mi
+              volumeMounts:
+                - name: scripts
+                  mountPath: /scripts
+          volumes:
+            - name: scripts
+              configMap:
+                name: keepsvc-maintenance-window

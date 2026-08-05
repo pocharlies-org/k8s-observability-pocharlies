@@ -24,6 +24,9 @@ resources:
   - manifests/aurora-storage.yaml
   - manifests/aurora-frontend-models-policy.yaml
   - keep/rules/apply-job.yaml
+  # Ventana de mantenimiento diaria de las 04:00: las de Keep no tienen
+  # recurrencia (start_time/end_time y punto), así que un CronJob la reprograma.
+  - keep/maintenance/daily-window.yaml
   - manifests/alertmanager-config.yaml
   - manifests/probes.yaml
   - manifests/rules.yaml
