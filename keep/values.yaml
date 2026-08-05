@@ -395,6 +395,31 @@ backend:
       # —visible en el panel de Grafana `keep-hub`, que grafica ejecuciones por
       # estado— mientras que un duplicado no avisa de nada. La ventana de 24 h
       # del reclamo es el margen para RCA lentos, no un filtro de frescura.
+      #
+      # DDL DE BOOTSTRAP — el esquema NO lo crea nadie automáticamente.
+      #
+      # Este workflow hace `INSERT INTO keep_bridge.reported` en la BBDD de
+      # Aurora, pero ni Keep ni Aurora tienen migración que cree ese esquema:
+      # Keep migra lo suyo en SU base, y las migraciones de Aurora son de un
+      # tercero y no pueden tocar esto (ver arriba, es la razón de que el
+      # esquema sea aparte). Si la tabla no existe, cada pasada falla entera y
+      # NINGÚN análisis se publica. Lo aplica una persona a mano contra la BBDD
+      # `aurora`, igual que el pre-hook de las migraciones de Synapse, y hay que
+      # rehacerlo si la BBDD se recrea desde cero.
+      #
+      #   -- psql -d aurora, como el rol `aurora` (es el owner y es el mismo
+      #   -- usuario con el que se autentica el provider `aurora_db`, así que no
+      #   -- hace falta ningún GRANT).
+      #   CREATE SCHEMA IF NOT EXISTS keep_bridge;
+      #   CREATE TABLE IF NOT EXISTS keep_bridge.reported (
+      #     fingerprint text PRIMARY KEY,
+      #     reported_at timestamptz NOT NULL DEFAULT now()
+      #   );
+      #
+      # `fingerprint` es PK porque ES la marca: el ON CONFLICT del CTE de abajo
+      # depende de ese índice único. `reported_at` no la lee nadie hoy; está
+      # para poder auditar/purgar a mano. Contrastado contra la tabla viva
+      # (`\d keep_bridge.reported` en postgres-shared, 2026-08-06): coincide.
       # ---------------------------------------------------------------------
       - id: aurora-report-back
         name: Aurora — análisis de vuelta al grupo
