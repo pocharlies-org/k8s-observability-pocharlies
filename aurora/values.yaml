@@ -109,7 +109,7 @@ config:
   # ------------------------------------------------------------------------
   LLM_PROVIDER_MODE: direct
   BEDROCK_BASE_URL: http://litellm.litellm.svc.cluster.local:4000/v1
-  # DOS ALIAS, REPARTIDOS POR TRABAJO: `coder-ha` conduce, `tooling-ha` escribe.
+  # UN SOLO ALIAS PARA TODO: `tooling-ha`.
   #
   # Antes esto era `dense` (alias que dejó de existir) y luego `router`. Se
   # unifica en `tooling` por decisión explícita: un único alias, sin indirección
@@ -141,20 +141,24 @@ config:
   # (`router_settings.fallbacks: [{tooling: [dense]}]`, un solo sentido) y cubre el
   # modo que el hook no ve: alias registrado pero sin deployment sano. Son dos
   # modos de fallo con dos errores distintos y hacen falta las dos capas.
-  # REPARTO POR TRABAJO, no un alias único (2026-08-05). Los cinco roles estaban
-  # en `tooling-ha` y los RCA salían inservibles: morían todos justo después de la
-  # primera llamada a herramienta y el modelo rellenaba inventando clústers que no
-  # existen aquí (`onprem-cluster-01`, k8s 1.28.4; el nuestro es x86-k3s v1.33.13).
+  # LOS CINCO ROLES A `tooling-ha`. Hubo un intento (2026-08-05) de mandar los que
+  # CONDUCEN el bucle — MAIN_MODEL y RCA_MODEL — a `coder-ha`, porque la batería de
+  # opencode de k8s-litellm-pocharlies mide qwen3-coder en 11/14 tareas frente a
+  # 0-1/14 de Ornith, el 27B denso y el NVIDIA-Qwen3.6 bajo un system prompt de
+  # ~9.3k tokens, y Aurora es LangGraph con 30+ tools.
   #
-  # Encaja con la batería de opencode de k8s-litellm-pocharlies: bajo un system
-  # prompt de ~9.3k tokens, qwen3-coder conduce 11/14 tareas y Ornith / el 27B
-  # denso / NVIDIA-Qwen3.6 conducen 0-1/14 alucinando tool calls. Aurora es
-  # LangGraph con 30+ tools y AGENT_RECURSION_LIMIT=240 — un bucle aún más largo —
-  # y `tooling` es del grupo del 0-1/14.
+  # REVERTIDO EL MISMO DÍA, y el motivo es de capacidad, no de calidad:
+  # qwen3-coder vive en el SEGUNDO slot time-sliced de DGX2 y ese slot está
+  # disputado. Estuvo 1/1 a las 07:47 y a las 08:05:39 el sync ya lo había
+  # desregistrado («disabled backend dgx2-qwen3coder-30b-a3b-nvfp4-coder»). Apuntar
+  # la config a un modelo que no está la mayor parte del tiempo es mentir sobre lo
+  # que corre: la cadena degradaba a `tooling` igualmente, así que el efecto real
+  # era cero y la config engañosa.
   #
-  # Así que el que CONDUCE va al coder y el que ESCRIBE se queda donde estaba.
-  MAIN_MODEL: bedrock/coder-ha
-  SUMMARIZATION_MODEL: bedrock/tooling-ha   # prosa: redactar no es conducir
+  # El alias `coder-ha` sigue existiendo en el hook por si el coder se vuelve
+  # residente. Mientras flapee, esto no se mueve.
+  MAIN_MODEL: bedrock/tooling-ha
+  SUMMARIZATION_MODEL: bedrock/tooling-ha   # trabajo mecánico al modelo rápido
   ENRICHMENT_MODEL: bedrock/tooling-ha
   AGENT_RECURSION_LIMIT: "240"
 
@@ -172,8 +176,7 @@ config:
   # `RuntimeError: Provider 'anthropic' is not available for model
   # 'anthropic/claude-opus-4.6'`, y tumbaba el chat del incidente, que es lo que
   # produce el resumen.
-  # Al coder por lo mismo que MAIN_MODEL: es el que ejecuta la investigación.
-  RCA_MODEL: bedrock/coder-ha
+  RCA_MODEL: bedrock/tooling-ha
   RCA_OPTIMIZE_COSTS: "false"
 
   # ------------------------------------------------------------------------
