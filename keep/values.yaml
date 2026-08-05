@@ -217,7 +217,16 @@ backend:
               config: "{{ providers.telegram_ops }}"
               with:
                 chat_id: "-1003785136626"
-                message_thread_id: 34494
+                # `topic_id`, NO `message_thread_id`. Esto estuvo mal desde el
+                # cutover: el _notify del provider de telegram declara `topic_id`
+                # (telegram_provider.py:55-64) y cualquier otro nombre cae en
+                # **kwargs y se DESCARTA sin error. Consecuencia medida el
+                # 2026-08-05 leyendo el grupo: los mensajes de incidente salían
+                # con topicId=null, o sea al grupo general, no al tema 34494 donde
+                # publicaba el ops-explainer. Se detectó al comparar contra el
+                # workflow aurora-report-back, que sí usa topic_id y sí aparece
+                # dentro del tema.
+                topic_id: 34494
                 parse_mode: html
                 message: |
                   ⚠️ <b>{{#fn.na}}{{ incident.user_generated_name }}{{/fn.na}}</b>
