@@ -43,10 +43,6 @@ agent:
     tag: "1.0.3"
     pullPolicy: IfNotPresent
 
-  # Va a los nodos core amd64, donde vive el resto del plano de control.
-  nodeSelector:
-    kubernetes.io/arch: amd64
-
   resources:
     requests:
       cpu: 50m
@@ -64,6 +60,35 @@ agent:
     readOnlyRootFilesystem: true
     capabilities:
       drop: ["ALL"]
+
+# ---------------------------------------------------------------------------
+# COLOCACIÓN — EN LA RAÍZ, NO BAJO `agent:`
+#
+# Aquí había un `agent.nodeSelector: {kubernetes.io/arch: amd64}` que NO HACÍA
+# NADA. El chart lee `.Values.nodeSelector`, `.Values.tolerations` y
+# `.Values.affinity` del nivel RAÍZ (templates/deployment.yaml), y bajo `agent:`
+# sólo consume replicaCount, image, resources, env, probes, service y los
+# securityContext. Un nodeSelector mal anidado no da error: se ignora en
+# silencio, y el pod acaba donde el scheduler quiera.
+#
+# Comprobado en el clúster antes de mover esto: el Deployment vivo tenía
+# `nodeSelector` y `tolerations` VACÍOS y el pod estaba en ks5-cp-2, mientras el
+# resto de Aurora ya vivía en sauvage.
+#
+# Ahora va con el resto del stack. Y el toleration NO es opcional: sauvage tiene
+# el taint `role=edge:NoSchedule`, así que sin él este pod se quedaría Pending.
+#
+# Ojo si se sube el pin del chart en apps/aurora-kubectl-agent.yaml: si upstream
+# reestructura los values, esta colocación hay que revalidarla — el modo de fallo
+# es mudo.
+# ---------------------------------------------------------------------------
+nodeSelector:
+  kubernetes.io/hostname: sauvage
+tolerations:
+  - key: role
+    operator: Equal
+    value: edge
+    effect: NoSchedule
 
 # ---------------------------------------------------------------------------
 # RBAC — RECORTADO respecto al default del chart, y el recorte es el punto.

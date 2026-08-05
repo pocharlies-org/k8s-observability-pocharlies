@@ -59,17 +59,35 @@ spec:
 
     # k8sgpt sólo sabe hablar con UN endpoint y UN nombre de modelo: no tiene
     # concepto de fallback ni de router. Toda la lógica de qué GPU responde vive
-    # al otro lado, en LiteLLM.
+    # al otro lado, en LiteLLM — y por eso el alias lleva sufijo `-ha`.
     #
-    # `tooling` resuelve hoy a vllm-ornith-35b-nvfp4-mtp-dgx1 (Ornith 35B NVFP4
-    # en dgx1). Añadir un fallback a `dense` es un cambio SÓLO en LiteLLM
-    # (config de fallbacks del alias); este fichero no se toca.
+    # ESTO ERA `tooling` PELADO Y SE COBRÓ SU PRECIO.
     #
-    # OJO: el mapeo alias -> backend lo reescribe en caliente
-    # litellm-dgx-backend-sync según readiness, y los alias `dense*` estaban
-    # deshabilitados a fecha de este commit. Resolver siempre contra
-    # `/v1/models` o el log del sync, nunca contra el nombre del alias.
-    model: tooling
+    # Medido: 16 fallos en 24h, a ráfagas, cuando dgx1 rota el modelo residente
+    # y `tooling` se queda sin backend sano. Y no degrada suavemente: el RPC
+    # Analyze es TODO O NADA, así que cada ráfaga tira un ciclo de análisis
+    # entero sin escribir ni un Result. El error que se veía:
+    #
+    #   model=tooling. There are no healthy deployments for this model
+    #   Available Model Group Fallbacks=['dense']
+    #   Error doing the fallback: model=dense. There are no healthy deployments
+    #
+    # Es decir: el fallback `tooling -> dense` de router_settings existía, pero
+    # no cubre el caso en que AMBOS caen a la vez — que con 1 GPU por nodo es
+    # justo lo que pasa al rotar.
+    #
+    # `tooling-ha` lo resuelve el hook litellm_strip_params (repo
+    # k8s-litellm-pocharlies) con la cadena tooling -> dense -> qwen3-coder,
+    # verificando cada salto. NO lo busques en /v1/models: no es un deployment
+    # registrado, funciona porque el hook corre en pre_call_hook. Es el mismo
+    # alias al que se pasó Aurora tras romperse a mitad de un incidente real.
+    #
+    # LA VIRTUAL KEY TIENE QUE PERMITIRLO. La auth de LiteLLM valida el modelo
+    # PEDIDO antes de que el hook lo reescriba, así que una key acotada a
+    # ["tooling"] rechaza `tooling-ha` con "key not allowed to access model".
+    # La key k8sgpt-prod se amplió a ["tooling","tooling-ha"] al hacer este
+    # cambio. Si algún día se recrea la key, hay que incluir ambos.
+    model: tooling-ha
 
     secret:
       name: k8sgptsvc-llm
