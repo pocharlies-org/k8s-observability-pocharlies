@@ -262,13 +262,33 @@ backend:
       # que lo garantiza — el provider no escapa nada y la plantilla mustache
       # tampoco.
       #
-      # IDEMPOTENCIA, y es un trade-off consciente: la ventana temporal
-      # (analyzed_at > now() - 6 min con intervalo de 5) es lo que evita repetir.
-      # No hay marca persistente porque no la hay dónde poner: no se escribe en el
-      # esquema de Aurora (es de un tercero) y una marca en la BBDD de Keep no se
-      # puede consultar desde esta query, que va contra OTRA base de datos del
-      # mismo clúster. La ventana es 1 min más ancha que el intervalo A PROPÓSITO:
-      # si una pasada se retrasa, prefiero un análisis duplicado a perderlo.
+      # IDEMPOTENCIA POR MARCA, no por ventana temporal (corregido 2026-08-05).
+      #
+      # Antes esto filtraba por `analyzed_at > now() - 6 minutes` con intervalo de
+      # 5. Funcionaba mientras los RCA duraban ~45 s. En cuanto Aurora empezó a
+      # investigar de verdad —el kubectl-agent pasó de 0 comandos a 79 en una
+      # hora— un RCA pasó a tardar 1634 s, o sea 27 minutos: MUCHO fuera de la
+      # ventana. Esos análisis se perdían en silencio, que es el peor fallo
+      # posible aquí porque no deja rastro. Ensanchar la ventana no vale: para
+      # cubrir 27 min habría que ponerla en ~30, y entonces cada pasada de 5 min
+      # reenviaría el mismo análisis seis veces.
+      #
+      # La marca vive en `keep_bridge.reported`, un esquema APARTE dentro de la
+      # BBDD de Aurora. Aparte a propósito: Aurora es de un tercero y sus
+      # migraciones no deben chocar con esto. Y dentro de SU base de datos, no de
+      # la de Keep, porque sólo así el join cabe en una consulta — son dos bases
+      # distintas del mismo clúster y no hay dblink.
+      #
+      # El reclamo es ATÓMICO: el CTE hace INSERT ... ON CONFLICT DO NOTHING
+      # RETURNING, así que sólo salen las filas que ESTA pasada ha conseguido
+      # marcar. Dos ejecuciones simultáneas no pueden publicar el mismo análisis.
+      #
+      # Contrapartida asumida: es at-most-once. Si Telegram falla DESPUÉS del
+      # reclamo, ese análisis no se reintenta. Se acepta porque el fallo queda
+      # registrado como ejecución errónea del workflow —visible en el panel de
+      # Grafana `keep-hub`, que grafica ejecuciones por estado— mientras que un
+      # duplicado no avisa de nada. La ventana de 24 h del reclamo es el margen
+      # para RCA lentos, no un filtro de frescura.
       # ---------------------------------------------------------------------
       - id: aurora-report-back
         name: Aurora — análisis de vuelta al grupo
@@ -288,18 +308,27 @@ backend:
                   SELECT set_config('myapp.current_org_id',
                                     (SELECT id::text FROM organizations
                                       ORDER BY created_at LIMIT 1), false);
-                  SELECT alert_metadata->>'fingerprint',
-                         replace(replace(replace(coalesce(alert_title,'sin título'),
+                  WITH reclamados AS (
+                    INSERT INTO keep_bridge.reported (fingerprint)
+                    SELECT alert_metadata->>'fingerprint'
+                      FROM incidents
+                     WHERE aurora_status = 'complete'
+                       AND aurora_summary IS NOT NULL
+                       AND alert_metadata->>'fingerprint' IS NOT NULL
+                       AND analyzed_at > now() - interval '24 hours'
+                    ON CONFLICT (fingerprint) DO NOTHING
+                    RETURNING fingerprint
+                  )
+                  SELECT r.fingerprint,
+                         replace(replace(replace(coalesce(i.alert_title,'sin título'),
                                  '&','&amp;'),'<','&lt;'),'>','&gt;'),
-                         left(replace(replace(replace(aurora_summary,
+                         left(replace(replace(replace(i.aurora_summary,
                                  '&','&amp;'),'<','&lt;'),'>','&gt;'), 2800),
-                         severity
-                    FROM incidents
-                   WHERE aurora_status = 'complete'
-                     AND aurora_summary IS NOT NULL
-                     AND alert_metadata->>'fingerprint' IS NOT NULL
-                     AND analyzed_at > now() - interval '6 minutes'
-                   ORDER BY analyzed_at
+                         i.severity
+                    FROM reclamados r
+                    JOIN incidents i
+                      ON i.alert_metadata->>'fingerprint' = r.fingerprint
+                   ORDER BY i.analyzed_at
         actions:
           - name: telegram-rca
             # `foreach` sólo entiende rutas con puntos (step.py:110-111), y el
