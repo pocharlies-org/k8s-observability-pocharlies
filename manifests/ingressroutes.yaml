@@ -193,6 +193,31 @@ spec:
       services:
         - name: aurora-server
           port: 5080
+    # El WebSocket del chat, que NO vive en aurora-server sino en
+    # aurora-chatbot:5006 (main_chatbot.py, WS_PORT=5006). Sin esta ruta el
+    # navegador abría el socket contra `/backend` — es decir, contra el Flask de
+    # aurora-server, que no habla ese protocolo — y el chat se quedaba en
+    # "Connection not ready. Please wait a moment and try again." con CUALQUIER
+    # modelo: no era un problema de LLM, era que el socket nunca llegaba a
+    # levantarse. El pod del chatbot no estaba expuesto en ninguna ruta.
+    #
+    # El handler no enruta por path (handle_connection despacha por la cabecera
+    # Authorization para los agentes kubectl, y por el JWT del query string para
+    # los navegadores), así que el prefijo se recorta y da igual con qué path
+    # llegue. El query string —donde viaja el token— sobrevive al stripPrefix.
+    #
+    # Va detrás de sso-chain como todo lo demás: Traefik hace el upgrade a
+    # WebSocket después de que forwardAuth valide la cookie.
+    - kind: Rule
+      match: Host(`aurora.lan.e-dani.com`) && PathPrefix(`/ws`)
+      priority: 200
+      middlewares:
+        - name: sso-chain
+          namespace: keycloak
+        - name: aurora-strip-ws
+      services:
+        - name: aurora-chatbot
+          port: 5006
     - kind: Rule
       match: Host(`aurora.lan.e-dani.com`)
       priority: 100
@@ -214,6 +239,16 @@ spec:
   stripPrefix:
     prefixes:
       - /backend
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: aurora-strip-ws
+  namespace: aurora
+spec:
+  stripPrefix:
+    prefixes:
+      - /ws
 ---
 # API de Aurora en su propio host. YA NO la usa la UI: el navegador la llama en
 # el mismo origen, bajo `aurora.lan.e-dani.com/backend` (ver arriba el motivo).

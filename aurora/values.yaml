@@ -94,9 +94,14 @@ config:
   #
   # El resto de la UI sí usa `credentials: "include"` (104 usos en los bundles),
   # así que funcionaba; sólo rompía la superficie de autenticación.
+  # El WebSocket NO comparte destino con la API: el chat lo sirve
+  # aurora-chatbot:5006 y la API aurora-server:5080. Apuntando ambos a
+  # `/backend` el socket acababa en el Flask del server, que no habla ese
+  # protocolo, y el chat mostraba "Connection not ready" con cualquier modelo.
+  # `/ws` tiene su propia ruta en la IngressRoute (ver manifests/ingressroutes.yaml).
   FRONTEND_URL: https://aurora.lan.e-dani.com
   NEXT_PUBLIC_BACKEND_URL: https://aurora.lan.e-dani.com/backend
-  NEXT_PUBLIC_WEBSOCKET_URL: wss://aurora.lan.e-dani.com/backend
+  NEXT_PUBLIC_WEBSOCKET_URL: wss://aurora.lan.e-dani.com/ws
 
   # ------------------------------------------------------------------------
   # LLM: todo local en el DGX vía LiteLLM
