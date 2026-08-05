@@ -1,0 +1,372 @@
+# SearXNG propio para Aurora, con el brain como motor adicional.
+#
+# POR QUÉ EXISTE ESTE FICHERO
+#
+# El agente de Aurora tiene UNA herramienta de búsqueda (`web_search`) y UNA sola
+# URL de backend (`SEARXNG_URL`). Para que el brain —la memoria de sesiones de
+# Claude/Codex sobre este clúster— aparezca en sus resultados, la vía sin forkear
+# Aurora es meterlo como motor de SearXNG y apuntar Aurora a esta instancia.
+# Así el agente consulta el brain con una herramienta que YA tiene y YA sabe usar.
+#
+# ALTERNATIVAS DESCARTADAS
+#   - Editar el ConfigMap `aurora-searxng-settings` del chart: su settings.yml está
+#     HARDCODEADO en templates/searxng-configmap.yaml (cero `.Values`) y el
+#     Application `aurora` tiene selfHeal, así que el cambio se revierte solo.
+#   - Forkear la imagen o el chart de Aurora: mantenimiento perpetuo por una lista
+#     de motores.
+#   - MCP: Aurora solo consume MCP por stdio con catálogo hardcodeado
+#     (mcp_tools.py), y aurora-mcp es lo contrario (Aurora exponiéndose como
+#     servidor MCP). Ninguna de las dos cosas alimenta a `web_search`.
+#
+# POR QUÉ initContainer + emptyDir Y NO EL ConfigMap MONTADO DIRECTO
+# El entrypoint de la imagen escribe en /etc/searxng (crea y parchea uwsgi.ini con
+# UWSGI_WORKERS/UWSGI_THREADS en cada arranque). Un montaje de ConfigMap es
+# read-only, así que el pod moriría al arrancar. Es el mismo motivo por el que el
+# chart usa un initContainer `copy-settings`; aquí además se aprovecha la copia
+# para inyectar la API key del brain, que no puede vivir en git.
+#
+# COMPORTAMIENTO ANTE FALLO
+#   - Brain caído o key mala: SearXNG marca SOLO ese motor como unresponsive y
+#     devuelve igualmente google/ddg/bing. `web_search` NO falla.
+#   - Este Deployment caído: `web_search` sí falla entera (Aurora no tiene
+#     fallback). Rollback = revertir `config.SEARXNG_URL` en aurora/values.yaml.
+#     El aurora-searxng del chart sigue vivo e intacto: es la red de seguridad,
+#     por eso no se desactiva.
+#   - Secret `aurorasvc-brain` ausente o vacío: el initContainer aborta y el pod se
+#     queda en Init:Error. Deliberado: es preferible a arrancar sin auth y comerse
+#     401 silenciosos que nadie mira.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: aurorasvc-searxng-settings
+  namespace: aurora
+  labels:
+    app.kubernetes.io/name: aurorasvc-searxng
+    app.kubernetes.io/part-of: aurora
+data:
+  # Copia fiel del settings.yml del chart (mismos 7 motores, mismos flags) para que
+  # la búsqueda web generalista se comporte EXACTAMENTE igual que hoy y el rollback
+  # sea equivalente. Lo único nuevo es el motor `brain` y el recorte de
+  # suspended_times.
+  settings.yml: |
+    use_default_settings: true
+
+    general:
+      debug: false
+      instance_name: "Aurora SearXNG + Brain"
+
+    server:
+      port: 8080
+      bind_address: "0.0.0.0"
+      limiter: false
+      image_proxy: true
+
+    search:
+      safe_search: 0
+      default_lang: "en"
+      formats:
+        - html
+        - json
+      # Un 403 del brain (key rotada, WAF por delante) suspendería el motor 24
+      # HORAS con el default de SearXNG: arreglarías la key y seguirías sin
+      # resultados hasta el día siguiente. 300 s es castigo de sobra.
+      suspended_times:
+        SearxEngineAccessDenied: 300
+
+    engines:
+      - name: google
+        engine: google
+        shortcut: go
+
+      - name: duckduckgo
+        engine: duckduckgo
+        shortcut: ddg
+
+      - name: bing
+        engine: bing
+        shortcut: bi
+
+      - name: wikipedia
+        engine: wikipedia
+        shortcut: wp
+
+      - name: github
+        engine: github
+        shortcut: gh
+
+      - name: stackoverflow
+        engine: stackexchange
+        shortcut: so
+        api_site: 'stackoverflow'
+        categories: [it, q&a]
+
+      - name: reddit
+        engine: reddit
+        shortcut: re
+
+      # ---------------------------------------------------------------------
+      # BRAIN — memoria histórica de sesiones (instancia claude-personal).
+      #
+      # `categories: [general]` NO es decorativo: Aurora llama a /search sin
+      # `categories=`, así que SearXNG usa la categoría por defecto (general). Un
+      # motor fuera de esa categoría no se consultaría NUNCA.
+      #
+      # `Content-Type` TAMPOCO es opcional: SearXNG envía el cuerpo con
+      # httpx.post(data=<str>), y httpx no pone content-type con contenido crudo.
+      # Sin esta cabecera el brain responde 422 ("Input should be a valid
+      # dictionary") y el motor devuelve 0 resultados en silencio.
+      #
+      # Llaves dobles `{{ }}`: json_engine hace request_body.format(**params), así
+      # que las llaves literales del JSON hay que escaparlas. `{query}` se
+      # interpola CRUDA — ver LIMITACIÓN CONOCIDA al final del fichero.
+      #
+      # shortcut `bn` porque `br` ya lo usa brave en los defaults de la imagen.
+      #
+      # url_query/url_prefix: el brain NO devuelve `url`, y json_engine descarta en
+      # silencio (bare except) todo resultado sin url o sin title. Se sintetiza una
+      # URL por documento con metadata.source_id, y tiene que ser ÚNICA: SearXNG
+      # deduplica por URL, así que con una constante sobreviviría un solo
+      # resultado de los cinco.
+      #
+      # Esa URL apunta a propósito a una ruta que da 404: Aurora crawlea los 5
+      # primeros resultados (enable_crawling=True por defecto) y así ese fetch
+      # falla rápido y cae al fallback `full_content = snippet`, que ya contiene el
+      # texto completo del recuerdo. Apuntar al dashboard sería PEOR: devolvería
+      # 200 con el HTML de la UI y Aurora se lo tragaría como si fuera la nota.
+      #
+      # title_query: text es redundante con content_query, pero `text` es el único
+      # campo SIEMPRE presente y un fallo en title_query TIRA el resultado entero.
+      # ---------------------------------------------------------------------
+      - name: brain
+        engine: json_engine
+        shortcut: bn
+        categories: [general]
+        disabled: false
+        # weight 4: el score de SearXNG es weight * nº_motores * Σ(1/posición), así
+        # que un resultado que coinciden google+ddg+bing puede llegar a ~9. Con 4,
+        # el primer documento del brain puntúa 4,0 y entra en el top-5 casi
+        # siempre, sin desplazar al consenso web fuerte. Si ensucia, bajar a 2.
+        weight: 4
+        timeout: 5.0
+        paging: false
+        method: POST
+        search_url: http://skirmshop-brain.skirmshop-brain-prod.svc.cluster.local/instances/claude-personal/search
+        headers:
+          Content-Type: application/json
+          X-API-Key: __BRAIN_API_KEY__
+        request_body: >-
+          {{"query": "{query}", "limit": 5, "mode": "smart",
+          "include": "documents", "include_deleted": false}}
+        results_query: documents
+        url_query: metadata/source_id
+        url_prefix: "https://brain-k8s.lan.e-dani.com/instances/claude-personal/documents/"
+        title_query: text
+        content_query: text
+        about:
+          website: https://brain-k8s.lan.e-dani.com
+---
+# La API key del brain, desde Vault.
+#
+# Se apunta a la MISMA ruta que usa el ExternalSecret del propio brain
+# (skirmshop-brain/prod/app -> dashboard_api_key) en vez de copiar el Secret entre
+# namespaces o crear una entrada nueva: así una rotación se propaga sola a los dos
+# sitios en <=1h y no hay dos fuentes de verdad para el mismo secreto. Es una
+# excepción consciente al patrón de manifests/aurora-secrets.yaml, donde todo
+# cuelga de `secret/aurora`.
+#
+# El ClusterSecretStore `vault-backend` es cluster-wide, así que leer esa ruta
+# desde el namespace `aurora` no necesita política nueva en Vault.
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: aurorasvc-brain
+  namespace: aurora
+  labels:
+    app.kubernetes.io/name: aurorasvc-searxng
+    app.kubernetes.io/component: brain
+spec:
+  refreshInterval: "1h"
+  secretStoreRef:
+    name: vault-backend
+    kind: ClusterSecretStore
+  target:
+    name: aurorasvc-brain
+    creationPolicy: Owner
+    deletionPolicy: Retain
+  data:
+    - secretKey: BRAIN_API_KEY
+      remoteRef:
+        key: skirmshop-brain/prod/app
+        property: dashboard_api_key
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aurorasvc-searxng
+  namespace: aurora
+  labels:
+    app.kubernetes.io/name: aurorasvc-searxng
+    app.kubernetes.io/part-of: aurora
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: aurorasvc-searxng
+  template:
+    metadata:
+      labels:
+        # Etiquetas DISTINTAS de las del chart (que usa name=aurora-oss-searxng e
+        # instance=aurora) para que el Service `aurora-searxng` del chart no
+        # capture estos pods ni al revés.
+        app.kubernetes.io/name: aurorasvc-searxng
+        app.kubernetes.io/part-of: aurora
+      annotations:
+        # El settings.yml se copia en un initContainer, así que un cambio del
+        # ConfigMap NO reinicia el pod por sí solo. Subir este número en el mismo
+        # commit que toque el settings.yml para forzar el rollout.
+        e-dani.com/settings-revision: "1"
+    spec:
+      automountServiceAccountToken: false
+      # Mismo destino que el resto de Aurora (verificado contra el Deployment vivo
+      # aurora-searxng, no contra el values: el chart lo resuelve a este nodo).
+      nodeSelector:
+        kubernetes.io/hostname: sauvage
+      tolerations:
+        - key: role
+          operator: Equal
+          value: edge
+          effect: NoSchedule
+      securityContext:
+        fsGroup: 977
+        runAsGroup: 977
+        runAsUser: 977
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        # python3 y no `sed`: la API key puede contener `/`, `&` o `|`, que en el
+        # replacement de sed tienen significado propio y dejarían un settings.yml
+        # corrupto sin avisar. El replace literal de Python no tiene ese problema,
+        # y los assert hacen que el pod falle RUIDOSAMENTE si el Secret llega
+        # vacío o el placeholder no aparece.
+        - name: render-settings
+          image: searxng/searxng:2025.5.8-7ca24eee4
+          imagePullPolicy: IfNotPresent
+          command:
+            - python3
+            - -c
+            - |
+              import os, pathlib
+              key = os.environ["BRAIN_API_KEY"]
+              assert key, "BRAIN_API_KEY vacia"
+              src = pathlib.Path("/etc/searxng-source/settings.yml").read_text()
+              out = src.replace("__BRAIN_API_KEY__", key)
+              assert "__BRAIN_API_KEY__" not in out, "placeholder sin sustituir"
+              pathlib.Path("/etc/searxng/settings.yml").write_text(out)
+          env:
+            - name: BRAIN_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: aurorasvc-brain
+                  key: BRAIN_API_KEY
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: searxng-source
+              mountPath: /etc/searxng-source
+              readOnly: true
+            - name: searxng-config
+              mountPath: /etc/searxng
+      containers:
+        - name: searxng
+          image: searxng/searxng:2025.5.8-7ca24eee4
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: UWSGI_WORKERS
+              value: "2"
+            - name: UWSGI_THREADS
+              value: "2"
+            # Sin esto SearXNG aborta el arranque (server.secret_key se quedaría en
+            # `ultrasecretkey`). Se referencia SOLO esta clave y no `envFrom`, para
+            # no meter AUTH_SECRET/FLASK_SECRET_KEY/INTERNAL_API_SECRET en un pod
+            # que no los necesita.
+            - name: SEARXNG_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: aurorasvc-app
+                  key: SEARXNG_SECRET
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          startupProbe:
+            httpGet: { path: /healthz, port: 8080 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 30
+          readinessProbe:
+            httpGet: { path: /healthz, port: 8080 }
+            periodSeconds: 10
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet: { path: /healthz, port: 8080 }
+            periodSeconds: 30
+            timeoutSeconds: 5
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 300m
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: searxng-config
+              mountPath: /etc/searxng
+      volumes:
+        - name: searxng-source
+          configMap:
+            name: aurorasvc-searxng-settings
+        # emptyDir y no el ConfigMap: aquí escribe el entrypoint (uwsgi.ini).
+        - name: searxng-config
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: aurorasvc-searxng
+  namespace: aurora
+  labels:
+    app.kubernetes.io/name: aurorasvc-searxng
+    app.kubernetes.io/part-of: aurora
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: aurorasvc-searxng
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+      protocol: TCP
+#
+# LIMITACIÓN CONOCIDA
+#
+# `{query}` se interpola cruda en el request_body (json_engine hace
+# request_body.format(**params)), así que una búsqueda que contenga `"` produce
+# JSON inválido y el brain responde 422: ese motor devuelve 0 resultados EN ESA
+# consulta concreta, mientras la web sigue funcionando. No se puede esquivar
+# mandando la query por query-string, porque el brain la exige en el cuerpo.
+#
+# Si eso se vuelve frecuente (se ve como 422 en los logs del brain), el plan B es
+# un shim HTTP delante — Deployment `aurorasvc-brain-shim` con python:3.x-alpine y
+# el script en un ConfigMap — que haga el json.dumps correcto, componga títulos
+# legibles y sirva el documento entero en /doc/<source_id> para que el crawl de
+# Aurora enriquezca en vez de dar 404. El motor pasaría a `method: GET` sin
+# headers ni request_body, y la key quedaría solo en el shim.

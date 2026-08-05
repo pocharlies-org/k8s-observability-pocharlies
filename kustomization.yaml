@@ -23,6 +23,11 @@ resources:
   - manifests/k8sgpt-tolerations-policy.yaml
   - manifests/aurora-storage.yaml
   - manifests/aurora-frontend-models-policy.yaml
+  # SearXNG propio para Aurora con el brain como motor extra. Va fuera del chart
+  # porque aurora-oss 1.2.16 trae el settings.yml de SearXNG hardcodeado (ningún
+  # `.Values`) y el Application `aurora` tiene selfHeal: cualquier parche a su
+  # ConfigMap se revierte solo.
+  - manifests/aurora-searxng-brain.yaml
   - keep/rules/apply-job.yaml
   # Ventana de mantenimiento diaria de las 04:00: las de Keep no tienen
   # recurrencia (start_time/end_time y punto), así que un CronJob la reprograma.
