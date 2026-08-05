@@ -112,27 +112,49 @@ backend:
     # -------------------------------------------------------------------
     workflows:
       # ---------------------------------------------------------------------
-      # EL RESUMEN LLM — por qué es un `step` y no el campo nativo de Keep
+      # EL RESUMEN LLM VIVE EN SU PROPIO WORKFLOW (`incident-summary`), y no es
+      # una preferencia de estilo: en Keep 0.52.1 NO EXISTE ninguna forma de que
+      # un `step` que falla deje correr las acciones.
       #
-      # `incident.generated_summary` NO se puede llenar en la versión OSS: el
+      # `incident.generated_summary` no se puede llenar en la versión OSS: el
       # generador vivía en ee/experimental/generative_utils.py, borrado del repo
       # público en el commit bdc8e52d (2024-11-25), y la tarea que lo invocaba
       # (`process_summary_generation`) no tiene worker ni pool ARQ. Ni
       # EE_ENABLED=true lo resucita. Además, los incidentes que crea el motor de
       # correlación nunca pasan por ahí: create_incident_for_grouping_rule sólo
-      # escribe user_generated_name. Por eso las plantillas anteriores mandaban
-      # una línea vacía.
+      # escribe user_generated_name. Por eso el resumen lo generamos nosotros.
       #
-      # Solución: el resumen se genera aquí, con el provider `litellm` nativo de
-      # Keep contra nuestro router local, y se persiste con `enrich_incident`
-      # para que quede consultable en la UI y reutilizable como
-      # {{ incident.llm_summary }}.
+      # CORRECCIÓN 2026-08-05 — aquí ponía que `continue_on_error: true` protegía
+      # el envío, "verificado en workflow.py:97 / step.py:49". Es FALSO, y costó
+      # 62 avisos perdidos en 7 días. Los hechos, leídos en el 0.52.1 que corre
+      # en producción y reproducidos contra ese mismo código:
       #
-      # `continue_on_error: true` NO es decorativo: sin él, un fallo del step
-      # (LiteLLM caído, alias rotado por el backend-sync, timeout) aborta el
-      # workflow entero — o sea, NINGUNA notificación. Verificado en
-      # workflow.py:97 / step.py:49. El resumen es un extra; el aviso es el
-      # trabajo. Si el LLM falla, el mensaje sale sin resumen.
+      #   1. `continue_on_error` NO EXISTE en Keep 0.52.1. Un grep del paquete
+      #      entero no lo encuentra. Step.__init__ (step.py:45-48) sólo lee
+      #      `on-failure.retry` y `continue`; cualquier otra clave cae en
+      #      self.config y no la mira nadie. Era decorativa desde que se puso.
+      #   2. Step.run() (step.py:78-88) envuelve CUALQUIER excepción en
+      #      ActionError. Pero run_steps() (workflow.py:96) y Workflow.run()
+      #      (workflow.py:174) sólo capturan StepError, y ActionError NO hereda
+      #      de StepError — issubclass(ActionError, StepError) es False. O sea
+      #      que la excepción ni siquiera "se relanza": se escapa de todos los
+      #      manejadores y desenrolla por encima de run_actions()
+      #      (workflow.py:182), que nunca llega a ejecutarse.
+      #
+      # Consecuencia: un step que falla = CERO notificaciones, para TODOS los
+      # incidentes, críticos incluidos, y justo cuando el clúster va mal. Medido
+      # el 2026-08-05 sobre 7 días: 78 ejecuciones de notificación en error de
+      # 656 (12%), de las cuales 62 eran este step de LLM (34 de conexión a
+      # LiteLLM + 28 de 400 por rotación de alias del backend-sync).
+      #
+      # Por eso los dos workflows de aviso de aquí abajo NO TIENEN `steps:`. Un
+      # workflow sin steps no puede abortar antes de notificar: run_steps()
+      # itera sobre una lista vacía y cae directo en run_actions(). Las acciones
+      # sí están aisladas entre sí — run_action() (workflow.py:129) captura
+      # Exception, la registra y run_actions() continúa con la siguiente.
+      #
+      # NO vuelvas a meter aquí un `step:` "que no falla nunca". No existe tal
+      # cosa en 0.52.1.
       # ---------------------------------------------------------------------
       - id: notify-incident-critical
         name: Telegram — incidentes críticos
@@ -143,30 +165,22 @@ backend:
           - type: incident
             events: [created]
             cel: severity == "critical"
-        steps:
-          - name: llm-summary
-            continue_on_error: true
-            provider:
-              type: litellm
-              config: "{{ providers.llm }}"
-              with:
-                model: router
-                temperature: 0.1
-                max_tokens: 400
-                prompt: |
-                  Eres un SRE veterano. En 2-3 frases y en español, di qué está
-                  pasando y qué mirar primero. No inventes causas: si los datos
-                  no bastan, dilo y señala qué haría falta.
-
-                  Incidente: {{ incident.user_generated_name }}
-                  Severidad: {{ incident.severity }}
-                  Alertas: {{ incident.alerts_count }}
-                  Servicios: {{ incident.services }}
-                  Regla de correlación: {{ incident.rule_name }}
         actions:
           - name: telegram-critical
             # Ver el comentario del trigger: `cel` no filtra en incidentes, `if` si.
             if: "'{{ incident.severity }}' == 'critical'"
+            # REINTENTO ANTE EL RATE LIMIT DE TELEGRAM (fallo del 2026-08-05,
+            # incidente GPT-1372): la API contestó "Flood control exceeded.
+            # Retry in 10 seconds" y el mensaje se descartó sin más. El provider
+            # de Telegram de Keep no reintenta nada — _notify llama a
+            # send_message y deja subir la excepción (telegram_provider.py). El
+            # reintento lo pone Keep a nivel de step/acción: step.py:337-371
+            # hace range(count+1) intentos durmiendo `interval` entre ellos, o
+            # sea 4 envíos como mucho. 15 s cubre de sobra los "Retry in 10".
+            on-failure:
+              retry:
+                count: 3
+                interval: 15
             provider:
               type: telegram
               config: "{{ providers.telegram_ops }}"
@@ -175,7 +189,6 @@ backend:
                 parse_mode: html
                 message: |
                   🔴 <b>{{#fn.na}}{{ incident.user_generated_name }}{{/fn.na}}</b>
-                  {{ steps.llm-summary.results.response }}
                   {{ incident.alerts_count }} alertas · {{ incident.services }}
                   https://keep.lan.e-dani.com/incidents/{{ incident.id }}
 
@@ -188,30 +201,15 @@ backend:
           - type: incident
             events: [created]
             cel: severity != "critical"
-        steps:
-          - name: llm-summary
-            continue_on_error: true
-            provider:
-              type: litellm
-              config: "{{ providers.llm }}"
-              with:
-                model: router
-                temperature: 0.1
-                max_tokens: 400
-                prompt: |
-                  Eres un SRE veterano. En 2-3 frases y en español, di qué está
-                  pasando y qué mirar primero. No inventes causas: si los datos
-                  no bastan, dilo y señala qué haría falta.
-
-                  Incidente: {{ incident.user_generated_name }}
-                  Severidad: {{ incident.severity }}
-                  Alertas: {{ incident.alerts_count }}
-                  Servicios: {{ incident.services }}
-                  Regla de correlación: {{ incident.rule_name }}
         actions:
           - name: telegram-incident
             # Complementario del anterior: sin esto ambos workflows notifican todo.
             if: "'{{ incident.severity }}' != 'critical'"
+            # Mismo reintento que en la lane crítica; ver allí el porqué.
+            on-failure:
+              retry:
+                count: 3
+                interval: 15
             provider:
               type: telegram
               config: "{{ providers.telegram_ops }}"
@@ -230,8 +228,113 @@ backend:
                 parse_mode: html
                 message: |
                   ⚠️ <b>{{#fn.na}}{{ incident.user_generated_name }}{{/fn.na}}</b>
-                  {{ steps.llm-summary.results.response }}
                   {{ incident.alerts_count }} alertas · {{ incident.services }}
+                  https://keep.lan.e-dani.com/incidents/{{ incident.id }}
+
+      # ---------------------------------------------------------------------
+      # EL RESUMEN, AISLADO. Este workflow SÍ puede abortar — ése es justamente
+      # el sentido de haberlo separado. Si LiteLLM está caído o rota de alias,
+      # `llm-summary` revienta, esta ejecución queda en `error` y no sale el
+      # segundo mensaje; el aviso del incidente ya salió por su cuenta, porque
+      # su workflow no tiene steps que puedan tumbarlo. El fallo sigue siendo
+      # visible en el panel de Grafana `keep-hub`, que grafica ejecuciones por
+      # estado, así que no se pierde en silencio.
+      #
+      # Sin `cel` en el trigger a propósito: cubre críticos y no críticos, y son
+      # las dos acciones las que enrutan por severidad, igual que arriba. Las
+      # acciones están aisladas entre sí, así que un fallo de una no impide la
+      # otra (que de todas formas no aplicaría por el `if`).
+      #
+      # SIN parse_mode, A PROPÓSITO. El cuerpo lo escribe un LLM y con
+      # `parse_mode: html` Telegram devuelve 400 ante cualquier `<`, `>` o `&`
+      # suelto: el provider no escapa nada y la plantilla mustache tampoco. Ésa
+      # es la razón de que aurora-report-back escape en SQL, truco que aquí no
+      # sirve porque el texto no sale de una consulta. En texto plano no hay
+      # nada que parsear y el 400 no puede ocurrir. Telegram autoenlaza la URL
+      # igualmente.
+      #
+      # `model: tooling-ha` y no `router`: tooling-ha lleva cadena de fallback
+      # (tooling → dense → qwen3-coder) por el hook `litellm_strip_params` del
+      # repo k8s-litellm-pocharlies, así que sobrevive a las rotaciones del
+      # backend-sync que provocaron los 34 errores de conexión. OJO: tooling-ha
+      # NO aparece en /v1/models y aun así responde 200 — comprobado el
+      # 2026-08-05 desde este mismo pod con la key del provider `llm`. No lo
+      # quites porque "no está en la lista".
+      # ---------------------------------------------------------------------
+      - id: incident-summary
+        name: Telegram — resumen LLM del incidente
+        description: >-
+          Segundo mensaje con el resumen del LLM local. Va aparte del aviso a
+          propósito: si el LLM falla se pierde el resumen, nunca el aviso.
+        triggers:
+          - type: incident
+            events: [created]
+        steps:
+          - name: llm-summary
+            # Los 400 por alias rotado no los arregla un reintento inmediato,
+            # pero los de conexión (los más numerosos) sí caen dentro de una
+            # ventana corta. Dos reintentos y a otra cosa: este workflow puede
+            # fallar sin consecuencias, no merece bloquear un hilo más tiempo.
+            on-failure:
+              retry:
+                count: 2
+                interval: 10
+            provider:
+              type: litellm
+              config: "{{ providers.llm }}"
+              with:
+                model: tooling-ha
+                temperature: 0.1
+                max_tokens: 400
+                prompt: |
+                  Eres un SRE veterano. En 2-3 frases y en español, di qué está
+                  pasando y qué mirar primero. No inventes causas: si los datos
+                  no bastan, dilo y señala qué haría falta.
+
+                  Incidente: {{ incident.user_generated_name }}
+                  Severidad: {{ incident.severity }}
+                  Alertas: {{ incident.alerts_count }}
+                  Servicios: {{ incident.services }}
+                  Regla de correlación: {{ incident.rule_name }}
+        actions:
+          - name: summary-critical
+            if: "'{{ incident.severity }}' == 'critical'"
+            on-failure:
+              retry:
+                count: 3
+                interval: 15
+            provider:
+              type: telegram
+              config: "{{ providers.telegram_ops }}"
+              with:
+                chat_id: "-1003785136626"
+                message: |
+                  🧠 Resumen — {{#fn.na}}{{ incident.user_generated_name }}{{/fn.na}}
+
+                  {{ steps.llm-summary.results.response }}
+
+                  https://keep.lan.e-dani.com/incidents/{{ incident.id }}
+
+          - name: summary-incident
+            if: "'{{ incident.severity }}' != 'critical'"
+            on-failure:
+              retry:
+                count: 3
+                interval: 15
+            provider:
+              type: telegram
+              config: "{{ providers.telegram_ops }}"
+              with:
+                chat_id: "-1003785136626"
+                # `topic_id`, NO `message_thread_id`. Ver el comentario de
+                # telegram-incident: cualquier otro nombre cae en **kwargs y se
+                # descarta sin error, y el mensaje acaba en el grupo general.
+                topic_id: 34494
+                message: |
+                  🧠 Resumen — {{#fn.na}}{{ incident.user_generated_name }}{{/fn.na}}
+
+                  {{ steps.llm-summary.results.response }}
+
                   https://keep.lan.e-dani.com/incidents/{{ incident.id }}
 
       # ---------------------------------------------------------------------
