@@ -21,7 +21,11 @@
 #
 # El postStart reescribe los cuatro objetos del catálogo por aliases LiteLLM
 # vivos (verificados contra /v1/chat/completions con la key de Aurora el
-# 2026-08-05). Es idempotente y falla en blando: si una versión futura del
+# 2026-08-05), y añade un quinto: `gpt-5.5-chatgpt`, que NO corre en el DGX —
+# sale a chatgpt.com por el codex-bridge con la suscripción del usuario. Ese
+# comparte cuota con el Codex interactivo y OpenAI estrangula por cliente, así
+# que es para chat manual; los RCA siguen en los modelos locales.
+# Es idempotente y falla en blando: si una versión futura del
 # frontend cambia los literales, el script no encuentra nada, no toca nada y el
 # desplegable vuelve al catálogo stock — sin tumbar el pod (|| true).
 # Al subir la versión del chart, revisar que los literales sigan existiendo.
@@ -93,7 +97,7 @@ spec:
                             ],
                             [
                               '{id:"google/gemini-3.1-pro-preview",name:"gemini-3.1-pro-preview",displayName:"Gemini 3.1 Pro",provider:"Google",tier:"pro",contextLength:"1M",hasReasoning:!0}',
-                              '{id:"bedrock/dense-uncensored",name:"dense-uncensored",displayName:"Qwen3.6 27B Uncensored (DGX)",provider:"LiteLLM",tier:"pro",contextLength:"224K",hasReasoning:!0}',
+                              '{id:"bedrock/dense-uncensored",name:"dense-uncensored",displayName:"Qwen3.6 27B Uncensored (DGX)",provider:"LiteLLM",tier:"pro",contextLength:"224K",hasReasoning:!0},{id:"bedrock/gpt-5.5-chatgpt",name:"gpt-5.5-chatgpt",displayName:"GPT-5.5 (ChatGPT Pro)",provider:"OpenAI",tier:"premium",contextLength:"",hasReasoning:!0}',
                             ],
                           ];
                           const dir = "/app/.next/static/chunks/app/chat";
