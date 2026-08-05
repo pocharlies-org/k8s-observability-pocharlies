@@ -150,6 +150,13 @@ data:
         weight: 4
         timeout: 5.0
         paging: false
+        # SearXNG rechaza http:// por defecto y el motor muere con
+        # `httpx.UnsupportedProtocol: HTTP protocol is disabled`, que en la
+        # respuesta JSON aparece como ('brain', 'unexpected crash') — sin pista
+        # de la causa. Se habilita porque este destino es un Service ClusterIP:
+        # el tráfico no sale del clúster. La alternativa (el ingress LAN por
+        # https) añadiría Traefik y TLS al camino sin ganar nada.
+        enable_http: true
         method: POST
         search_url: http://skirmshop-brain.skirmshop-brain-prod.svc.cluster.local/instances/claude-personal/search
         headers:
@@ -225,7 +232,7 @@ spec:
         # El settings.yml se copia en un initContainer, así que un cambio del
         # ConfigMap NO reinicia el pod por sí solo. Subir este número en el mismo
         # commit que toque el settings.yml para forzar el rollout.
-        e-dani.com/settings-revision: "1"
+        e-dani.com/settings-revision: "2"
     spec:
       automountServiceAccountToken: false
       # Mismo destino que el resto de Aurora (verificado contra el Deployment vivo
