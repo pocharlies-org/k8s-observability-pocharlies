@@ -1059,6 +1059,25 @@ spec:
               El engine ha finalizado con error el workflow
               {{ $labels.workflow }} (tenant {{ $labels.tenant }}) en los últimos
               10 minutos. Detalle en la UI de Synapse; el RCA lo produce Aurora.
+        - alert: SynapseWorkflowFailed
+          # Pata DLQ/unroutable: la métrica del engine (alerta de arriba) no ve
+          # fallos que nunca corrieron en el engine — dead-letters y publishes
+          # sin binding. Los contadores por cola del broker no se scrapean (las
+          # familias channel×queue están excluidas por cardinalidad), así que el
+          # dlq-monitor cuenta lo que drena — como cualquier workload. Cualquier
+          # incremento es un contrato roto o un mensaje envenenado, y entra en
+          # la misma familia de incidentes SYNW.
+          expr: |
+            sum by (tenant, kind) (
+              increase(synapse_dlq_messages_total[10m])
+            ) > 0
+          for: 1m
+          labels:
+            severity: warning
+            area: synapse
+          annotations:
+            summary: "Mensajes {{ $labels.kind }} de {{ $labels.tenant }} entrando en la red de seguridad"
+            description: "El dlq-monitor drenó mensajes nuevos ({{ $labels.kind }}) en los últimos 10m — dead-letter o routing key sin binding. El detalle está en la tarjeta del ops-explainer y en synapse.dlq_archive."
         - alert: AlertmanagerTelegramDeliveryFailed
           # Vivía en cron-alert-analyzer.yaml, que se retira. La descripción
           # anterior decía "se entrega por el webhook Synapse" — esa ruta ya no
