@@ -749,13 +749,32 @@ backend:
   # existe. Si algún día vuelven las 2 réplicas a varios nodos, esto se restaura
   # tal cual — es la primitiva correcta, no un parche.
 
+  # MITIGACIÓN, NO ARREGLO (2026-08-06). El backend se estaba quedando sin
+  # memoria: 4 OOMKilled (exit 137) en 9 h, el último tras sólo 38 min de vida.
+  # No es un pico puntual, es crecimiento monótono y acelerado — medido sobre la
+  # serie continua de un mismo contenedor:
+  #
+  #     22:10  499 Mi      02:10 1026 Mi
+  #     23:10  869 Mi      03:10 1082 Mi
+  #     00:10  904 Mi      04:10 1244 Mi
+  #     01:10  968 Mi      05:10 1538 Mi → OOM
+  #
+  # y el pico diario dobla cada día: 08-04 647 Mi, 08-05 1070 Mi, 08-06 2037 Mi.
+  # O sea que la fuga es RECIENTE (no existía el 08-04) y a este ritmo 4Gi sólo
+  # compra ~1 día. Se sube para dejar de perder ejecuciones mientras se busca la
+  # causa, no porque 2Gi fuese poco.
+  #
+  # Importa para `aurora-report-back`: su reclamo en keep_bridge.reported se hace
+  # en el step de postgres y el envío en la action posterior, así que un OOM
+  # entre ambos deja el RCA reclamado y sin publicar — y el `on-failure.retry`
+  # no cubre eso, porque vive dentro del proceso que muere.
   resources:
     requests:
       cpu: 100m
       memory: 512Mi
     limits:
       cpu: "2"
-      memory: 2Gi
+      memory: 4Gi
 
 frontend:
   enabled: true
