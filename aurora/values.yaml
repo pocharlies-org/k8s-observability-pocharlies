@@ -232,10 +232,32 @@ config:
   GUARDRAILS_SIGMA_ENABLED: "true"
   GUARDRAILS_LLM_MODEL: bedrock/tooling-ha
 
-  # --- Aislamiento de los comandos de los agentes ---
-  # Crea el namespace `untrusted`, RBAC y una NetworkPolicy que corta el acceso
-  # de los pods de terminal a los servicios del clúster (Vault, Postgres, …).
-  ENABLE_POD_ISOLATION: "true"
+  # --- Aislamiento de los comandos de los agentes: DESACTIVADO ---
+  #
+  # En "true" crea el namespace `untrusted`, RBAC y una NetworkPolicy que corta
+  # el acceso de los pods de terminal a los servicios del clúster (Vault,
+  # Postgres, …). Es lo que estaba, y es lo más seguro.
+  #
+  # Se apaga por decisión explícita del owner (2026-08-06) para habilitar el SSH
+  # de Tailscale. `tailscale_ssh_tool.py:282` sólo toma la vía de SSH directo
+  # cuando esta variable es false: con el aislamiento activo los comandos corren
+  # en pods efímeros de `untrusted` cuya NetworkPolicy no tiene salida al tailnet,
+  # así que la clave pública de Aurora instalada en los siete hosts no servía de
+  # nada. La alternativa era mantener el aislamiento y abrir la NetworkPolicy
+  # hacia 100.64.0.0/10 metiendo Tailscale en esos pods; se descartó por coste.
+  #
+  # QUÉ SIGNIFICA ESTO, sin adornos: los comandos del agente dejan de correr en
+  # sandbox y se ejecutan desde el propio pod de Aurora, que SÍ alcanza Vault,
+  # Postgres y el resto del clúster. Sumado a que su clave SSH está en sauvage,
+  # x86, dgx, dgx2 y los tres control-plane, Aurora pasa a poder ejecutar
+  # comandos arbitrarios en todo el estate.
+  #
+  # Lo que sigue conteniendo el radio de daño: el kubectl-agent mantiene su RBAC
+  # de sólo lectura y sin `secrets` (aurora/kubectl-agent-values.yaml), no hay
+  # PRs automáticos (NEXT_PUBLIC_ENABLE_INCIDENT_PREVENTION=false) y los
+  # guardarraíles siguen activos. Revertir: poner "true" aquí y borrar la clave
+  # `aurora-ssh-key` de los authorized_keys (ver secret/infra/ssh/tailnet).
+  ENABLE_POD_ISOLATION: "false"
   TERMINAL_NAMESPACE: untrusted
   TERMINAL_POD_TTL: "3600"
   USE_UNTRUSTED_NODES: "false"
