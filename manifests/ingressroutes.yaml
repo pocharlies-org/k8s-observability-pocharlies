@@ -90,6 +90,24 @@ spec:
   entryPoints:
     - websecure
   routes:
+    # LA API, EN EL MISMO ORIGEN QUE LA UI. Prioridad 400 para ganar a las dos
+    # reglas del frontend (300 y 100), que si no se tragarían /backend.
+    #
+    # El navegador llama con `credentials: "same-origin"` y cabecera
+    # Authorization. Con la API en otro host el navegador no manda la cookie de
+    # SSO (cross-origin) y encima el preflight OPTIONS va sin credenciales por
+    # especificación: oauth2-proxy respondía 302 a Keycloak a las dos y la UI
+    # pintaba "API server is not available". Ver keep/values.yaml, API_URL_CLIENT.
+    - kind: Rule
+      match: Host(`keep.lan.e-dani.com`) && PathPrefix(`/backend`)
+      priority: 400
+      middlewares:
+        - name: sso-chain
+          namespace: keycloak
+        - name: keep-backend-stripprefix
+      services:
+        - name: keep-backend
+          port: 8080
     - kind: Rule
       match: Host(`keep.lan.e-dani.com`) && (ClientIP(`192.168.50.0/24`) || ClientIP(`100.64.0.0/10`) || ClientIP(`10.42.0.0/16`))
       priority: 300
@@ -111,9 +129,21 @@ spec:
   tls:
     secretName: wildcard-lan-tls
 ---
-# API de Keep. El navegador la llama directamente (API_URL_CLIENT), así que
-# necesita la misma sesión SSO: Keep resuelve la identidad de los headers
-# X-Auth-Request-* y devuelve 401 si el de grupos llega vacío.
+# stripPrefix de /backend: Keep sirve su API en la raíz (/incidents,
+# /alerts, /healthcheck), así que el prefijo tiene que desaparecer antes de
+# llegar al backend. Mismo mecanismo que usa Aurora para su /backend.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: keep-backend-stripprefix
+  namespace: monitoring
+spec:
+  stripPrefix:
+    prefixes:
+      - /backend
+---
+# Host aparte de la API. YA NO lo usa el navegador — ver el bloque /backend de
+# arriba — pero se mantiene para llamadas manuales con API key desde la LAN.
 #
 # Alertmanager y Aurora NO pasan por aquí: usan el Service in-cluster con API
 # key, que es el camino que debe sobrevivir a una caída del ingress.

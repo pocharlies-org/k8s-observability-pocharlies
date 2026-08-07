@@ -845,8 +845,33 @@ frontend:
     # Los helpers del chart respetan estos valores si están puestos aquí.
     - name: API_URL
       value: http://keep-backend:8080          # server-side, in-cluster
+    # MISMO ORIGEN QUE LA UI, bajo /backend (Traefik hace stripPrefix). Y esto
+    # NO es estética: es el default del propio chart, del que nos habíamos
+    # salido.
+    #
+    # El cliente de Keep llama con `credentials: "same-origin"` — 5 usos en los
+    # bundles, ni uno con "include" — y mete cabecera `Authorization`. Con la API
+    # en OTRO host eso da dos fallos encadenados:
+    #
+    #   1. same-origin en una petición cross-origin ⇒ el navegador NO manda
+    #      ninguna cookie, tampoco la de SSO.
+    #   2. la cabecera Authorization obliga a preflight, y un preflight OPTIONS
+    #      va sin credenciales POR ESPECIFICACIÓN.
+    #
+    # Así que oauth2-proxy veía las dos sin sesión y devolvía 302 a Keycloak.
+    # El navegador lo cuenta como fallo de CORS y la UI pinta "API server is not
+    # available / 503" — comprobado con curl el 2026-08-07: OPTIONS a
+    # keep-api.lan.e-dani.com responde 302 a auth-next.
+    #
+    # Es exactamente la trampa que documenta aurora/values.yaml y que a Aurora
+    # se le arregló moviendo su API a /backend del mismo host. Keep tenía el
+    # mismo cliente y no había recibido el arreglo.
+    #
+    # Absoluta y no relativa (`/backend`) aunque el default del chart sea
+    # relativo: hay código que construye `new URL(apiUrl)` y una ruta suelta lo
+    # rompería. El host es el mismo, que es lo que importa para la cookie.
     - name: API_URL_CLIENT
-      value: https://keep-api.lan.e-dani.com   # el que resuelve el navegador
+      value: https://keep.lan.e-dani.com/backend   # el que resuelve el navegador
     - name: NEXTAUTH_URL
       value: https://keep.lan.e-dani.com
     - name: AUTH_TYPE
