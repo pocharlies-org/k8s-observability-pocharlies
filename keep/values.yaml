@@ -416,51 +416,117 @@ backend:
       #     reported_at timestamptz NOT NULL DEFAULT now()
       #   );
       #
-      # `fingerprint` es PK porque ES la marca: el ON CONFLICT del CTE de abajo
-      # depende de ese índice único. `reported_at` no la lee nadie hoy; está
-      # para poder auditar/purgar a mano. Contrastado contra la tabla viva
+      # `fingerprint` es PK porque ES la marca: el ON CONFLICT depende de ese
+      # índice único. `reported_at` no la lee nadie hoy; está para poder
+      # auditar/purgar a mano. Contrastado contra la tabla viva
       # (`\d keep_bridge.reported` en postgres-shared, 2026-08-06): coincide.
+      #
+      # =====================================================================
+      # POR QUÉ ESTE WORKFLOW TUMBÓ EL SISTEMA DE ALERTAS ENTERO (06/07-08-2026)
+      #
+      # El diseño anterior reclamaba y leía en la MISMA sentencia, dentro de un
+      # `step`, con `WITH reclamados AS (INSERT ... RETURNING)`. Eso no funciona,
+      # y el motivo está en el código del provider, no en la query:
+      #
+      #   PostgresProvider._query()   <- lo que ejecuta un STEP
+      #       cur.execute(query); results = cur.fetchall(); conn.close()
+      #                                                     ^^^^^^^^^^^ SIN commit
+      #   PostgresProvider._notify()  <- lo que ejecuta una ACTION
+      #       cur.execute(query); conn.commit(); conn.close()
+      #                           ^^^^^^^^^^^^^ aquí sí
+      #
+      # psycopg2 hace ROLLBACK al cerrar. O sea: **un INSERT en un `step` nunca
+      # persiste**. La reclamación se deshacía en cada pasada y el workflow
+      # re-seleccionaba EL MISMO lote de ~100 RCA cada vez.
+      #
+      # Lo que vino después, medido: `keep_bridge.reported` congelada en 250
+      # filas desde el 2026-08-05 20:43:50 con 107 RCA elegibles esperando; un
+      # `foreach` de ~100 envíos simultáneos cada 2 minutos; Telegram
+      # respondiendo 429 (>7.000 "Flood control exceeded" + 4.327 "Timed out" en
+      # 24 h); 57 ejecuciones atascadas en `in_progress` a la vez; keep-backend
+      # OOMKilled 15 veces en 16 h; y con Keep muerto, Alertmanager sin poder
+      # entregar (3.139 contextDeadlineExceeded) — la ingesta de alertas parada.
+      #
+      # Y el flood control de Telegram es POR CHAT, no por bot: la lane de
+      # emergencia `backstop-telegram` del Alertmanager, que usa otro bot
+      # precisamente para sobrevivir a la caída de Keep, también comía 429 y
+      # necesitaba 9-10 intentos por mensaje. El bucle ahogó hasta la red de
+      # seguridad.
+      #
+      # TRES CAMBIOS, y ninguno es cosmético:
+      #
+      # 1. La reclamación pasa a ser una ACTION (`mark-reported`), que es lo
+      #    único que commitea. El `step` sólo LEE.
+      # 2. `mark-reported` va ANTES de `telegram-rca`. Perder un mensaje es
+      #    barato; reenviar el mismo lote cada 2 minutos costó el sistema de
+      #    alertas entero. El RCA sigue siendo legible en la UI de Aurora.
+      # 3. `LIMIT 5` por pasada. Telegram admite ~20 msg/min por grupo y este
+      #    grupo lo comparten los avisos de incidente. 5 cada 5 min deja sitio.
+      #
+      # Y se cae el `parse_mode: html`. El escape de `&<>` en SQL era inútil:
+      # el IOHandler de Keep hace `rendered = html.unescape(rendered)`
+      # (iohandler.py:673) JUSTO antes de entregar al provider, así que
+      # `&lt;pod-name&gt;` volvía a ser `<pod-name>` y Telegram lo rechazaba con
+      # "unsupported start tag". 9 de 363 resúmenes de Aurora traen literales de
+      # ese tipo (`<pod-name>`, `<namespace>`, `<node-name>`) y generaron 740
+      # fallos — porque el lote se repetía ~82 veces. Texto plano no puede
+      # fallar al parsear; el `regexp_replace` de abajo es el cinturón además
+      # de los tirantes.
       # ---------------------------------------------------------------------
       - id: aurora-report-back
         name: Aurora — análisis de vuelta al grupo
         description: >-
-          Cada 5 minutos busca RCA que Aurora haya terminado y publica su análisis
-          en el grupo, citando el incidente de Keep que lo originó.
+          Cada 5 minutos publica en el grupo, en lotes de 5, los RCA que Aurora
+          haya terminado, citando el incidente de Keep que lo originó.
         triggers:
           - type: interval
             value: 300
         steps:
+          # SÓLO LECTURA. Cualquier escritura aquí se pierde: los steps usan
+          # _query(), que no commitea. Ver el bloque de arriba.
           - name: finished-rcas
             provider:
               type: postgres
               config: "{{ providers.aurora_db }}"
               with:
+                # `incidents` tiene RLS FORZADA (relrowsecurity y
+                # relforcerowsecurity a true), por eso el set_config sigue
+                # haciendo falta. `keep_bridge.reported` no la tiene, y por eso
+                # la action de abajo puede insertar en su propia conexión.
                 query: >-
                   SELECT set_config('myapp.current_org_id',
                                     (SELECT id::text FROM organizations
                                       ORDER BY created_at LIMIT 1), false);
-                  WITH reclamados AS (
-                    INSERT INTO keep_bridge.reported (fingerprint)
-                    SELECT alert_metadata->>'fingerprint'
-                      FROM incidents
-                     WHERE aurora_status = 'complete'
-                       AND aurora_summary IS NOT NULL
-                       AND alert_metadata->>'fingerprint' IS NOT NULL
-                       AND analyzed_at > now() - interval '24 hours'
-                    ON CONFLICT (fingerprint) DO NOTHING
-                    RETURNING fingerprint
-                  )
-                  SELECT r.fingerprint,
-                         replace(replace(replace(coalesce(i.alert_title,'sin título'),
-                                 '&','&amp;'),'<','&lt;'),'>','&gt;'),
-                         left(replace(replace(replace(i.aurora_summary,
-                                 '&','&amp;'),'<','&lt;'),'>','&gt;'), 2800),
+                  SELECT i.alert_metadata->>'fingerprint',
+                         regexp_replace(coalesce(i.alert_title,'sin título'),
+                                        '<[^>]*>', '', 'g'),
+                         left(regexp_replace(i.aurora_summary,
+                                        '<[^>]*>', '', 'g'), 2500),
                          i.severity
-                    FROM reclamados r
-                    JOIN incidents i
-                      ON i.alert_metadata->>'fingerprint' = r.fingerprint
+                    FROM incidents i
+                   WHERE i.aurora_status = 'complete'
+                     AND i.aurora_summary IS NOT NULL
+                     AND i.alert_metadata->>'fingerprint' IS NOT NULL
+                     AND i.analyzed_at > now() - interval '24 hours'
+                     AND NOT EXISTS (
+                           SELECT 1 FROM keep_bridge.reported r
+                            WHERE r.fingerprint = i.alert_metadata->>'fingerprint')
                    ORDER BY i.analyzed_at
+                   LIMIT 5
         actions:
+          # PRIMERO marcar, luego publicar. Si esta action falla, el workflow
+          # aborta y `telegram-rca` no llega a correr — que es la dirección
+          # segura: sin marca no hay envío, nunca al revés.
+          - name: mark-reported
+            foreach: "{{ steps.finished-rcas.results }}"
+            provider:
+              type: postgres
+              config: "{{ providers.aurora_db }}"
+              with:
+                query: >-
+                  INSERT INTO keep_bridge.reported (fingerprint)
+                  VALUES ('{{ foreach.value.0 }}')
+                  ON CONFLICT (fingerprint) DO NOTHING
           - name: telegram-rca
             # `foreach` sólo entiende rutas con puntos (step.py:110-111), y el
             # elemento actual es una TUPLA de psycopg2 — el provider usa
@@ -468,24 +534,17 @@ backend:
             # {{ foreach.value.N }}: la notación con corchetes devuelve cadena
             # vacía en silencio, comprobado contra el IOHandler real.
             foreach: "{{ steps.finished-rcas.results }}"
-            # Mismo reintento que la familia de notificación de incidentes (ver
-            # notify-incident-critical). Aquí importa MÁS que allí, porque el
-            # reclamo en keep_bridge.reported ya se ha hecho: un envío perdido no
-            # se republica nunca. En 7 días este envío falló 4 veces (2 "Timed
-            # out", 2 "Can't ...").
-            #
-            # El reintento es POR ELEMENTO, no por lote, y eso es lo que lo hace
-            # seguro con `foreach`: _run_foreach (step.py:127-155) itera y llama a
-            # _run_single POR CADA item, y el bucle range(count+1) vive DENTRO de
-            # _run_single (step.py:337-371). Reintentar el RCA nº3 no reenvía el
-            # nº1 ni el nº2 — no hay duplicados, y la semántica del reclamo no
-            # cambia. Además _run_foreach captura por item y hace `continue`
-            # (step.py:148), así que un RCA que agote los reintentos no se lleva
-            # por delante a los demás de la misma pasada.
+            # 2 reintentos a 30 s, no 3 a 15. Con lotes de 5 el 429 ya no debería
+            # aparecer; si aparece, se espera más y se insiste menos. El
+            # reintento es POR ELEMENTO: _run_foreach (step.py:127-155) llama a
+            # _run_single por item y el bucle range(count+1) vive DENTRO
+            # (step.py:337-371), así que reintentar el nº3 no reenvía el nº1.
+            # Y _run_foreach captura por item y hace `continue` (step.py:148):
+            # un RCA que agote los reintentos no tumba a los demás del lote.
             on-failure:
               retry:
-                count: 3
-                interval: 15
+                count: 2
+                interval: 30
             provider:
               type: telegram
               config: "{{ providers.telegram_ops }}"
@@ -495,9 +554,11 @@ backend:
                 # declara topic_id, y cualquier otro nombre cae en **kwargs y se
                 # descarta sin avisar.
                 topic_id: 34494
-                parse_mode: html
+                # Sin parse_mode a propósito. Ver el bloque de arriba: con
+                # `html` el unescape del IOHandler resucita los `<pod-name>` que
+                # escribe el LLM y Telegram devuelve 400.
                 message: |
-                  🔍 <b>Aurora — análisis de {{ foreach.value.1 }}</b>
+                  🔍 Aurora — análisis de {{ foreach.value.1 }}
 
                   {{ foreach.value.2 }}
 
