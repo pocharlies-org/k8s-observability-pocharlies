@@ -912,8 +912,22 @@ backend:
   # en cuanto pasa, liveness recupera su sensibilidad normal. Subir el
   # initialDelay habría hecho al pod insensible a cuelgues para siempre.
   #
-  # 10 minutos de margen (60 × 10s) con la vista puesta en el caso peor: nodo
-  # frío, imagen recién bajada y CPU disputada.
+  # 30 minutos de margen (180 × 10s). Estaba en 10 (60 × 10s) con la vista
+  # puesta en "nodo frío, imagen recién bajada y CPU disputada", y faltaba el
+  # caso que de verdad muerde en este nodo: EL DISCO SATURADO.
+  #
+  # 2026-08-07: `md3` (el RAID1 de discos duros de sauvage) con
+  # NodeDiskIOSaturation firing. Cargar los ~200 módulos de provider, que con el
+  # disco sano tarda 93s, se pasaba de los 600s. El startupProbe mataba el
+  # contenedor, el reinicio volvía a leer el venv entero del mismo disco
+  # saturado, y así en bucle: 2 reinicios y 30 minutos sin levantar. El pod
+  # viejo siguió sirviendo —el rolling update no lo retira hasta que el nuevo
+  # está listo—, así que no hubo corte, pero el despliegue no entraba.
+  #
+  # Es margen de ARRANQUE, no de cuelgue: mientras startupProbe no pase,
+  # liveness está desactivada, y en cuanto pasa recupera sus 110s normales. Lo
+  # único que se paga es tardar más en declarar fallido un pod que nunca va a
+  # arrancar, y de eso protege el rolling update.
   #
   # La plantilla hace `toYaml` del mapa `probes` entero
   # (templates/backend.yaml:166), así que acepta esta clave aunque el chart no
@@ -925,7 +939,7 @@ backend:
           path: /healthcheck
           port: 8080
         periodSeconds: 10
-        failureThreshold: 60
+        failureThreshold: 180
         successThreshold: 1
 
   # Ya NO hay topologySpreadConstraints, y conviene saber por qué estuvo aquí.
