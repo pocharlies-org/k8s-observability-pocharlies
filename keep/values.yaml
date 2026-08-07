@@ -311,7 +311,7 @@ backend:
                 message: |
                   🧠 Resumen — {{#fn.na}}{{ incident.user_generated_name }}{{/fn.na}}
 
-                  {{ steps.llm-summary.results.response }}
+                  {{ steps.llm-summary.results.0.response }}
 
                   https://keep.lan.e-dani.com/incidents/{{ incident.id }}
 
@@ -333,7 +333,7 @@ backend:
                 message: |
                   🧠 Resumen — {{#fn.na}}{{ incident.user_generated_name }}{{/fn.na}}
 
-                  {{ steps.llm-summary.results.response }}
+                  {{ steps.llm-summary.results.0.response }}
 
                   https://keep.lan.e-dani.com/incidents/{{ incident.id }}
 
@@ -476,8 +476,9 @@ backend:
       - id: aurora-report-back
         name: Aurora — análisis de vuelta al grupo
         description: >-
-          Cada 5 minutos publica en el grupo, en lotes de 5, los RCA que Aurora
-          haya terminado, citando el incidente de Keep que lo originó.
+          Cada pasada coge UN incidente analizado por Aurora, escribe su RCA
+          con el LLM local a partir de la evidencia real que dejó el agente en
+          execution_steps, y lo publica en el grupo.
         triggers:
           - type: interval
             value: 300
@@ -561,7 +562,7 @@ backend:
                        AND NOT EXISTS (
                              SELECT 1 FROM keep_bridge.reported r
                               WHERE r.fingerprint = i.alert_metadata->>'fingerprint')
-                     ORDER BY i.analyzed_at
+                     ORDER BY i.analyzed_at DESC
                      LIMIT 1
                   )
                   SELECT c.fp, c.titulo, c.severity, c.respaldo,
@@ -585,16 +586,30 @@ backend:
                                      LIMIT 18) e),
                            '') AS evidencia
                     FROM cand c
-          # El RCA de verdad. `continue_on_error` NO es decorativo: sin él, un
-          # fallo del LLM aborta el workflow y no sale NADA. Si falla, el envío
-          # de abajo cae al respaldo (el resumen de Aurora, aunque sea flojo).
+          # El RCA de verdad.
+          #
+          # SIN `continue_on_error`, y no por olvido: NO EXISTE en Keep 0.52.1
+          # (ver la corrección del 2026-08-05 en la cabecera de este fichero).
+          # Ponerlo daría una falsa sensación de red. Lo único real es
+          # `on-failure.retry`, que sí lee Step.__init__.
+          #
+          # CONSECUENCIA ASUMIDA, dicha en claro: si el LLM agota los reintentos,
+          # la excepción se escapa de todos los manejadores, `run_actions()` no
+          # corre, y esta pasada no marca ni envía. NO es un flood —sale un
+          # incidente por pasada, no un lote— y la siguiente pasada lo reintenta.
+          # Lo que sí pasa es que un incidente que SIEMPRE falle bloquea la cola
+          # por delante suyo.
+          #
+          # Por eso el ORDER BY de arriba es DESC: con el más reciente primero,
+          # un incidente envenenado deja de ser la cabeza en cuanto llega otro, y
+          # las alertas frescas siguen saliendo. Con ASC bloquearía la cola
+          # entera para siempre. Es degradación acotada en vez de parada total.
           #
           # Este step también corre cuando no hay incidente pendiente: los
           # `condition` de Keep se evalúan DESPUÉS de ejecutar el provider
           # (step.py:132), así que no sirven para ahorrarse la llamada. Es una
           # llamada corta a un modelo local cada pasada; se asume.
           - name: llm-rca
-            continue_on_error: true
             on-failure:
               retry:
                 count: 2
@@ -668,7 +683,7 @@ backend:
                 message: |
                   🔍 Aurora — {{ steps.rca-datos.results.0.1 }}
 
-                  {{ steps.llm-rca.results.response }}
+                  {{ steps.llm-rca.results.0.response }}
 
                   Severidad: {{ steps.rca-datos.results.0.2 }}
                   Incidente en Keep: https://keep.lan.e-dani.com/incidents/{{ steps.rca-datos.results.0.0 }}
