@@ -525,6 +525,14 @@ backend:
                 # Columnas: 0=fingerprint 1=título 2=severidad
                 #           3=resumen de Aurora (respaldo) 4=evidencia real
                 #
+                # DEVUELVE SIEMPRE UNA FILA, con cadenas vacías si no hay nada
+                # pendiente — de ahí el `FROM (VALUES (1)) LEFT JOIN cand`.
+                # Con cero filas, Keep NO renderiza vacío: revienta con
+                # "Could not find keys: 'steps.rca-datos.results.0.1' in the
+                # context" y tumba la pasada entera antes de llegar a evaluar
+                # el `if` de las actions. Verificado en vivo el 2026-08-07: 3
+                # ejecuciones en error seguidas por esto.
+                #
                 # El tope de 18 pasos × 600 bytes (~11 KB, ~3k tokens) es para
                 # no reventar la ventana: hay incidentes con 253 pasos.
                 #
@@ -565,7 +573,10 @@ backend:
                      ORDER BY i.analyzed_at DESC
                      LIMIT 1
                   )
-                  SELECT c.fp, c.titulo, c.severity, c.respaldo,
+                  SELECT coalesce(c.fp,''),
+                         coalesce(c.titulo,''),
+                         coalesce(c.severity::text,''),
+                         coalesce(c.respaldo,''),
                          coalesce(
                            (SELECT string_agg(e.linea, E'\n\n' ORDER BY e.idx)
                               FROM (SELECT es.step_index AS idx,
@@ -585,7 +596,8 @@ backend:
                                               es.step_index
                                      LIMIT 18) e),
                            '') AS evidencia
-                    FROM cand c
+                    FROM (VALUES (1)) AS siempre(x)
+                    LEFT JOIN cand c ON true
           # El RCA de verdad.
           #
           # SIN `continue_on_error`, y no por olvido: NO EXISTE en Keep 0.52.1
