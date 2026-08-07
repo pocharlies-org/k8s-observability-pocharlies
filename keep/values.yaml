@@ -481,10 +481,37 @@ backend:
         triggers:
           - type: interval
             value: 300
+        # =====================================================================
+        # EL RESUMEN LO ESCRIBIMOS AQUÍ, NO AURORA. Y el motivo es medible.
+        #
+        # `aurora_summary` está vacío de contenido el 96-100% de los días desde
+        # que Aurora se levantó (03-08-2026): dice "root cause undetermined" o
+        # "the investigation transcript does not contain sufficient information".
+        # No es falta de evidencia — es que la evidencia no le llega al
+        # resumidor de Aurora. La misma sesión, medida el 2026-08-07:
+        #
+        #   execution_steps        -> 128 pasos, salida real de kubectl,
+        #                             259-1505 bytes por paso
+        #   chat_sessions.messages -> 2 mensajes, 488 bytes EN TOTAL
+        #                             (y 75 de 85 sesiones tienen 1 solo mensaje)
+        #
+        # El resumidor de Aurora lee `messages`. Trabaja con 488 bytes y dice la
+        # verdad: que no tiene con qué. La evidencia buena está en
+        # `execution_steps`, en esta misma base, y esa sí la podemos leer.
+        #
+        # Así que el flujo pasa a ser: SQL trae UN incidente con sus comandos y
+        # salidas reales -> el LLM local escribe el RCA -> se marca -> se envía.
+        # No forkeamos Aurora, que es de un tercero.
+        #
+        # UNO POR PASADA, no un lote. Con `foreach` haría falta una llamada al
+        # LLM por elemento y volveríamos a tener N envíos simultáneos; uno por
+        # pasada hace imposible por construcción el flood que tumbó el sistema
+        # el 06-08. Aurora produce ~5 RCA/hora y esto entrega ~30/hora: sobra.
+        # =====================================================================
         steps:
           # SÓLO LECTURA. Cualquier escritura aquí se pierde: los steps usan
           # _query(), que no commitea. Ver el bloque de arriba.
-          - name: finished-rcas
+          - name: rca-datos
             provider:
               type: postgres
               config: "{{ providers.aurora_db }}"
@@ -493,54 +520,135 @@ backend:
                 # relforcerowsecurity a true), por eso el set_config sigue
                 # haciendo falta. `keep_bridge.reported` no la tiene, y por eso
                 # la action de abajo puede insertar en su propia conexión.
+                #
+                # Columnas: 0=fingerprint 1=título 2=severidad
+                #           3=resumen de Aurora (respaldo) 4=evidencia real
+                #
+                # El tope de 18 pasos × 600 bytes (~11 KB, ~3k tokens) es para
+                # no reventar la ventana: hay incidentes con 253 pasos.
+                #
+                # SE INCLUYEN LOS PASOS QUE FALLARON, y no es un descuido.
+                # Medido en el incidente fbaa89fd: 122 `terminal_exec` y los 122
+                # con status='error'. Que TODOS los comandos fallen es el dato
+                # más importante que tiene ese incidente; filtrando por
+                # status='success' la evidencia salía vacía y volvíamos justo al
+                # problema que esto viene a arreglar. Se marcan con [FALLÓ] para
+                # que el modelo no confunda un error con una observación.
+                #
+                # `load_skill` fuera: son 1-5 KB de documentación de la skill
+                # que el agente carga, no evidencia del clúster.
+                #
+                # Orden de preferencia: primero los pasos que llevan un comando
+                # real, luego el resto. Sin esto, un incidente con 114
+                # `get_alert_field` se come el presupuesto entero antes de
+                # llegar al primer kubectl.
                 query: >-
                   SELECT set_config('myapp.current_org_id',
                                     (SELECT id::text FROM organizations
                                       ORDER BY created_at LIMIT 1), false);
-                  SELECT i.alert_metadata->>'fingerprint',
-                         regexp_replace(coalesce(i.alert_title,'sin título'),
-                                        '<[^>]*>', '', 'g'),
-                         left(regexp_replace(i.aurora_summary,
-                                        '<[^>]*>', '', 'g'), 2500),
-                         i.severity
-                    FROM incidents i
-                   WHERE i.aurora_status = 'complete'
-                     AND i.aurora_summary IS NOT NULL
-                     AND i.alert_metadata->>'fingerprint' IS NOT NULL
-                     AND i.analyzed_at > now() - interval '24 hours'
-                     AND NOT EXISTS (
-                           SELECT 1 FROM keep_bridge.reported r
-                            WHERE r.fingerprint = i.alert_metadata->>'fingerprint')
-                   ORDER BY i.analyzed_at
-                   LIMIT 5
+                  WITH cand AS (
+                    SELECT i.id,
+                           i.alert_metadata->>'fingerprint' AS fp,
+                           regexp_replace(coalesce(i.alert_title,'sin título'),
+                                          '<[^>]*>', '', 'g') AS titulo,
+                           i.severity,
+                           left(regexp_replace(coalesce(i.aurora_summary,''),
+                                          '<[^>]*>', '', 'g'), 900) AS respaldo
+                      FROM incidents i
+                     WHERE i.aurora_status = 'complete'
+                       AND i.alert_metadata->>'fingerprint' IS NOT NULL
+                       AND i.analyzed_at > now() - interval '24 hours'
+                       AND NOT EXISTS (
+                             SELECT 1 FROM keep_bridge.reported r
+                              WHERE r.fingerprint = i.alert_metadata->>'fingerprint')
+                     ORDER BY i.analyzed_at
+                     LIMIT 1
+                  )
+                  SELECT c.fp, c.titulo, c.severity, c.respaldo,
+                         coalesce(
+                           (SELECT string_agg(e.linea, E'\n\n' ORDER BY e.idx)
+                              FROM (SELECT es.step_index AS idx,
+                                           '$ ' || coalesce(es.tool_input->>'command',
+                                                            es.tool_name)
+                                              || CASE WHEN es.status <> 'success'
+                                                      THEN '   [FALLÓ]' ELSE '' END
+                                              || E'\n'
+                                              || left(regexp_replace(es.tool_output,
+                                                      '<[^>]*>', '', 'g'), 600) AS linea
+                                      FROM execution_steps es
+                                     WHERE es.incident_id = c.id
+                                       AND es.tool_output IS NOT NULL
+                                       AND es.tool_output <> ''
+                                       AND es.tool_name <> 'load_skill'
+                                     ORDER BY (es.tool_input ? 'command') DESC,
+                                              es.step_index
+                                     LIMIT 18) e),
+                           '') AS evidencia
+                    FROM cand c
+          # El RCA de verdad. `continue_on_error` NO es decorativo: sin él, un
+          # fallo del LLM aborta el workflow y no sale NADA. Si falla, el envío
+          # de abajo cae al respaldo (el resumen de Aurora, aunque sea flojo).
+          #
+          # Este step también corre cuando no hay incidente pendiente: los
+          # `condition` de Keep se evalúan DESPUÉS de ejecutar el provider
+          # (step.py:132), así que no sirven para ahorrarse la llamada. Es una
+          # llamada corta a un modelo local cada pasada; se asume.
+          - name: llm-rca
+            continue_on_error: true
+            on-failure:
+              retry:
+                count: 2
+                interval: 10
+            provider:
+              type: litellm
+              config: "{{ providers.llm }}"
+              with:
+                # Ver incident-summary: `tooling-ha` lleva cadena de fallback y
+                # NO aparece en /v1/models aunque responde 200.
+                model: tooling-ha
+                temperature: 0.1
+                max_tokens: 500
+                prompt: |
+                  Eres un SRE veterano. Abajo tienes una alerta de un clúster
+                  Kubernetes y la salida REAL de los comandos que un agente
+                  ejecutó para investigarla.
+
+                  Escribe en español, en 4-6 frases, y en este orden:
+                  qué está pasando, qué lo causa según la evidencia, y qué
+                  mirar o tocar primero.
+
+                  Cíñete a la evidencia. Si la evidencia no basta para
+                  determinar la causa, dilo en una frase y di qué comando
+                  concreto haría falta — no rellenes con generalidades.
+                  Si no hay evidencia ninguna, responde exactamente:
+                  "Sin investigación: el agente no ejecutó ningún comando."
+
+                  ALERTA: {{ steps.rca-datos.results.0.1 }}
+                  SEVERIDAD: {{ steps.rca-datos.results.0.2 }}
+
+                  EVIDENCIA:
+                  {{ steps.rca-datos.results.0.4 }}
         actions:
           # PRIMERO marcar, luego publicar. Si esta action falla, el workflow
           # aborta y `telegram-rca` no llega a correr — que es la dirección
           # segura: sin marca no hay envío, nunca al revés.
+          #
+          # El `if` es el guard de "no hay nada pendiente": con 0 filas,
+          # {{ …results.0.0 }} renderiza cadena vacía (comprobado contra el
+          # chevron del propio pod), y sin él se insertaría un fingerprint
+          # vacío y se enviaría un mensaje en blanco cada dos minutos.
           - name: mark-reported
-            foreach: "{{ steps.finished-rcas.results }}"
+            if: "'{{ steps.rca-datos.results.0.0 }}' != ''"
             provider:
               type: postgres
               config: "{{ providers.aurora_db }}"
               with:
                 query: >-
                   INSERT INTO keep_bridge.reported (fingerprint)
-                  VALUES ('{{ foreach.value.0 }}')
+                  VALUES ('{{ steps.rca-datos.results.0.0 }}')
                   ON CONFLICT (fingerprint) DO NOTHING
           - name: telegram-rca
-            # `foreach` sólo entiende rutas con puntos (step.py:110-111), y el
-            # elemento actual es una TUPLA de psycopg2 — el provider usa
-            # conn.cursor() plano, no RealDictCursor. Se indexa con
-            # {{ foreach.value.N }}: la notación con corchetes devuelve cadena
-            # vacía en silencio, comprobado contra el IOHandler real.
-            foreach: "{{ steps.finished-rcas.results }}"
-            # 2 reintentos a 30 s, no 3 a 15. Con lotes de 5 el 429 ya no debería
-            # aparecer; si aparece, se espera más y se insiste menos. El
-            # reintento es POR ELEMENTO: _run_foreach (step.py:127-155) llama a
-            # _run_single por item y el bucle range(count+1) vive DENTRO
-            # (step.py:337-371), así que reintentar el nº3 no reenvía el nº1.
-            # Y _run_foreach captura por item y hace `continue` (step.py:148):
-            # un RCA que agote los reintentos no tumba a los demás del lote.
+            if: "'{{ steps.rca-datos.results.0.0 }}' != ''"
             on-failure:
               retry:
                 count: 2
@@ -554,16 +662,16 @@ backend:
                 # declara topic_id, y cualquier otro nombre cae en **kwargs y se
                 # descarta sin avisar.
                 topic_id: 34494
-                # Sin parse_mode a propósito. Ver el bloque de arriba: con
-                # `html` el unescape del IOHandler resucita los `<pod-name>` que
+                # Sin parse_mode a propósito: con `html` el unescape del
+                # IOHandler (iohandler.py:673) resucita los `<pod-name>` que
                 # escribe el LLM y Telegram devuelve 400.
                 message: |
-                  🔍 Aurora — análisis de {{ foreach.value.1 }}
+                  🔍 Aurora — {{ steps.rca-datos.results.0.1 }}
 
-                  {{ foreach.value.2 }}
+                  {{ steps.llm-rca.results.response }}
 
-                  Severidad: {{ foreach.value.3 }}
-                  Incidente en Keep: https://keep.lan.e-dani.com/incidents/{{ foreach.value.0 }}
+                  Severidad: {{ steps.rca-datos.results.0.2 }}
+                  Incidente en Keep: https://keep.lan.e-dani.com/incidents/{{ steps.rca-datos.results.0.0 }}
 
       # Aurora investiga INCIDENTES, no alertas: mandarle cada alerta haría que
       # investigase 3 veces la misma causa. El payload va con forma de
