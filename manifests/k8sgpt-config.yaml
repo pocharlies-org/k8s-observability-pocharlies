@@ -92,7 +92,11 @@ spec:
     # ["tooling"] rechaza `tooling` con "key not allowed to access model".
     # La key k8sgpt-prod se amplió a ["tooling","tooling"] al hacer este
     # cambio. Si algún día se recrea la key, hay que incluir ambos.
-    model: tooling
+    # 2026-08-10: `tooling` pasa a significar SIN PENSAR, y k8sgpt diagnostica --
+    # razona sobre eventos y estado. `agent` = effort low, el nivel de hoy, pedido
+    # por su nombre. LA KEY k8sgpt-prod TIENE QUE PERMITIRLO (ver arriba): la auth
+    # de LiteLLM valida el modelo PEDIDO antes de que corra el hook.
+    model: agent
 
     secret:
       name: k8sgptsvc-llm
