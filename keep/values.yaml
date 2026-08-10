@@ -253,10 +253,10 @@ backend:
       # nada que parsear y el 400 no puede ocurrir. Telegram autoenlaza la URL
       # igualmente.
       #
-      # `model: tooling-ha` y no `router`: tooling-ha lleva cadena de fallback
+      # `model: tooling` y no `router`: tooling lleva cadena de fallback
       # (tooling → dense → qwen3-coder) por el hook `litellm_strip_params` del
       # repo k8s-litellm-pocharlies, así que sobrevive a las rotaciones del
-      # backend-sync que provocaron los 34 errores de conexión. OJO: tooling-ha
+      # backend-sync que provocaron los 34 errores de conexión. OJO: tooling
       # NO aparece en /v1/models y aun así responde 200 — comprobado el
       # 2026-08-05 desde este mismo pod con la key del provider `llm`. No lo
       # quites porque "no está en la lista".
@@ -283,7 +283,7 @@ backend:
               type: litellm
               config: "{{ providers.llm }}"
               with:
-                model: tooling-ha
+                model: tooling
                 temperature: 0.1
                 max_tokens: 400
                 prompt: |
@@ -630,9 +630,9 @@ backend:
               type: litellm
               config: "{{ providers.llm }}"
               with:
-                # Ver incident-summary: `tooling-ha` lleva cadena de fallback y
+                # Ver incident-summary: `tooling` lleva cadena de fallback y
                 # NO aparece en /v1/models aunque responde 200.
-                model: tooling-ha
+                model: tooling
                 temperature: 0.1
                 max_tokens: 500
                 prompt: |

@@ -22,10 +22,12 @@
 # 2026-08-10 — SE RETIRA `qwen36-35b` DEL SELECTOR. Era uno de los nueve alias del
 # RESIDENTE de tooling, así que lo servía quien estuviera Ready (hoy
 # DeepSeek-V4-Flash-0731) mientras el desplegable decía "Qwen3.6 35B (DGX)". Y
-# además duplicaba a `tooling-ha`, que ya está en la primera entrada: dos opciones
+# además duplicaba a `tooling`, que ya está en la primera entrada: dos opciones
 # visibles, el mismo backend, y una con nombre de otro modelo. En su hueco va
-# `agentic-ha`, que sí es una cadena distinta (qwen3-coder primero, luego el
-# residente, luego dense) y por tanto una opción de verdad.
+# `qwen3-coder`, que es el único modelo de verdad DISTINTO del residente. Al ser un
+# nombre de MODELO y no de capacidad, da 400 cuando su deployment no está (perfil
+# `deepseek-v4-flash`, donde DeepSeek ocupa los dos Sparks) — y eso es lo honesto:
+# los nombres de modelo no degradan, los de capacidad sí.
 #
 # Los `contextLength` de aquí siguen escritos a mano, pero desde el 2026-08-10 ya
 # tienen fuente única: LiteLLM publica `max_input_tokens` de verdad en
@@ -109,7 +111,7 @@ spec:
                           const REPLACEMENTS = [
                             [
                               '{id:"openai/gpt-5.5",name:"gpt-5.5",displayName:"GPT-5.5",provider:"OpenAI",tier:"premium",contextLength:"1M",hasReasoning:!0}',
-                              '{id:"bedrock/tooling-ha",name:"tooling-ha",displayName:"Tooling DGX (HA)",provider:"LiteLLM",tier:"premium",contextLength:"256K",hasReasoning:!0}',
+                              '{id:"bedrock/tooling",name:"tooling",displayName:"Tooling DGX",provider:"LiteLLM",tier:"premium",contextLength:"256K",hasReasoning:!0}',
                             ],
                             [
                               '{id:"anthropic/claude-sonnet-4.6",name:"claude-sonnet-4.6",displayName:"Claude Sonnet 4.6",provider:"Anthropic",tier:"pro",contextLength:"1M",hasReasoning:!0}',
@@ -117,7 +119,7 @@ spec:
                             ],
                             [
                               '{id:"anthropic/claude-opus-4.7",name:"claude-opus-4.7",displayName:"Claude Opus 4.7",provider:"Anthropic",tier:"premium",contextLength:"1M",hasReasoning:!0,isSlow:!0}',
-                              '{id:"bedrock/agentic-ha",name:"agentic-ha",displayName:"Agentic DGX (coder-first)",provider:"LiteLLM",tier:"premium",contextLength:"256K",hasReasoning:!0}',
+                              '{id:"bedrock/qwen3-coder",name:"qwen3-coder",displayName:"Qwen3-Coder 30B (DGX2)",provider:"LiteLLM",tier:"premium",contextLength:"256K",hasReasoning:!0}',
                             ],
                             [
                               '{id:"google/gemini-3.1-pro-preview",name:"gemini-3.1-pro-preview",displayName:"Gemini 3.1 Pro",provider:"Google",tier:"pro",contextLength:"1M",hasReasoning:!0}',
@@ -152,7 +154,7 @@ spec:
                                 continue;
                               }
                               if (data.indexOf('displayName:"GPT-5.5"') === -1) continue;
-                              if (data.indexOf('id:"bedrock/tooling-ha"') !== -1) continue;
+                              if (data.indexOf('id:"bedrock/tooling"') !== -1) continue;
                               let hits = 0;
                               for (const [oldS, newS] of REPLACEMENTS) {
                                 if (data.includes(oldS)) {

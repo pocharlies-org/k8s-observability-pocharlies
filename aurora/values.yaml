@@ -146,7 +146,7 @@ config:
 
   LLM_PROVIDER_MODE: direct
   BEDROCK_BASE_URL: http://litellm.litellm.svc.cluster.local:4000/v1
-  # UN SOLO ALIAS PARA TODO: `tooling-ha`.
+  # UN SOLO ALIAS PARA TODO: `tooling`.
   #
   # Antes esto era `dense` (alias que dejó de existir) y luego `router`. Se
   # unifica en `tooling` por decisión explícita: un único alias, sin indirección
@@ -162,7 +162,7 @@ config:
   #     kubectl -n litellm logs deploy/litellm-dgx-backend-sync | grep 'for alias tooling'
   #
   # La contrapartida que este bloque documentaba como asumida SE COBRÓ, y por eso
-  # ahora el alias lleva sufijo `-ha`. Decía: «con un alias fijo, si `tooling` se
+  # `tooling` degrada. Decía: «con un alias fijo, si `tooling` se
   # quedara sin backend Aurora daría model-not-found en vez de degradar sola».
   # Pasó el 2026-08-04 19:11 — dgx1 cambió de modelo residente y Aurora murió a
   # los 40 s, a mitad de un incidente real, con «no healthy deployments for this
@@ -170,11 +170,18 @@ config:
   # en todo su árbol, su `max_retries` reintenta contra el MISMO modelo, y bedrock
   # es su único provider disponible.
   #
-  # `tooling-ha` = «prefiero `tooling`, pero prefiero vivo». Lo resuelve el hook
-  # litellm_strip_params (repo k8s-litellm-pocharlies) con la cadena
-  # tooling -> dense -> qwen3-coder, verificando cada salto. NO lo busques en
-  # /v1/models: no es un deployment registrado, y funciona porque el hook corre en
-  # pre_call_hook, antes del gate de nombre de modelo del proxy.
+  # `tooling` = «el residente de tooling, y si no está, algo vivo». Del 2026-08-05
+  # al 2026-08-10 esto fue un alias aparte, `tooling-ha`, con el argumento de que
+  # degradar `tooling` falsearía las mediciones. Se retiró: las mediciones se hacen
+  # contra nombres de MODELO (`ornith-1.0`, `qwen3-coder`, `qwen36-35b-nvfp4`), que
+  # siguen sin degradar, y TODO el que pedía `tooling` quería «vivo» — eran dos
+  # nombres para una intención, y el que no llevaba sufijo era la trampa.
+  #
+  # El fallback lo aplica el hook litellm_strip_params (repo
+  # k8s-litellm-pocharlies) al propio `tooling`, con la cadena tooling -> dense y
+  # verificando el salto. Cubre el modo «alias DESREGISTRADO», que el proxy rechaza
+  # antes de que corra el Router; funciona porque el hook está en pre_call_hook,
+  # antes del gate de nombre de modelo.
   #
   # Sigue NO siendo el smart router: `router`/`auto` reclasifican por forma de
   # petición (con tool -> dense), y eso es justo lo que esta decisión quitó. Aquí
@@ -184,7 +191,7 @@ config:
   # (`router_settings.fallbacks: [{tooling: [dense]}]`, un solo sentido) y cubre el
   # modo que el hook no ve: alias registrado pero sin deployment sano. Son dos
   # modos de fallo con dos errores distintos y hacen falta las dos capas.
-  # LOS CINCO ROLES A `tooling-ha`. Hubo un intento (2026-08-05) de mandar los que
+  # LOS CINCO ROLES A `tooling`. Hubo un intento (2026-08-05) de mandar los que
   # CONDUCEN el bucle — MAIN_MODEL y RCA_MODEL — a `coder-ha`, porque la batería de
   # opencode de k8s-litellm-pocharlies mide qwen3-coder en 11/14 tareas frente a
   # 0-1/14 de Ornith, el 27B denso y el NVIDIA-Qwen3.6 bajo un system prompt de
@@ -198,11 +205,13 @@ config:
   # que corre: la cadena degradaba a `tooling` igualmente, así que el efecto real
   # era cero y la config engañosa.
   #
-  # El alias `coder-ha` sigue existiendo en el hook por si el coder se vuelve
-  # residente. Mientras flapee, esto no se mueve.
-  MAIN_MODEL: bedrock/tooling-ha
-  SUMMARIZATION_MODEL: bedrock/tooling-ha   # trabajo mecánico al modelo rápido
-  ENRICHMENT_MODEL: bedrock/tooling-ha
+  # 2026-08-10: `coder-ha` YA NO EXISTE (se retiraron todos los alias -ha). Si algún
+  # día el coder se vuelve residente estable, aquí se pone `qwen3-coder` a pelo:
+  # es un nombre de modelo, así que dará 400 cuando no esté en vez de degradar en
+  # silencio, y eso es lo que quieres para saber que dejó de estar.
+  MAIN_MODEL: bedrock/tooling
+  SUMMARIZATION_MODEL: bedrock/tooling   # trabajo mecánico al modelo rápido
+  ENRICHMENT_MODEL: bedrock/tooling
   AGENT_RECURSION_LIMIT: "240"
 
   # Un agente primero. El orquestador multi-agente se activa cuando los RCA de
@@ -219,7 +228,7 @@ config:
   # `RuntimeError: Provider 'anthropic' is not available for model
   # 'anthropic/claude-opus-4.6'`, y tumbaba el chat del incidente, que es lo que
   # produce el resumen.
-  RCA_MODEL: bedrock/tooling-ha
+  RCA_MODEL: bedrock/tooling
   RCA_OPTIMIZE_COSTS: "false"
 
   # ------------------------------------------------------------------------
@@ -230,7 +239,7 @@ config:
   # ------------------------------------------------------------------------
   GUARDRAILS_ENABLED: "true"
   GUARDRAILS_SIGMA_ENABLED: "true"
-  GUARDRAILS_LLM_MODEL: bedrock/tooling-ha
+  GUARDRAILS_LLM_MODEL: bedrock/tooling
 
   # --- Aislamiento de los comandos de los agentes: DESACTIVADO ---
   #

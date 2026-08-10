@@ -76,7 +76,7 @@ spec:
     # no cubre el caso en que AMBOS caen a la vez — que con 1 GPU por nodo es
     # justo lo que pasa al rotar.
     #
-    # `tooling-ha` lo resuelve el hook litellm_strip_params (repo
+    # `tooling` lo resuelve el hook litellm_strip_params (repo
     # k8s-litellm-pocharlies) con la cadena tooling -> dense -> qwen3-coder,
     # verificando cada salto. NO lo busques en /v1/models: no es un deployment
     # registrado, funciona porque el hook corre en pre_call_hook. Es el mismo
@@ -84,10 +84,10 @@ spec:
     #
     # LA VIRTUAL KEY TIENE QUE PERMITIRLO. La auth de LiteLLM valida el modelo
     # PEDIDO antes de que el hook lo reescriba, así que una key acotada a
-    # ["tooling"] rechaza `tooling-ha` con "key not allowed to access model".
-    # La key k8sgpt-prod se amplió a ["tooling","tooling-ha"] al hacer este
+    # ["tooling"] rechaza `tooling` con "key not allowed to access model".
+    # La key k8sgpt-prod se amplió a ["tooling","tooling"] al hacer este
     # cambio. Si algún día se recrea la key, hay que incluir ambos.
-    model: tooling-ha
+    model: tooling
 
     secret:
       name: k8sgptsvc-llm
