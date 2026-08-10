@@ -278,7 +278,10 @@ config:
   # --- Concurrencia ---
   GUNICORN_WORKERS: "2"
   GUNICORN_THREADS: "4"
-  CELERY_CONCURRENCY: "2"
+  # Un solo RCA a la vez. La entrada Keep -> Aurora ya queda serializada por
+  # fingerprint, pero este límite contiene cualquier productor adicional y
+  # evita que dos bucles de agentes compitan por el mismo backend LLM.
+  CELERY_CONCURRENCY: "1"
   DB_POOL_MIN: "1"
   DB_POOL_MAX: "10"
   RATE_LIMITING_ENABLED: "false"

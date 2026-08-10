@@ -49,7 +49,12 @@ spec:
     kubernetes.io/hostname: sauvage
 
   ai:
-    enabled: true
+    # 2026-08-10: la explicación LLM queda apagada. El operador conserva los
+    # analyzers deterministas y los Result existentes, pero deja de mantener una
+    # llamada de ~104 s casi continua contra LiteLLM cada ~138 s. Reactivarlo
+    # exige una ventana deliberada y una frecuencia acotada; el reconcile
+    # continuo del operador no es un scheduler de coste aceptable.
+    enabled: false
 
     # `openai` es el backend genérico "API compatible con OpenAI", y con
     # baseUrl apunta a donde sea. No es el openai.com de verdad: aquí no sale

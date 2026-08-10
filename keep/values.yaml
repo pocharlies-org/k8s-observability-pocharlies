@@ -730,17 +730,74 @@ backend:
       # ruidoso y localizado, no un silencio.
       - id: aurora-investigate
         name: Investigación en Aurora
-        # 2026-08-10: desactivado en GitOps tras generar cientos de RCA sobre
-        # incidentes repetidos. La ingesta y las notificaciones sin LLM continúan.
-        disabled: true
+        # 2026-08-10: reactivado sólo después de añadir una reclamación atómica
+        # y duradera por fingerprint real de alerta. `incident.id` NO sirve para
+        # deduplicar: Keep puede abrir más de un incidente para la misma alerta.
+        # La tabla hace el puente at-most-once: un fingerprint no vuelve a
+        # disparar Aurora hasta que un operador lo rearme explícitamente.
+        disabled: false
         description: >-
           Manda cada incidente nuevo a Aurora, que lanza agentes read-only sobre
-          el clúster y produce un RCA.
+          el clúster y produce un RCA, como máximo una vez por fingerprint.
         triggers:
           - type: incident
             events: [created]
+        steps:
+          - name: claim-dispatch
+            provider:
+              type: postgres
+              config: "{{ providers.aurora_db }}"
+              with:
+                # El provider Postgres de Keep no hace commit en los steps. El
+                # COMMIT explícito es intencionado: gana una sola ejecución aun
+                # si dos workers reciben a la vez el mismo incidente. La GUC de
+                # sesión sobrevive al COMMIT y devuelve el fingerprint sólo al
+                # ganador. No usar un nombre que empiece por `keep.`: IOHandler
+                # lo interpretaría erróneamente como una función de plantilla.
+                query: |
+                  CREATE SCHEMA IF NOT EXISTS keep_bridge;
+                  CREATE TABLE IF NOT EXISTS keep_bridge.aurora_dispatches (
+                    fingerprint text PRIMARY KEY,
+                    keep_incident_id uuid NOT NULL,
+                    dispatched_at timestamptz NOT NULL DEFAULT now()
+                  );
+                  WITH candidate AS (
+                    SELECT
+                      NULLIF(
+                        regexp_replace(
+                          '{{#fn.default}}{{ incident.alerts.0.fingerprint }}{{/fn.default}}',
+                          '[^0-9A-Fa-f]',
+                          '',
+                          'g'
+                        ),
+                        ''
+                      ) AS fingerprint,
+                      NULLIF('{{ incident.id }}', '')::uuid AS keep_incident_id
+                  ), claimed AS (
+                    INSERT INTO keep_bridge.aurora_dispatches (
+                      fingerprint,
+                      keep_incident_id
+                    )
+                    SELECT fingerprint, keep_incident_id
+                    FROM candidate
+                    WHERE fingerprint IS NOT NULL
+                    ON CONFLICT (fingerprint) DO NOTHING
+                    RETURNING fingerprint
+                  )
+                  SELECT set_config(
+                    'aurora.claimed',
+                    COALESCE((SELECT fingerprint FROM claimed), ''),
+                    false
+                  );
+                  COMMIT;
+                  SELECT current_setting('aurora.claimed', true);
         actions:
           - name: dispatch-rca
+            # Un resultado vacío significa que otra ejecución ya lo reclamó.
+            # No hay retry del webhook: si Aurora aceptó la petición pero se
+            # perdió la respuesta, reintentar aquí volvería a lanzar sus tareas
+            # LLM aunque el incidente de Aurora ya existiera.
+            if: "'{{ steps.claim-dispatch.results.0.0 }}' != ''"
             provider:
               type: webhook
               config: "{{ providers.aurora }}"
@@ -778,7 +835,7 @@ backend:
                   # repr de Python, igual que arriba.
                   alerts:
                     - status: firing
-                      fingerprint: "{{ incident.id }}"
+                      fingerprint: "{{ steps.claim-dispatch.results.0.0 }}"
                       startsAt: "{{ incident.start_time }}"
                       labels:
                         alertname: "{{#fn.na}}{{ incident.user_generated_name }}{{/fn.na}}"
