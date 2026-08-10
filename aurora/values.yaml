@@ -208,9 +208,9 @@ config:
   # sacó del cluster entero (Deployment, pesos y config). Este bloque documenta un
   # intento que ya no se puede repetir: si algún día hace falta un modelo de código
   # para los roles que CONDUCEN el bucle, hay que traer uno nuevo y medirlo bien.
-  MAIN_MODEL: bedrock/tooling
-  SUMMARIZATION_MODEL: bedrock/tooling   # trabajo mecánico al modelo rápido
-  ENRICHMENT_MODEL: bedrock/tooling
+  MAIN_MODEL: bedrock/litellmrouter
+  SUMMARIZATION_MODEL: bedrock/litellmrouter   # trabajo mecánico al modelo rápido
+  ENRICHMENT_MODEL: bedrock/litellmrouter
   AGENT_RECURSION_LIMIT: "240"
 
   # Un agente primero. El orquestador multi-agente se activa cuando los RCA de
@@ -227,7 +227,7 @@ config:
   # `RuntimeError: Provider 'anthropic' is not available for model
   # 'anthropic/claude-opus-4.6'`, y tumbaba el chat del incidente, que es lo que
   # produce el resumen.
-  RCA_MODEL: bedrock/tooling
+  RCA_MODEL: bedrock/litellmrouter
   RCA_OPTIMIZE_COSTS: "false"
 
   # ------------------------------------------------------------------------
@@ -238,7 +238,7 @@ config:
   # ------------------------------------------------------------------------
   GUARDRAILS_ENABLED: "true"
   GUARDRAILS_SIGMA_ENABLED: "true"
-  GUARDRAILS_LLM_MODEL: bedrock/tooling
+  GUARDRAILS_LLM_MODEL: bedrock/litellmrouter
 
   # --- Aislamiento de los comandos de los agentes: DESACTIVADO ---
   #

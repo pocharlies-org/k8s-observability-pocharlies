@@ -253,6 +253,20 @@ backend:
       # nada que parsear y el 400 no puede ocurrir. Telegram autoenlaza la URL
       # igualmente.
       #
+      # `model: litellmrouter`, MEDIDO el 2026-08-10 con un prompt de 5,6 KB y
+      # 300 tokens de salida desde este mismo pod:
+      #
+      #   tooling             >180 s  (timeout)
+      #   router                31,2 s
+      #   litellmrouter         10,5 s   <-- 17x mas rapido que tooling
+      #   qwen36-35b-tooling    13,3 s
+      #
+      # `tooling` no responde en 3 minutos, y de ahi salian los read-timeout de
+      # 60 s del provider. `litellmrouter` hace failover a Ornith, que es lo que
+      # manda usar la regla del proyecto.
+      #
+      # (Lo de abajo era el argumento de cuando esto apuntaba a tooling-ha,
+      # alias retirado el 2026-08-10.)
       # `model: tooling` y no `router`: tooling lleva cadena de fallback
       # (tooling → dense) por el hook `litellm_strip_params` del
       # repo k8s-litellm-pocharlies, así que sobrevive a las rotaciones del
@@ -283,7 +297,7 @@ backend:
               type: litellm
               config: "{{ providers.llm }}"
               with:
-                model: tooling
+                model: litellmrouter
                 temperature: 0.1
                 max_tokens: 400
                 prompt: |
@@ -632,7 +646,7 @@ backend:
               with:
                 # Ver incident-summary: `tooling` lleva cadena de fallback y
                 # NO aparece en /v1/models aunque responde 200.
-                model: tooling
+                model: litellmrouter
                 temperature: 0.1
                 max_tokens: 500
                 prompt: |
