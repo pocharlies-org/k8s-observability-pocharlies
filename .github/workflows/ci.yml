@@ -12,27 +12,22 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  analyzer-tests:
+  k8sgpt-explainer-tests:
     runs-on: arc-k8s
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
-          cache: pip
-          cache-dependency-path: cron-alert-analyzer/requirements.txt
-      - name: Install analyzer dependencies
-        run: python -m pip install -r cron-alert-analyzer/requirements.txt
-      - name: Run analyzer unit tests
-        run: python -m unittest discover -s cron-alert-analyzer/tests -v
+      - name: Run idempotency and budget tests
+        run: python -m unittest discover -s k8sgpt-explainer/tests -v
 
   standard:
-    needs: [analyzer-tests]
+    needs: [k8sgpt-explainer-tests]
     uses: pocharlies-org/k8s-gitops-pocharlies/.github/workflows/reusable-ci.yml@main
     with:
       runner: arc-k8s
       run_node: false
-      run_docker_build: true
+      run_docker_build: false
       kustomize_paths: "."
-      images: '[{"name":"cron-alert-analyzer","context":"cron-alert-analyzer","dockerfile":"cron-alert-analyzer/Dockerfile"}]'
     secrets: inherit

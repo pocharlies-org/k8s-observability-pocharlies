@@ -9,7 +9,6 @@
 #       NO es un total único: es UNA SERIE POR NAMESPACE. `sum()` da el total.
 #   k8sgpt_number_of_results_by_type{k8sgpt, kind, name, object_namespace}
 #       una serie por hallazgo; `name` lleva "<ns>/<recurso>".
-#   k8sgpt_number_of_failed_backend_ai_calls{backend, deployment, k8sgpt, namespace}
 #   k8sgpt_reconcile_error_count{...}
 #
 # Escribirlas de memoria habría repetido el fallo de KeepBackendAbsent: una
@@ -33,31 +32,23 @@ spec:
   groups:
     - name: pocharlies.k8sgpt
       rules:
-        # La más importante de las tres: detecta que k8sgpt se ha quedado ciego.
-        #
-        # El RPC Analyze es todo-o-nada — un 429 o un 5xx de LiteLLM tumba el
-        # ciclo entero y NO se escribe ningún Result. Sin esta alerta, el
-        # síntoma es que los Result dejan de refrescarse en silencio, que es
-        # exactamente lo que pasó en el despliegue inicial con un rpm_limit mal
-        # dimensionado.
-        - alert: K8sGptBackendAiFailing
-          expr: increase(k8sgpt_number_of_failed_backend_ai_calls[15m]) > 0
-          for: 5m
+        # La explicación ya no forma parte del RPC Analyze. Si este worker cae,
+        # la detección continúa pero los Results nuevos quedan sin enriquecer.
+        - alert: K8sGptExplainerUnavailable
+          expr: |
+            kube_deployment_status_replicas_available{
+              namespace="k8sgpt",deployment="k8sgpt-explainer"
+            } < 1
+          for: 15m
           labels:
             severity: warning
             area: aiops
           annotations:
-            summary: "k8sgpt no consigue hablar con el LLM"
+            summary: "El explicador idempotente de k8sgpt no está disponible"
             description: >-
-              El backend {{ $labels.backend }} ha fallado
-              {{ $value | printf "%.0f" }} veces en 15m. El análisis es
-              todo-o-nada: mientras esto ocurra NO se genera ningún Result y el
-              clúster queda sin analizar, aunque el operador siga Running.
-              Causas típicas: la virtual key de LiteLLM ha perdido el alias,
-              rate limit demasiado bajo, o el alias `tooling` sin backend vivo
-              (litellm-dgx-backend-sync lo reescribe según readiness).
-              Diagnóstico -
-              kubectl -n k8sgpt logs deploy/k8sgpt --tail=50 | grep -i "request failed"
+              El scanner determinista sigue funcionando, pero no se explicarán
+              fingerprints nuevos. Comprobar - kubectl -n k8sgpt logs
+              deploy/k8sgpt-explainer --tail=100
 
         # El operador dejó de exponer métricas: o está caído, o el scrape perdió
         # permiso sobre el nonResourceURL /metrics del kube-rbac-proxy (un 403
@@ -95,8 +86,8 @@ spec:
             summary: "Suben mucho los hallazgos de k8sgpt"
             description: >-
               {{ $value | printf "%.0f" }} hallazgos más que hace una hora.
-              Las métricas sólo llevan el CONTEO; el diagnóstico y la solución
-              que escribió el LLM están en los CR Result -
+              Las métricas sólo llevan el CONTEO; las explicaciones nuevas o
+              recuperadas de caché están en los CR Result -
               kubectl -n k8sgpt get results
               y para el detalle -
               kubectl -n k8sgpt get results -o jsonpath='{.items[*].spec.details}'

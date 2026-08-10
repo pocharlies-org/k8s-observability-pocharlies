@@ -24,6 +24,26 @@ El stack Kubernetes debe ser la fuente principal:
 - **Alertas**: VMAlert + VMAlertmanager, con webhook hacia Synapse/OpenClaw.
 - **Estado de servicios**: reglas de disponibilidad de workloads y probes blackbox para ingresses LAN/publicos.
 
+## K8sGPT sin bucles LLM
+
+K8sGPT ejecuta sólo detección determinista cada 15 minutos. Los analyzers de
+`ReplicaSet`, `Service` y `Job` están excluidos porque concentraban unos 2.746
+objetos históricos o ruidosos; el scan conserva Pods, workloads, PVC, nodos y
+webhooks.
+
+La explicación se hace en `k8sgpt-explainer`, separado del RPC `Analyze`:
+
+- observa eventos de `Result` y nunca vuelve a preguntar por un fingerprint visto;
+- si existe una explicación en caché, la restaura sin usar el modelo;
+- procesa una única llamada simultánea, con 1024 tokens y timeout de 180 segundos;
+- limita el gasto a 24 intentos diarios y dos intentos por fingerprint;
+- un fallo afecta sólo a ese Result, no repite ni invalida el lote completo;
+- sólo admite namespaces de producción y su plano operativo, enumerados en
+  `manifests/k8sgpt-explainer.yaml`.
+
+El ConfigMap `k8sgpt-explanation-cache` lo crea el worker y no está gestionado
+por ArgoCD: guarda explicaciones, fingerprints y presupuesto entre rollouts.
+
 ## Pendiente HA
 
 El despliegue actual usa `VMSingle`, suficiente para arrancar visibilidad del cluster

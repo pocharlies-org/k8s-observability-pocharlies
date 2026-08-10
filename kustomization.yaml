@@ -18,6 +18,7 @@ resources:
   - manifests/aurora-kubectl-agent.yaml
   - manifests/k8sgpt-secrets.yaml
   - manifests/k8sgpt-config.yaml
+  - manifests/k8sgpt-explainer.yaml
   - manifests/k8sgpt-scrape.yaml
   - manifests/k8sgpt-rules.yaml
   - manifests/k8sgpt-tolerations-policy.yaml
@@ -63,6 +64,12 @@ configMapGenerator:
     namespace: aurora
     files:
       - brain-kb-memory.md=aurora/brain-kb-memory.md
+  # Código auditable del explicador idempotente. El estado/caché NO se genera
+  # aquí: lo crea el worker para que ArgoCD nunca lo restaure a vacío.
+  - name: k8sgpt-explainer-code
+    namespace: k8sgpt
+    files:
+      - explainer.py=k8sgpt-explainer/explainer.py
 generatorOptions:
   # El Job referencia el nombre literal, sin sufijo de hash. Se recrea en cada
   # sync (hook PostSync + BeforeHookCreation), así que siempre lee la versión

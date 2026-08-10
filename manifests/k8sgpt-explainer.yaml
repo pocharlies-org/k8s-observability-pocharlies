@@ -1,0 +1,166 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: k8sgpt-explainer
+  namespace: k8sgpt
+  annotations:
+    argocd.argoproj.io/sync-wave: "6"
+  labels:
+    app.kubernetes.io/name: k8sgpt-explainer
+    app.kubernetes.io/part-of: observability
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: k8sgpt-explainer
+  namespace: k8sgpt
+  annotations:
+    argocd.argoproj.io/sync-wave: "6"
+rules:
+  - apiGroups: ["core.k8sgpt.ai"]
+    resources: ["results"]
+    verbs: ["get", "list", "watch", "patch"]
+  # The runtime-owned ConfigMap is both the durable explanation cache and the
+  # idempotency/budget ledger. It is deliberately not rendered by GitOps, so a
+  # sync cannot reset it and make old findings look new.
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["k8sgpt-explanation-cache"]
+    verbs: ["get", "patch"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: k8sgpt-explainer
+  namespace: k8sgpt
+  annotations:
+    argocd.argoproj.io/sync-wave: "6"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: k8sgpt-explainer
+subjects:
+  - kind: ServiceAccount
+    name: k8sgpt-explainer
+    namespace: k8sgpt
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: k8sgpt-explainer
+  namespace: k8sgpt
+  annotations:
+    argocd.argoproj.io/sync-wave: "6"
+  labels:
+    app.kubernetes.io/name: k8sgpt-explainer
+    app.kubernetes.io/component: explainer
+    app.kubernetes.io/part-of: observability
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: k8sgpt-explainer
+  template:
+    metadata:
+      annotations:
+        aiops.e-dani.com/code-revision: "1"
+      labels:
+        app.kubernetes.io/name: k8sgpt-explainer
+        app.kubernetes.io/component: explainer
+        app.kubernetes.io/part-of: observability
+    spec:
+      serviceAccountName: k8sgpt-explainer
+      automountServiceAccountToken: true
+      nodeSelector:
+        kubernetes.io/hostname: sauvage
+      containers:
+        - name: explainer
+          image: python:3.13-slim
+          imagePullPolicy: IfNotPresent
+          command: ["python", "/app/explainer.py"]
+          env:
+            - name: RESULT_NAMESPACE
+              value: k8sgpt
+            - name: CACHE_CONFIGMAP
+              value: k8sgpt-explanation-cache
+            # Ámbito LLM, no ámbito RBAC. Sólo producción y su plano operativo.
+            # El escáner determinista conserva visibilidad cluster-wide con una
+            # lista de analyzers mucho menor; ningún namespace fuera de aquí
+            # puede gastar tokens.
+            - name: ALLOWED_NAMESPACES
+              value: >-
+                _cluster,argocd,agentgateway,aurora,backup-hub,cert-manager,
+                databases,document-intake,external-secrets-operator,harbor,
+                k8sgpt,litellm,llm,longhorn-system,minio,monitoring,
+                openclaw-qwen36,openclaw-synapse,skirmshop,
+                skirmshop-brain-prod,skirmshop-product-relations,synapse,
+                traefik-edge,traefik-lan,vault,velero,whatsapp-mcp
+            - name: LITELLM_URL
+              value: http://litellm.litellm.svc.cluster.local:4000/v1/chat/completions
+            - name: LITELLM_MODEL
+              value: agent
+            - name: LITELLM_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: k8sgptsvc-llm
+                  key: litellm-key
+            - name: PROMPT_VERSION
+              value: v1
+            - name: MAX_TOKENS
+              value: "1024"
+            - name: REQUEST_TIMEOUT_SECONDS
+              value: "180"
+            - name: WATCH_TIMEOUT_SECONDS
+              value: "600"
+            # Token budget upper bound: 24 new fingerprints/day * 1024 output
+            # tokens. Failed calls also count. There is no unbounded retry loop.
+            - name: MAX_DAILY_CALLS
+              value: "24"
+            # Initial attempt + one per-fingerprint retry. A failure never
+            # replays the already successful findings in the same scan.
+            - name: MAX_ATTEMPTS
+              value: "2"
+            - name: CACHE_MAX_ENTRIES
+              value: "256"
+          readinessProbe:
+            exec:
+              command:
+                - python
+                - -c
+                - "import os,time,sys; p='/tmp/k8sgpt-explainer-ready'; sys.exit(0 if os.path.exists(p) and time.time()-os.path.getmtime(p)<900 else 1)"
+            initialDelaySeconds: 5
+            periodSeconds: 30
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 10m
+              memory: 48Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65532
+          volumeMounts:
+            - name: code
+              mountPath: /app
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: code
+          configMap:
+            name: k8sgpt-explainer-code
+            defaultMode: 0444
+        - name: tmp
+          emptyDir: {}

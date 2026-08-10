@@ -35,6 +35,11 @@ spec:
   # fija el chart). v0.4.36 es la última estable, 2026-07-10.
   version: v0.4.36
 
+  # Presupuesto temporal real. El default upstream es 30s y el scan medido
+  # tarda ~104s, así que antes el proceso estaba ocupado casi continuamente.
+  analysis:
+    interval: 15m
+
   # El pod de análisis, junto al operador, en sauvage.
   #
   # Este nodeSelector NO es el del chart: aquel fija el controller-manager, y
@@ -49,11 +54,10 @@ spec:
     kubernetes.io/hostname: sauvage
 
   ai:
-    # 2026-08-10: la explicación LLM queda apagada. El operador conserva los
-    # analyzers deterministas y los Result existentes, pero deja de mantener una
-    # llamada de ~104 s casi continua contra LiteLLM cada ~138 s. Reactivarlo
-    # exige una ventana deliberada y una frecuencia acotada; el reconcile
-    # continuo del operador no es un scheduler de coste aceptable.
+    # La IA integrada queda apagada de forma deliberada. En v0.4.36/v0.2.27 no
+    # se puede configurar maxConcurrency desde el CR y GetAIResults aborta todo
+    # el Analyze al primer fallo. `k8sgpt-explainer` hace el enriquecimiento por
+    # Result nuevo, con caché persistente, concurrencia 1 y fallo aislado.
     enabled: false
 
     # `openai` es el backend genérico "API compatible con OpenAI", y con
@@ -113,90 +117,37 @@ spec:
 
     language: spanish
 
-    # Techo por respuesta. 2048 da para diagnóstico + pasos de arreglo sin que
-    # una explicación desbocada ocupe la GPU compartida.
-    maxTokens: "2048"
+    # Techo compartido con el explicador externo. Se conserva aquí para que una
+    # activación accidental de la IA upstream tampoco vuelva a 2048.
+    maxTokens: "1024"
 
-    # IMPRESCINDIBLE, y aprendido a base de fallo en el primer despliegue.
-    #
-    # k8sgpt manda las explicaciones con max_concurrency=10, y el RPC `Analyze`
-    # es TODO O NADA: si una sola llamada devuelve 429, se cae la analítica
-    # entera y NO se escribe ni un Result. No degrada, desaparece.
-    #
-    # Observado tal cual con un rpm_limit de 30 en la virtual key:
-    #   "exhausted API quota ... Current limit: 30, Remaining: 0"
-    #   -> 0 Results durante 4 minutos, con el operador reintentando en bucle.
-    #
-    # Con backOff, un 429 se reintenta con espera en vez de matar el ciclo. Es
-    # lo que convierte el límite de LiteLLM en un regulador (frena) en lugar de
-    # un interruptor (corta).
+    # Sin retry del lote upstream. El explicador externo registra el fallo por
+    # fingerprint y permite sólo un reintento de ESE hallazgo tras 15 minutos.
     backOff:
-      enabled: true
-      maxRetries: 5
+      enabled: false
+      maxRetries: 0
 
-  # Caché ACTIVADA (noCache: false). El mismo hallazgo repetido entre scans no
-  # vuelve a pagar una llamada al LLM.
+  # También queda activa la caché nativa como defensa en profundidad. La caché
+  # autoritativa es `k8sgpt-explanation-cache`, gestionada por el explicador y
+  # persistente entre rollouts del pod analyzer (su caché local es un emptyDir).
   noCache: false
 
-  # `filters` ES UNA LISTA BLANCA, NO UNA LISTA NEGRA.
+  # `filters` es lista blanca. El scan continúa cluster-wide porque esta versión
+  # sólo admite UN targetNamespace; crear un analyzer por namespace multiplicaría
+  # pods y memoria. En su lugar se han retirado los tres analyzers de alto volumen:
   #
-  # Verificado en pkg/analysis/analysis.go (RunAnalysis): con `filters` no vacío
-  # sólo se ejecutan los analyzers enumerados; con la lista vacía corren los 14
-  # de core. Por eso para quitar TRES hay que escribir los ONCE que se quedan.
-  # Escribir aquí los que quieres excluir apagaría todo lo demás en silencio.
+  # - ReplicaSet: 2.077 objetos derivados/históricos.
+  # - Service: 349 objetos y muchos falsos positivos procedentes de Events Kyverno.
+  # - Job: 320 objetos históricos, duplicados además por su Pod fallido.
   #
-  # SIN `targetNamespace`: el análisis sigue siendo de todo el clúster.
-  #
-  # ---------------------------------------------------------------------------
-  # POR QUÉ FALTAN ConfigMap, CronJob E Ingress
-  #
-  # Se arrancó a propósito sin filtros para MEDIR en vez de suponer. Medido sobre
-  # 261 hallazgos reales del clúster, los tres tenían 100% de falsos positivos y
-  # sumaban ~200 (77% del total):
-  #
-  #   ConfigMap (178) — 90 son "ConfigMap kube-root-ca.crt is not used by any
-  #     pods", y la solución que redacta el LLM es literalmente
-  #     `kubectl delete configmap kube-root-ca.crt -n <ns>`. Es FALSO y
-  #     destructivo: lo publica Kubernetes en CADA namespace vía el controlador
-  #     root-ca-cert-publisher (comprobado: 90 namespaces, 90 copias), lleva el
-  #     CA bundle del kube-apiserver y se recrea solo. El analyzer no ve
-  #     referencias porque los pods lo consumen por proyección del
-  #     ServiceAccount, no como volumen configMap. Los otros 85 son el mismo
-  #     heurístico "no usado", igual de flojo: un ConfigMap puede consumirlo un
-  #     operador, un CRD, ArgoCD o un dashboard por label sin montarlo nunca.
-  #
-  #   CronJob (16) — los 16 son "CronJob is suspended". El clúster tiene
-  #     exactamente 16 CronJobs suspendidos y suspenderlos fue deliberado (los
-  #     de autoheal de Synapse, entre otros). Marcar una decisión como error.
-  #
-  #   Ingress (6) — los 6 dicen que la IngressClass no existe. Existe:
-  #     `ha-dashboard` declara `ingressClassName: traefik-lan` y traefik-lan está
-  #     registrada y además es la default. Falso positivo puro.
-  #
-  # Lo que se queda ya ha demostrado valor en este clúster: Job (backups
-  # semanales y retención de clickhouse fallando de verdad), Pod (readiness de
-  # litellm contra el 4000, backups S3 de synapse con exit 5), StatefulSet
-  # (minio declara `serviceName: minio` y los services son minio-s3 y
-  # minio-console — real), Service (17 de 40 son "no endpoints" legítimos).
-  #
-  # OJO con Service: los otros 23 no son problemas de endpoints, son EVENTOS de
-  # Kyverno (require-resource-limits, restrict-image-registries) que el analyzer
-  # recoge del objeto y el LLM narra como si fueran el fallo del Service — de ahí
-  # salían diagnósticos de "falta límite de memoria" en un Service, que no
-  # encajan. Se mantiene porque los 17 buenos compensan, pero si algún día
-  # molesta, ésa es la causa y no un fallo del analyzer.
-  #
-  # PersistentVolumeClaim y Node hoy dan cero hallazgos. Se quedan porque no
-  # cuestan nada: un analyzer sólo gasta LLM cuando encuentra algo.
-  # ---------------------------------------------------------------------------
+  # El universo recorrido baja de ~3.922 a ~1.176 objetos (aprox. -70%). La IA
+  # sólo acepta Results de los namespaces de producción y su plano operativo,
+  # definidos explícitamente en manifests/k8sgpt-explainer.yaml.
   filters:
     - Pod
     - Deployment
-    - ReplicaSet
     - DaemonSet
     - StatefulSet
-    - Service
-    - Job
     - PersistentVolumeClaim
     - Node
     - ValidatingWebhookConfiguration
