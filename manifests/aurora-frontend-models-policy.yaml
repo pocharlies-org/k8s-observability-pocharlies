@@ -19,6 +19,19 @@
 #     revertiría en bucle. Los Pods no los trackea, así que se muta el Pod.
 #   - Forkear la imagen: mantener un build propio por 4 literales es peor.
 #
+# 2026-08-10 — SE RETIRA `qwen36-35b` DEL SELECTOR. Era uno de los nueve alias del
+# RESIDENTE de tooling, así que lo servía quien estuviera Ready (hoy
+# DeepSeek-V4-Flash-0731) mientras el desplegable decía "Qwen3.6 35B (DGX)". Y
+# además duplicaba a `tooling-ha`, que ya está en la primera entrada: dos opciones
+# visibles, el mismo backend, y una con nombre de otro modelo. En su hueco va
+# `agentic-ha`, que sí es una cadena distinta (qwen3-coder primero, luego el
+# residente, luego dense) y por tanto una opción de verdad.
+#
+# Los `contextLength` de aquí siguen escritos a mano, pero desde el 2026-08-10 ya
+# tienen fuente única: LiteLLM publica `max_input_tokens` de verdad en
+# /v1/model/info (antes lo declaraba como `context_window`, que no es un campo de
+# litellm y no lo leía nadie — de ahí que hubiera que hardcodearlos aquí).
+#
 # El postStart reescribe el catálogo con aliases LiteLLM vivos (verificados
 # contra /v1/chat/completions con la key de Aurora) y añade además:
 # las tres variantes GPT-5.6 (sol/terra/luna), que NO corren en el DGX — sale a chatgpt.com por el
@@ -104,7 +117,7 @@ spec:
                             ],
                             [
                               '{id:"anthropic/claude-opus-4.7",name:"claude-opus-4.7",displayName:"Claude Opus 4.7",provider:"Anthropic",tier:"premium",contextLength:"1M",hasReasoning:!0,isSlow:!0}',
-                              '{id:"bedrock/qwen36-35b",name:"qwen36-35b",displayName:"Qwen3.6 35B (DGX)",provider:"LiteLLM",tier:"premium",contextLength:"256K",hasReasoning:!0}',
+                              '{id:"bedrock/agentic-ha",name:"agentic-ha",displayName:"Agentic DGX (coder-first)",provider:"LiteLLM",tier:"premium",contextLength:"256K",hasReasoning:!0}',
                             ],
                             [
                               '{id:"google/gemini-3.1-pro-preview",name:"gemini-3.1-pro-preview",displayName:"Gemini 3.1 Pro",provider:"Google",tier:"pro",contextLength:"1M",hasReasoning:!0}',
