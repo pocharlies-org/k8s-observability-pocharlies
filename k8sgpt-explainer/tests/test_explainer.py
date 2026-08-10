@@ -96,6 +96,19 @@ class FingerprintTests(unittest.TestCase):
         self.assertEqual(explainer.result_namespace(sample_result()), "skirmshop")
         self.assertEqual(explainer.result_namespace(sample_result(name="node-1")), "_cluster")
 
+    def test_worker_namespace_is_always_out_of_scope(self):
+        kube = FakeKube()
+        store = FakeStore()
+        llm = FakeLLM()
+        worker = explainer.Explainer(
+            kube,
+            store,
+            llm,
+            settings(allowed_namespaces=frozenset({"k8sgpt", "skirmshop"})),
+        )
+        self.assertFalse(worker.in_scope(sample_result(name="k8sgpt/explainer")))
+        self.assertTrue(worker.in_scope(sample_result(name="skirmshop/api")))
+
 
 class IdempotencyTests(unittest.TestCase):
     NOW = dt.datetime(2026, 8, 10, 20, 0, tzinfo=dt.timezone.utc)

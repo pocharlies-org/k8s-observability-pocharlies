@@ -363,7 +363,14 @@ class Explainer:
         self.settings = settings
 
     def in_scope(self, result: dict[str, Any]) -> bool:
-        return result_namespace(result) in self.settings.allowed_namespaces
+        source_namespace = result_namespace(result)
+        # Never let the explainer explain its own namespace. A rollout can
+        # transiently produce a K8sGPT finding for this Deployment while it has
+        # zero available replicas; accepting that event would create a feedback
+        # edge from the worker to itself.
+        if source_namespace == self.settings.namespace:
+            return False
+        return source_namespace in self.settings.allowed_namespaces
 
     def patch_success(self, result: dict[str, Any], fingerprint: str, explanation: str) -> None:
         name = result["metadata"]["name"]

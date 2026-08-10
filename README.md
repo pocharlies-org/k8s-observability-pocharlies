@@ -40,6 +40,8 @@ La explicación se hace en `k8sgpt-explainer`, separado del RPC `Analyze`:
 - un fallo afecta sólo a ese Result, no repite ni invalida el lote completo;
 - sólo admite namespaces de producción y su plano operativo, enumerados en
   `manifests/k8sgpt-explainer.yaml`.
+- excluye siempre su propio namespace `k8sgpt` para que un rollout transitorio
+  no cree una autorreferencia de explicación.
 
 El ConfigMap `k8sgpt-explanation-cache` lo crea el worker y no está gestionado
 por ArgoCD: guarda explicaciones, fingerprints y presupuesto entre rollouts.

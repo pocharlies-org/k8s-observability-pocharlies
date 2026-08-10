@@ -68,7 +68,7 @@ spec:
   template:
     metadata:
       annotations:
-        aiops.e-dani.com/code-revision: "1"
+        aiops.e-dani.com/code-revision: "2"
       labels:
         app.kubernetes.io/name: k8sgpt-explainer
         app.kubernetes.io/component: explainer
@@ -96,7 +96,7 @@ spec:
               value: >-
                 _cluster,argocd,agentgateway,aurora,backup-hub,cert-manager,
                 databases,document-intake,external-secrets-operator,harbor,
-                k8sgpt,litellm,llm,longhorn-system,minio,monitoring,
+                litellm,llm,longhorn-system,minio,monitoring,
                 openclaw-qwen36,openclaw-synapse,skirmshop,
                 skirmshop-brain-prod,skirmshop-product-relations,synapse,
                 traefik-edge,traefik-lan,vault,velero,whatsapp-mcp
