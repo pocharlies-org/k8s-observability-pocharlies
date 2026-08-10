@@ -192,24 +192,22 @@ config:
   # modo que el hook no ve: alias registrado pero sin deployment sano. Son dos
   # modos de fallo con dos errores distintos y hacen falta las dos capas.
   # LOS CINCO ROLES A `tooling`. Hubo un intento (2026-08-05) de mandar los que
-  # CONDUCEN el bucle — MAIN_MODEL y RCA_MODEL — a `coder-ha`, porque la batería de
-  # opencode de k8s-litellm-pocharlies mide qwen3-coder en 11/14 tareas frente a
-  # 0-1/14 de Ornith, el 27B denso y el NVIDIA-Qwen3.6 bajo un system prompt de
-  # ~9.3k tokens, y Aurora es LangGraph con 30+ tools.
+  # CONDUCEN el bucle — MAIN_MODEL y RCA_MODEL — a un alias del Qwen3-Coder, porque
+  # Aurora es LangGraph con 30+ tools y parecía el modelo indicado.
   #
-  # REVERTIDO EL MISMO DÍA, y el motivo es de capacidad, no de calidad:
-  # qwen3-coder vive en el SEGUNDO slot time-sliced de DGX2 y ese slot está
-  # disputado. Estuvo 1/1 a las 07:47 y a las 08:05:39 el sync ya lo había
-  # desregistrado («disabled backend dgx2-qwen3coder-30b-a3b-nvfp4-coder»). Apuntar
-  # la config a un modelo que no está la mayor parte del tiempo es mentir sobre lo
-  # que corre: la cadena degradaba a `tooling` igualmente, así que el efecto real
-  # era cero y la config engañosa.
+  # REVERTIDO EL MISMO DÍA por capacidad: vivía en el SEGUNDO slot time-sliced de
+  # DGX2 y ese slot estaba disputado. Estuvo 1/1 a las 07:47 y a las 08:05:39 el sync
+  # ya lo había desregistrado. Apuntar la config a un modelo que no está la mayor
+  # parte del tiempo es mentir sobre lo que corre: la cadena degradaba a `tooling`
+  # igualmente, así que el efecto real era cero y la config engañosa.
   #
-  # 2026-08-10: ni `coder-ha` ni `qwen3-coder` existen ya. Se retiraron todos los
-  # alias -ha, y el propio Qwen3-Coder se saco del cluster entero (Deployment, pesos
-  # y config) por decisión del owner. Así que este bloque documenta un intento que
-  # ya no se puede repetir: si algún día hace falta un modelo de código para los
-  # roles que CONDUCEN el bucle, hay que traer uno nuevo.
+  # La medida que se citaba entonces para justificarlo — un test de opencode — está
+  # DESCARTADA por mala (owner, 2026-08-10), así que ya no se cita aquí.
+  #
+  # 2026-08-10: ni los alias -ha ni el propio Qwen3-Coder existen ya; el modelo se
+  # sacó del cluster entero (Deployment, pesos y config). Este bloque documenta un
+  # intento que ya no se puede repetir: si algún día hace falta un modelo de código
+  # para los roles que CONDUCEN el bucle, hay que traer uno nuevo y medirlo bien.
   MAIN_MODEL: bedrock/tooling
   SUMMARIZATION_MODEL: bedrock/tooling   # trabajo mecánico al modelo rápido
   ENRICHMENT_MODEL: bedrock/tooling
