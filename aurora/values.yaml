@@ -211,7 +211,9 @@ config:
   MAIN_MODEL: bedrock/litellmrouter
   SUMMARIZATION_MODEL: bedrock/litellmrouter   # trabajo mecánico al modelo rápido
   ENRICHMENT_MODEL: bedrock/litellmrouter
-  AGENT_RECURSION_LIMIT: "240"
+  # Corta cualquier RCA que empiece a repetir herramientas. El valor anterior
+  # (240) permitió investigaciones de 30+ llamadas y prompts de hasta 95k.
+  AGENT_RECURSION_LIMIT: "12"
 
   # Un agente primero. El orquestador multi-agente se activa cuando los RCA de
   # un solo agente demuestren ser buenos: con modelo local, el riesgo es que el

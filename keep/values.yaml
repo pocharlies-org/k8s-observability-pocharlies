@@ -277,6 +277,9 @@ backend:
       # ---------------------------------------------------------------------
       - id: incident-summary
         name: Telegram — resumen LLM del incidente
+        # 2026-08-10: desactivado en GitOps tras el bucle Keep → Aurora → LLM.
+        # Los avisos Telegram sin LLM siguen activos en los workflows anteriores.
+        disabled: true
         description: >-
           Segundo mensaje con el resumen del LLM local. Va aparte del aviso a
           propósito: si el LLM falla se pierde el resumen, nunca el aviso.
@@ -489,6 +492,9 @@ backend:
       # ---------------------------------------------------------------------
       - id: aurora-report-back
         name: Aurora — análisis de vuelta al grupo
+        # 2026-08-10: desactivado en GitOps. Se conserva para poder revisarlo y
+        # reactivarlo de forma deliberada, no como efecto de un restart de Keep.
+        disabled: true
         description: >-
           Cada pasada coge UN incidente analizado por Aurora, escribe su RCA
           con el LLM local a partir de la evidencia real que dejó el agente en
@@ -631,11 +637,10 @@ backend:
           # las alertas frescas siguen saliendo. Con ASC bloquearía la cola
           # entera para siempre. Es degradación acotada en vez de parada total.
           #
-          # Este step también corre cuando no hay incidente pendiente: los
-          # `condition` de Keep se evalúan DESPUÉS de ejecutar el provider
-          # (step.py:132), así que no sirven para ahorrarse la llamada. Es una
-          # llamada corta a un modelo local cada pasada; se asume.
+          # `if` se evalúa antes de ejecutar el provider. Sin este guard, Keep
+          # llamaba al LLM cada cinco minutos incluso sin RCA pendiente.
           - name: llm-rca
+            if: "'{{ steps.rca-datos.results.0.0 }}' != ''"
             on-failure:
               retry:
                 count: 2
@@ -725,6 +730,9 @@ backend:
       # ruidoso y localizado, no un silencio.
       - id: aurora-investigate
         name: Investigación en Aurora
+        # 2026-08-10: desactivado en GitOps tras generar cientos de RCA sobre
+        # incidentes repetidos. La ingesta y las notificaciones sin LLM continúan.
+        disabled: true
         description: >-
           Manda cada incidente nuevo a Aurora, que lanza agentes read-only sobre
           el clúster y produce un RCA.
