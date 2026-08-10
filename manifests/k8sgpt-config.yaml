@@ -77,7 +77,7 @@ spec:
     # justo lo que pasa al rotar.
     #
     # `tooling` lo resuelve el hook litellm_strip_params (repo
-    # k8s-litellm-pocharlies) con la cadena tooling -> dense -> qwen3-coder,
+    # k8s-litellm-pocharlies) con la cadena tooling -> dense,
     # verificando cada salto. NO lo busques en /v1/models: no es un deployment
     # registrado, funciona porque el hook corre en pre_call_hook. Es el mismo
     # alias al que se pasó Aurora tras romperse a mitad de un incidente real.

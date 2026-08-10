@@ -254,7 +254,7 @@ backend:
       # igualmente.
       #
       # `model: tooling` y no `router`: tooling lleva cadena de fallback
-      # (tooling → dense → qwen3-coder) por el hook `litellm_strip_params` del
+      # (tooling → dense) por el hook `litellm_strip_params` del
       # repo k8s-litellm-pocharlies, así que sobrevive a las rotaciones del
       # backend-sync que provocaron los 34 errores de conexión. OJO: tooling
       # NO aparece en /v1/models y aun así responde 200 — comprobado el

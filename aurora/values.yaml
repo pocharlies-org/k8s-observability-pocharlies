@@ -173,7 +173,7 @@ config:
   # `tooling` = «el residente de tooling, y si no está, algo vivo». Del 2026-08-05
   # al 2026-08-10 esto fue un alias aparte, `tooling-ha`, con el argumento de que
   # degradar `tooling` falsearía las mediciones. Se retiró: las mediciones se hacen
-  # contra nombres de MODELO (`ornith-1.0`, `qwen3-coder`, `qwen36-35b-nvfp4`), que
+  # contra nombres de MODELO (`ornith-1.0`, `qwen36-35b-nvfp4`, `dense-uncensored`), que
   # siguen sin degradar, y TODO el que pedía `tooling` quería «vivo» — eran dos
   # nombres para una intención, y el que no llevaba sufijo era la trampa.
   #
@@ -205,10 +205,11 @@ config:
   # que corre: la cadena degradaba a `tooling` igualmente, así que el efecto real
   # era cero y la config engañosa.
   #
-  # 2026-08-10: `coder-ha` YA NO EXISTE (se retiraron todos los alias -ha). Si algún
-  # día el coder se vuelve residente estable, aquí se pone `qwen3-coder` a pelo:
-  # es un nombre de modelo, así que dará 400 cuando no esté en vez de degradar en
-  # silencio, y eso es lo que quieres para saber que dejó de estar.
+  # 2026-08-10: ni `coder-ha` ni `qwen3-coder` existen ya. Se retiraron todos los
+  # alias -ha, y el propio Qwen3-Coder se saco del cluster entero (Deployment, pesos
+  # y config) por decisión del owner. Así que este bloque documenta un intento que
+  # ya no se puede repetir: si algún día hace falta un modelo de código para los
+  # roles que CONDUCEN el bucle, hay que traer uno nuevo.
   MAIN_MODEL: bedrock/tooling
   SUMMARIZATION_MODEL: bedrock/tooling   # trabajo mecánico al modelo rápido
   ENRICHMENT_MODEL: bedrock/tooling

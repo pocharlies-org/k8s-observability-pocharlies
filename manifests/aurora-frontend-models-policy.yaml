@@ -24,10 +24,11 @@
 # DeepSeek-V4-Flash-0731) mientras el desplegable decía "Qwen3.6 35B (DGX)". Y
 # además duplicaba a `tooling`, que ya está en la primera entrada: dos opciones
 # visibles, el mismo backend, y una con nombre de otro modelo. En su hueco va
-# `qwen3-coder`, que es el único modelo de verdad DISTINTO del residente. Al ser un
-# nombre de MODELO y no de capacidad, da 400 cuando su deployment no está (perfil
-# `deepseek-v4-flash`, donde DeepSeek ocupa los dos Sparks) — y eso es lo honesto:
-# los nombres de modelo no degradan, los de capacidad sí.
+# `dense`, el 27B de DGX2: otro nodo y otro backend, así que es una opción de verdad.
+# (Estuvo unas horas apuntando a `qwen3-coder`, pero ese modelo se retiró del cluster
+# entero el mismo día por decisión del owner.) Al ser un nombre de MODELO y no de
+# capacidad, da 400 cuando su deployment no está — y eso es lo honesto: los nombres
+# de modelo no degradan, los de capacidad sí.
 #
 # Los `contextLength` de aquí siguen escritos a mano, pero desde el 2026-08-10 ya
 # tienen fuente única: LiteLLM publica `max_input_tokens` de verdad en
@@ -119,7 +120,7 @@ spec:
                             ],
                             [
                               '{id:"anthropic/claude-opus-4.7",name:"claude-opus-4.7",displayName:"Claude Opus 4.7",provider:"Anthropic",tier:"premium",contextLength:"1M",hasReasoning:!0,isSlow:!0}',
-                              '{id:"bedrock/qwen3-coder",name:"qwen3-coder",displayName:"Qwen3-Coder 30B (DGX2)",provider:"LiteLLM",tier:"premium",contextLength:"256K",hasReasoning:!0}',
+                              '{id:"bedrock/dense",name:"dense",displayName:"Qwen3.6 27B Dense (DGX2)",provider:"LiteLLM",tier:"premium",contextLength:"224K",hasReasoning:!0}',
                             ],
                             [
                               '{id:"google/gemini-3.1-pro-preview",name:"gemini-3.1-pro-preview",displayName:"Gemini 3.1 Pro",provider:"Google",tier:"pro",contextLength:"1M",hasReasoning:!0}',
