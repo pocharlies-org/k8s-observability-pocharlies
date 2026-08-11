@@ -829,7 +829,9 @@ spec:
 apiVersion: operator.victoriametrics.com/v1beta1
 kind: VMRule
 metadata:
-  name: pocharlies-sii-cronjobs
+  # Keep the historical object name: ArgoCD has prune=false, so renaming this
+  # VMRule would leave the old monthly-only rule active as an orphan.
+  name: pocharlies-sii-monthly-report
   namespace: monitoring
 spec:
   groups:
