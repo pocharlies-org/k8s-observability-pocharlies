@@ -239,7 +239,7 @@ rules:
         name.startsWith("LibrePlay") || name.startsWith("TrackingIngestion") ||
         name == "TrackingPage404Spike" || name.startsWith("Labels") ||
         name.startsWith("LabelGeneration") || name.startsWith("MCP") ||
-        name.startsWith("OVHPVCHub") || name.startsWith("SiiMonthlyReport") ||
+        name.startsWith("OVHPVCHub") || name.startsWith("Sii") ||
         name.startsWith("Synapse") ||
         name.startsWith("Rabbitmq") || name.startsWith("Keep") ||
         name.startsWith("Alertmanager") || name.startsWith("SharedValkey") ||
@@ -615,17 +615,17 @@ rules:
     incidentNameTemplate: "OVH PVC hub desincronizado"
     groupDescription: Sincronización y frescura del hub de PVCs de OVH.
 
-  - ruleName: sii-report
-    celQuery: 'name.startsWith("SiiMonthlyReport")'
+  - ruleName: sii-cronjobs
+    celQuery: 'name.startsWith("Sii")'
     sqlQuery:
       sql: "((name like :name_1))"
       params:
-        name_1: SiiMonthlyReport%
+        name_1: Sii%
     timeframeInSeconds: 3600
     timeUnit: minutes
     groupingCriteria: []
     createOn: any
     resolveOn: all_resolved
     incidentPrefix: SII
-    incidentNameTemplate: "Informe mensual SII fallido"
-    groupDescription: Generación del informe mensual del SII.
+    incidentNameTemplate: "CronJobs fiscales SII degradados"
+    groupDescription: Facturación diaria e informe fiscal mensual del SII.
