@@ -829,48 +829,153 @@ spec:
 apiVersion: operator.victoriametrics.com/v1beta1
 kind: VMRule
 metadata:
-  name: pocharlies-sii-monthly-report
+  name: pocharlies-sii-cronjobs
   namespace: monitoring
 spec:
   groups:
-    - name: pocharlies.sii-monthly-report
+    - name: pocharlies.sii-cronjobs
       rules:
-        # The monthly SII fiscal report (CronJob skirmshop/sii-monthly-report,
-        # schedule "10 1 1 * *") pushes gauges to VictoriaMetrics under
-        # job="sii_monthly_report". Since shopify-sii-app v1.13.6 the Telegram
-        # post is NON-FATAL: a dead forum topic no longer fails the Job (exit 0),
-        # so the generic K8sCronJobFailed (kube_job_failed based) can no longer
-        # catch it. These two alerts watch the pushed metric instead.
-        #
-        # Metrics are pushed once/run (monthly) and go stale for instant queries
-        # within minutes, so both exprs use last_over_time() over a multi-month
-        # window to read the last sample regardless of staleness. The success
-        # gauge is step-less (v1.13.7) so ==0 has exactly one series to match.
+        # Kubernetes is authoritative for whether each CronJob completed. The
+        # application metrics add the functional result, but can disappear: the
+        # monthly metric was absent in VictoriaMetrics even though Kubernetes
+        # recorded a successful run on 2026-08-01. Never use an application
+        # metric as the only heartbeat for these fiscal jobs.
+        - alert: SiiInvoicingCronStale
+          # Daily at 01:00 Europe/Madrid. 27h leaves two hours even across the
+          # 25-hour autumn DST interval, including the 30-minute Job deadline.
+          expr: |
+            (
+              time() - max by (namespace, cronjob) (
+                kube_cronjob_status_last_successful_time{
+                  namespace="skirmshop", cronjob="sii-invoicing"
+                }
+              ) > 27 * 3600
+            )
+            or
+            absent(kube_cronjob_status_last_successful_time{
+              namespace="skirmshop", cronjob="sii-invoicing"
+            })
+          for: 15m
+          labels:
+            severity: critical
+            area: fiscal
+            domain: crons
+            component: shopify-sii
+          annotations:
+            summary: "SII daily invoicing CronJob has no recent successful run"
+            description: "CronJob skirmshop/sii-invoicing has no Kubernetes success in over 27 hours, or its status metric is absent. It should run daily at 01:00 Europe/Madrid. Check `kubectl -n skirmshop get cronjob sii-invoicing` and the newest Job/pod logs."
+        - alert: SiiInvoicingTelemetryMissing
+          # Only fires while Kubernetes still proves a recent successful run;
+          # once that run is stale, SiiInvoicingCronStale takes over.
+          expr: |
+            absent_over_time(sii_invoicing_last_run_timestamp{
+              job="sii_invoicing"
+            }[27h])
+            and on()
+            (
+              time() - max by (namespace, cronjob) (
+                kube_cronjob_status_last_successful_time{
+                  namespace="skirmshop", cronjob="sii-invoicing"
+                }
+              ) < 27 * 3600
+            )
+          for: 15m
+          labels:
+            severity: warning
+            area: fiscal
+            domain: crons
+            component: shopify-sii
+          annotations:
+            summary: "SII daily invoicing completed but emitted no run telemetry"
+            description: "Kubernetes records a recent successful sii-invoicing Job, but VictoriaMetrics has no sii_invoicing_last_run_timestamp sample in 27 hours. The fiscal work may have completed, but functional alerting is blind. Check the Job logs and the VictoriaMetrics import request."
+        - alert: SiiInvoicingFunctionalFailure
+          # Fatal exceptions already fail the Job and are covered by
+          # K8sCronJobFailed. This catches non-fatal fiscal degradation that can
+          # coexist with exit 0: reconciliation errors or blocked submissions.
+          expr: |
+            (
+              last_over_time(sii_invoicing_last_success{
+                job="sii_invoicing", step="reconcile"
+              }[27h]) == 0
+            )
+            or
+            (
+              last_over_time(sii_invoicing_invoices_failed{
+                job="sii_invoicing"
+              }[27h]) > 0
+            )
+            or
+            (
+              last_over_time(sii_invoicing_invoices_blocked{
+                job="sii_invoicing"
+              }[27h]) > 0
+            )
+          for: 15m
+          labels:
+            severity: warning
+            area: fiscal
+            domain: crons
+            component: shopify-sii
+          annotations:
+            summary: "SII daily invoicing reported a functional failure"
+            description: "The last daily SII run reported a reconciliation error, failed AEAT submission or invoice blocked before AEAT. Inspect `kubectl -n skirmshop logs job/<latest-sii-invoicing-job>` and resolve the affected invoice before the next filing cycle."
         - alert: SiiMonthlyReportFailed
-          # Last completed run reported failure (success=0). Usually the
-          # non-fatal Telegram post (Excel + gestoría Gmail draft still created),
-          # but any earlier fatal step (config/archive/draft) also lands here.
           expr: last_over_time(sii_monthly_report_last_success{job="sii_monthly_report"}[40d]) == 0
           for: 15m
           labels:
             severity: warning
             area: fiscal
             domain: crons
+            component: shopify-sii
           annotations:
             summary: "SII monthly fiscal report last run failed"
             description: "sii_monthly_report_last_success=0 for the last run of CronJob skirmshop/sii-monthly-report. The fiscal artifacts (Excel + gestoría Gmail draft) are preserved by design; the failing step (most often the Telegram post to a missing forum topic) is in `kubectl -n skirmshop logs job/<sii-monthly-report-...>`. Fix the forum topic / SII_REPORT_TELEGRAM_THREAD_ID in secret sii-secrets and re-run."
-        - alert: SiiMonthlyReportMissing
-          # The cron has not produced a run in >32 days (a monthly cycle was
-          # skipped): the gestoría gets no monthly fiscal Excel — compliance gap.
-          expr: (time() - last_over_time(sii_monthly_report_last_run_timestamp{job="sii_monthly_report"}[90d])) > 32 * 24 * 3600
+        - alert: SiiMonthlyReportTelemetryMissing
+          # The app metric is best-effort. Alert on its absence only while the
+          # Kubernetes status proves the monthly Job itself ran recently.
+          expr: |
+            absent_over_time(sii_monthly_report_last_run_timestamp{
+              job="sii_monthly_report"
+            }[40d])
+            and on()
+            (
+              time() - max by (namespace, cronjob) (
+                kube_cronjob_status_last_successful_time{
+                  namespace="skirmshop", cronjob="sii-monthly-report"
+                }
+              ) < 32 * 24 * 3600
+            )
+          for: 15m
+          labels:
+            severity: warning
+            area: fiscal
+            domain: crons
+            component: shopify-sii
+          annotations:
+            summary: "SII monthly report completed but emitted no run telemetry"
+            description: "Kubernetes records a recent successful sii-monthly-report Job, but VictoriaMetrics has no sii_monthly_report_last_run_timestamp sample in 40 days. This hides non-fatal Telegram/report failures. Check the next Job logs and the VictoriaMetrics import request."
+        - alert: SiiMonthlyReportCronStale
+          expr: |
+            (
+              time() - max by (namespace, cronjob) (
+                kube_cronjob_status_last_successful_time{
+                  namespace="skirmshop", cronjob="sii-monthly-report"
+                }
+              ) > 32 * 24 * 3600
+            )
+            or
+            absent(kube_cronjob_status_last_successful_time{
+              namespace="skirmshop", cronjob="sii-monthly-report"
+            })
           for: 30m
           labels:
             severity: critical
             area: fiscal
             domain: crons
+            component: shopify-sii
           annotations:
             summary: "SII monthly fiscal report has not run in over 32 days"
-            description: "No sii_monthly_report run recorded in >32 days — CronJob skirmshop/sii-monthly-report (schedule '10 1 1 * *') likely did not fire. The monthly fiscal report + gestoría draft to Talenom is missing. Check the CronJob (suspend/schedule/image pull) and run it manually if a cycle was skipped."
+            description: "CronJob skirmshop/sii-monthly-report has no Kubernetes success in over 32 days, or its status metric is absent. It should run at 01:10 Europe/Madrid on day 1. The fiscal Excel and gestoría draft may be missing; inspect the CronJob and latest Job immediately."
 ---
 # affiliate.skirmshop.es (Shopify embedded app): affiliate portal/API + the
 # go.skirmshop.es/r/* link redirects (revenue path), single pod on the edge node.
