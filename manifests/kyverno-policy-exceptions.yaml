@@ -32,4 +32,10 @@ spec:
           names:
             - dgx-gpu-mem-exporter
             - dgx-node-exporter-cpu
+      - resources:
+          kinds:
+            - Deployment
+          namespaces:
+            - monitoring
+          names:
             - opencode-node-ops
