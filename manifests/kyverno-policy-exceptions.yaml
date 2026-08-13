@@ -5,7 +5,7 @@ metadata:
   name: monitoring-privileged-node-exporters
   namespace: monitoring
   annotations:
-    sre.edani.com/reason: "The DGX node exporter needs host namespace access for read-only systemd, journal and inventory probes."
+    sre.edani.com/reason: "DGX node exporters need host namespace access for read-only probes; opencode-node-ops uses it for one authenticated fixed service restart on ubuntu."
 spec:
   background: true
   exceptions:
@@ -23,6 +23,7 @@ spec:
           names:
             - dgx-gpu-mem-exporter-*
             - dgx-node-exporter-cpu-*
+            - opencode-node-ops-*
       - resources:
           kinds:
             - DaemonSet
@@ -31,3 +32,4 @@ spec:
           names:
             - dgx-gpu-mem-exporter
             - dgx-node-exporter-cpu
+            - opencode-node-ops

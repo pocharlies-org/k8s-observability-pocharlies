@@ -217,3 +217,99 @@ spec:
       # keep the exporter's own labels (node, index, container=GPU-proc) instead of
       # the scrape's target labels overwriting them (e.g. container=exporter).
       honorLabels: true
+---
+# Fixed-function host operation for DGX Studio. This is deliberately separate
+# from the read-only metrics exporter: it runs only on node ubuntu, exposes one
+# authenticated POST and can restart only dibanez' opencode-web.service.
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: opencode-node-ops
+  namespace: monitoring
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    kind: ClusterSecretStore
+    name: vault-backend
+  target:
+    name: opencode-node-ops
+    creationPolicy: Owner
+    deletionPolicy: Retain
+  data:
+    - secretKey: token
+      remoteRef:
+        key: secret/dgx-opencode-node-ops
+        property: token
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: opencode-node-ops
+  namespace: monitoring
+  labels:
+    app: opencode-node-ops
+    app.kubernetes.io/part-of: dgx-control-nexus
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: { app: opencode-node-ops }
+  template:
+    metadata:
+      labels: { app: opencode-node-ops }
+    spec:
+      # opencode-web.service is a user systemd unit on this one x86 node.
+      nodeSelector:
+        kubernetes.io/hostname: ubuntu
+      hostPID: true
+      imagePullSecrets: [{ name: harbor-pull }]
+      containers:
+        - name: node-ops
+          # Replaced with an immutable digest after the first image build.
+          image: harbor.e-dani.com/homelab/opencode-node-ops:opencode-node-ops-20260813
+          imagePullPolicy: IfNotPresent
+          ports: [{ name: http, containerPort: 9110 }]
+          env:
+            - name: NODE_NAME
+              valueFrom: { fieldRef: { fieldPath: spec.nodeName } }
+            - { name: PORT, value: "9110" }
+            - name: OPENCODE_NODE_OPS_TOKEN
+              valueFrom: { secretKeyRef: { name: opencode-node-ops, key: token } }
+          readinessProbe: { httpGet: { path: /healthz, port: http }, initialDelaySeconds: 3, periodSeconds: 10 }
+          livenessProbe: { httpGet: { path: /healthz, port: http }, initialDelaySeconds: 10, periodSeconds: 30 }
+          resources:
+            requests: { cpu: 5m, memory: 24Mi }
+            limits: { cpu: 100m, memory: 64Mi }
+          # setns into host PID 1's namespaces is the sole privileged operation;
+          # the server then runs a fixed runuser/systemctl argv without a shell.
+          securityContext:
+            privileged: true
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: opencode-node-ops
+  namespace: monitoring
+  labels: { app: opencode-node-ops }
+spec:
+  selector: { app: opencode-node-ops }
+  ports: [{ name: http, port: 9110, targetPort: http }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: opencode-node-ops
+  namespace: monitoring
+spec:
+  podSelector:
+    matchLabels: { app: opencode-node-ops }
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: control-nexus }
+          podSelector:
+            matchLabels: { app: dgx-dashboard-backend }
+      ports: [{ protocol: TCP, port: 9110 }]
+  # The fixed host systemd action uses local namespaces/sockets only.
+  egress: []
