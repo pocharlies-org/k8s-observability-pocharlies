@@ -573,6 +573,21 @@ backend:
                 # `load_skill` fuera: son 1-5 KB de documentación de la skill
                 # que el agente carga, no evidencia del clúster.
                 #
+                # `keep.` -> `keep_` EN TODO EL TEXTO, y no es cosmética: es lo
+                # que hizo fallar la primera pasada real tras reactivar esto
+                # (2026-08-13 18:32, "Got SyntaxError while parsing token
+                # 'keep.api.middlewares...'"). IOHandler.extract_keep_functions
+                # (iohandler.py:118-174) busca el literal `keep.` en el texto YA
+                # SUSTITUIDO, coge el SIGUIENTE `(` de todo el texto — no está
+                # acotado al token — y trata el trozo entero como una llamada de
+                # plantilla que pasa por ast.parse. Cuando Aurora investiga algo
+                # de `monitoring`, la evidencia son logs JSON del propio
+                # keep-backend llenos de `keep.api.middlewares`, y el step
+                # revienta antes de llamar al LLM. Medido en la cola del día:
+                # 7 de 11 candidatos traían `keep.` — el 64% no habría salido
+                # nunca. Se desinfectan también título y respaldo por el mismo
+                # motivo; el mensaje de Telegram los renderiza igual.
+                #
                 # Orden de preferencia: primero los pasos que llevan un comando
                 # real, luego el resto. Sin esto, un incidente con 114
                 # `get_alert_field` se come el presupuesto entero antes de
@@ -600,10 +615,12 @@ backend:
                      LIMIT 1
                   )
                   SELECT coalesce(c.fp,''),
-                         coalesce(c.titulo,''),
+                         regexp_replace(coalesce(c.titulo,''),
+                                        'keep\.', 'keep_', 'g'),
                          coalesce(c.severity::text,''),
-                         coalesce(c.respaldo,''),
-                         coalesce(
+                         regexp_replace(coalesce(c.respaldo,''),
+                                        'keep\.', 'keep_', 'g'),
+                         regexp_replace(coalesce(
                            (SELECT string_agg(e.linea, E'\n\n' ORDER BY e.idx)
                               FROM (SELECT es.step_index AS idx,
                                            '$ ' || coalesce(es.tool_input->>'command',
@@ -621,7 +638,7 @@ backend:
                                      ORDER BY (es.tool_input ? 'command') DESC,
                                               es.step_index
                                      LIMIT 18) e),
-                           '') AS evidencia,
+                           ''), 'keep\.', 'keep_', 'g') AS evidencia,
                          coalesce(c.id::text,'') AS aurora_id
                     FROM (VALUES (1)) AS siempre(x)
                     LEFT JOIN cand c ON true
