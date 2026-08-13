@@ -328,7 +328,7 @@ backend:
                 message: |
                   🧠 Resumen — {{#fn.na}}{{ incident.user_generated_name }}{{/fn.na}}
 
-                  {{ steps.llm-summary.results.0.response }}
+                  {{ steps.llm-summary.results.response }}
 
                   https://keep.lan.e-dani.com/incidents/{{ incident.id }}
 
@@ -350,7 +350,7 @@ backend:
                 message: |
                   🧠 Resumen — {{#fn.na}}{{ incident.user_generated_name }}{{/fn.na}}
 
-                  {{ steps.llm-summary.results.0.response }}
+                  {{ steps.llm-summary.results.response }}
 
                   https://keep.lan.e-dani.com/incidents/{{ incident.id }}
 
@@ -492,9 +492,15 @@ backend:
       # ---------------------------------------------------------------------
       - id: aurora-report-back
         name: Aurora — análisis de vuelta al grupo
-        # 2026-08-10: desactivado en GitOps. Se conserva para poder revisarlo y
-        # reactivarlo de forma deliberada, no como efecto de un restart de Keep.
-        disabled: true
+        # 2026-08-13: REACTIVADO. Se apagó el 2026-08-10 (31f82ae) creyendo que
+        # el problema era el bucle LLM; el bucle era el síntoma. La causa era la
+        # plantilla de telegram-rca, que desde el 2026-08-07 06:46 pedía una
+        # clave inexistente y falló las 198 veces que hubo algo que enviar —
+        # incluidas tres pasadas con el RCA ya escrito. Se enciende junto con
+        # los tres arreglos de abajo (ruta de contexto, orden de las actions y
+        # modelo sin razonamiento), nunca sola: encenderla sin ellos daba cero
+        # mensajes y quemaba un fingerprint cada cinco minutos.
+        disabled: false
         description: >-
           Cada pasada coge UN incidente analizado por Aurora, escribe su RCA
           con el LLM local a partir de la evidencia real que dejó el agente en
@@ -615,7 +621,8 @@ backend:
                                      ORDER BY (es.tool_input ? 'command') DESC,
                                               es.step_index
                                      LIMIT 18) e),
-                           '') AS evidencia
+                           '') AS evidencia,
+                         coalesce(c.id::text,'') AS aurora_id
                     FROM (VALUES (1)) AS siempre(x)
                     LEFT JOIN cand c ON true
           # El RCA de verdad.
@@ -649,9 +656,32 @@ backend:
               type: litellm
               config: "{{ providers.llm }}"
               with:
-                # Ver incident-summary: `tooling` lleva cadena de fallback y
-                # NO aparece en /v1/models aunque responde 200.
-                model: litellmrouter
+                # `tooling`, NO `litellmrouter`. MEDIDO el 2026-08-13 con el
+                # payload EXACTO de este step (mismo prompt, 12.066 B de
+                # evidencia real, temperature 0.1, max_tokens 500), cinco
+                # pasadas de cada uno contra el Service in-cluster:
+                #
+                #   litellmrouter   finish=length ×5, content=null ×5, 14-23 s
+                #   tooling         finish=stop   ×5, 259-367 tok RCA, 11-16 s
+                #
+                # El motivo es del hook `litellm_strip_params`, no del modelo:
+                # `litellmrouter` está en AUTO_ROUTED_MODELS y la palabra
+                # "investiga" del prompt fijo cae en ROUTER_HIGH_HINTS
+                # (manifest.yaml:876-883) => tier HIGH => razonamiento. Con 500
+                # tokens de techo se los come enteros en `reasoning_content` y
+                # devuelve `content` vacío, igual que le pasa al k8sgpt-explainer.
+                #
+                # Subir max_tokens NO es la salida: el provider de Keep tiene
+                # `timeout=60` HARDCODEADO (litellm_provider.py:95) y en tier
+                # HIGH la latencia se va por encima. Reescribir el prompt para
+                # esquivar la palabra tampoco: la EVIDENCIA la escribe kubectl y
+                # trae "incidente", "producción" o "deploy" cuando le toca, y
+                # cada una de ésas vuelve a disparar HIGH.
+                #
+                # `tooling` es alias de capacidad con THINKING_TIERS "off"
+                # (manifest.yaml:1218-1223): no razona, así que `content` nunca
+                # sale vacío. NO aparece en /v1/models y aun así responde 200.
+                model: tooling
                 temperature: 0.1
                 max_tokens: 500
                 prompt: |
@@ -675,24 +705,27 @@ backend:
                   EVIDENCIA:
                   {{ steps.rca-datos.results.0.4 }}
         actions:
-          # PRIMERO marcar, luego publicar. Si esta action falla, el workflow
-          # aborta y `telegram-rca` no llega a correr — que es la dirección
-          # segura: sin marca no hay envío, nunca al revés.
+          # PRIMERO PUBLICAR, LUEGO MARCAR — invertido el 2026-08-13.
+          #
+          # El orden anterior se apoyaba en "si mark-reported falla, el workflow
+          # aborta y telegram-rca no llega a correr". Es FALSO contra Keep
+          # 0.52.1: run_actions() (workflow.py:140-156) recorre las actions sin
+          # `break` y sólo para con action_stop, así que un fallo de ENVÍO nunca
+          # impidió la MARCA. Medido en la BBDD: entre el 2026-08-07 06:46 y el
+          # 2026-08-10 12:55 telegram-rca falló 198 veces al renderizar y
+          # `keep_bridge.reported` acumuló 193 fingerprints marcados que no se
+          # enviaron jamás. El NOT EXISTS de la SELECT los excluye para siempre
+          # y no hay rearme: cada fallo era una pérdida permanente.
+          #
+          # Con el orden invertido, un fallo de envío deja el fingerprint SIN
+          # marcar y la pasada siguiente lo reintenta. El riesgo simétrico
+          # (enviar y que falle el INSERT => repetido) está acotado por LIMIT 1
+          # e interval 300: como mucho un mensaje repetido cada 5 minutos.
           #
           # El `if` es el guard de "no hay nada pendiente": con 0 filas,
           # {{ …results.0.0 }} renderiza cadena vacía (comprobado contra el
           # chevron del propio pod), y sin él se insertaría un fingerprint
           # vacío y se enviaría un mensaje en blanco cada dos minutos.
-          - name: mark-reported
-            if: "'{{ steps.rca-datos.results.0.0 }}' != ''"
-            provider:
-              type: postgres
-              config: "{{ providers.aurora_db }}"
-              with:
-                query: >-
-                  INSERT INTO keep_bridge.reported (fingerprint)
-                  VALUES ('{{ steps.rca-datos.results.0.0 }}')
-                  ON CONFLICT (fingerprint) DO NOTHING
           - name: telegram-rca
             if: "'{{ steps.rca-datos.results.0.0 }}' != ''"
             on-failure:
@@ -711,13 +744,46 @@ backend:
                 # Sin parse_mode a propósito: con `html` el unescape del
                 # IOHandler (iohandler.py:673) resucita los `<pod-name>` que
                 # escribe el LLM y Telegram devuelve 400.
+                #
+                # `results.response`, SIN el `.0.` — ÉSTA es la regresión que
+                # tuvo el bucle callado tres días. LitellmProvider._query
+                # devuelve un DICT (`{"response": texto}`,
+                # litellm_provider.py:110-112) y el ContextManager lo guarda tal
+                # cual cuando no hay foreach (contextmanager.py:269-272), así
+                # que `.0.` NO existe en el contexto de render. La columna
+                # workflowexecution.results SÍ guarda una lista, y mirar ahí fue
+                # lo que llevó a d7305d6 a "arreglarlo" al revés el 2026-08-07.
+                # Verificado en el pod: `.0.response` lanza RenderException,
+                # `.response` renderiza.
+                #
+                # El cuerpo NO depende del LLM para ser válido: título,
+                # severidad y enlace se renderizan siempre, así que un `content`
+                # vacío degrada el mensaje pero no lo hace fallar en Telegram.
+                # Un mensaje vacío daría 400 y sería la otra vía de perder el
+                # incidente.
+                #
+                # El enlace va a AURORA, no a Keep: la SELECT devuelve el
+                # fingerprint de 16 hex y los ids de incidente de Keep son UUID
+                # (0 de 2515 coincidían), así que el enlace anterior era un 404
+                # garantizado en todos los mensajes. La columna 5 es el id de
+                # Aurora y su UI sirve /incidents/[id].
                 message: |
                   🔍 Aurora — {{ steps.rca-datos.results.0.1 }}
 
-                  {{ steps.llm-rca.results.0.response }}
+                  {{ steps.llm-rca.results.response }}
 
                   Severidad: {{ steps.rca-datos.results.0.2 }}
-                  Incidente en Keep: https://keep.lan.e-dani.com/incidents/{{ steps.rca-datos.results.0.0 }}
+                  Análisis en Aurora: https://aurora.lan.e-dani.com/incidents/{{ steps.rca-datos.results.0.5 }}
+          - name: mark-reported
+            if: "'{{ steps.rca-datos.results.0.0 }}' != ''"
+            provider:
+              type: postgres
+              config: "{{ providers.aurora_db }}"
+              with:
+                query: >-
+                  INSERT INTO keep_bridge.reported (fingerprint)
+                  VALUES ('{{ steps.rca-datos.results.0.0 }}')
+                  ON CONFLICT (fingerprint) DO NOTHING
 
       # Aurora investiga INCIDENTES, no alertas: mandarle cada alerta haría que
       # investigase 3 veces la misma causa. El payload va con forma de
