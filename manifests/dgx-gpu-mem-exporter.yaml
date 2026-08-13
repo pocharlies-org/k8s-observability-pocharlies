@@ -265,8 +265,7 @@ spec:
       imagePullSecrets: [{ name: harbor-pull }]
       containers:
         - name: node-ops
-          # Replaced with an immutable digest after the first image build.
-          image: harbor.e-dani.com/homelab/opencode-node-ops:opencode-node-ops-20260813
+          image: harbor.e-dani.com/homelab/opencode-node-ops:opencode-node-ops-0f8895c8e09c@sha256:143d6eada647afac860fde70aa04ac7db3293039444ecce571dfa60bd10c65de
           imagePullPolicy: IfNotPresent
           ports: [{ name: http, containerPort: 9110 }]
           env:
