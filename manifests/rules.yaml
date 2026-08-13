@@ -20,7 +20,7 @@ spec:
           expr: |
             (kube_deployment_spec_replicas > kube_deployment_status_replicas_available)
               unless on(namespace, deployment)
-            kube_deployment_spec_replicas{namespace="llm",deployment=~"vllm-.*|omnivoice-tts-dgx2|.*-bench"}
+            kube_deployment_spec_replicas{namespace="llm",deployment=~"vllm-.*|omnivoice-tts-dgx2|omnivoice-tts-nvfp4|.*-bench"}
           for: 15m
           labels:
             severity: critical
@@ -30,9 +30,9 @@ spec:
             description: "{{ $labels.namespace }}/{{ $labels.deployment }} has fewer available replicas than desired."
         - alert: LlmResidentDeploymentUnavailable
           expr: |
-            kube_deployment_spec_replicas{namespace="llm",deployment=~"vllm-.*-dgx1|vllm-.*-dgx2|omnivoice-tts-dgx2"}
+            kube_deployment_spec_replicas{namespace="llm",deployment=~"vllm-.*-dgx1|vllm-.*-dgx2|vllm-vision-deep|omnivoice-tts-dgx2|omnivoice-tts-nvfp4"}
               >
-            kube_deployment_status_replicas_available{namespace="llm",deployment=~"vllm-.*-dgx1|vllm-.*-dgx2|omnivoice-tts-dgx2"}
+            kube_deployment_status_replicas_available{namespace="llm",deployment=~"vllm-.*-dgx1|vllm-.*-dgx2|vllm-vision-deep|omnivoice-tts-dgx2|omnivoice-tts-nvfp4"}
           for: 2h
           labels:
             severity: critical
@@ -61,7 +61,7 @@ spec:
         # them from this list and let LlmPoolCapabilityUnavailable cover them.
         - alert: LlmResidentScaledToZero
           expr: |
-            kube_deployment_spec_replicas{namespace="llm",deployment=~"omnivoice-audio|omnivoice-tts-dgx2|stt-turbo|bge-m3-embedding|bge-reranker"} == 0
+            kube_deployment_spec_replicas{namespace="llm",deployment=~"omnivoice-audio|omnivoice-tts-dgx2|omnivoice-tts-nvfp4|stt-turbo|bge-m3-embedding|bge-reranker"} == 0
           for: 15m
           labels:
             severity: critical
