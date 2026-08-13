@@ -36,11 +36,18 @@
 # litellm y no lo leía nadie — de ahí que hubiera que hardcodearlos aquí).
 #
 # El postStart reescribe el catálogo con aliases LiteLLM vivos (verificados
-# contra /v1/chat/completions con la key de Aurora) y añade además:
-# las tres variantes GPT-5.6 (sol/terra/luna), que NO corren en el DGX — sale a chatgpt.com por el
-# codex-bridge con la suscripción del usuario. Ese comparte cuota con el Codex
-# interactivo y OpenAI estrangula por cliente, así que es para chat manual; los
-# RCA siguen en los modelos locales.
+# contra /v1/chat/completions con la key de Aurora).
+#
+# 2026-08-13: FUERA las tres variantes GPT-5.6 (sol/terra/luna), por decisión del
+# owner: Aurora no usa de momento NINGÚN modelo de la suscripción ChatGPT. Y no es
+# solo cosmético — la key `aurora-rca` pasó ese mismo día a lista explícita sin
+# ningún `gpt-5.*`, así que dejarlos en el desplegable sería ofrecer una opción
+# que responde 403. Si algún día se reabre, hay que tocar LAS DOS cosas: este
+# catálogo y el allowlist de la key.
+#
+# OJO: el desvío de VISIÓN sigue mandando las imágenes a `gpt-5.6-sol` desde el
+# hook de LiteLLM. Eso no lo cubre este allowlist: el gate de la key se evalúa
+# sobre el alias PEDIDO, antes de que el hook reescriba.
 #
 # OJO — hay que parchear DOS sitios. `.next/static/chunks` es lo que descarga el
 # navegador, pero `.next/server` es el bundle de SSR: con App Router el
@@ -124,7 +131,7 @@ spec:
                             ],
                             [
                               '{id:"google/gemini-3.1-pro-preview",name:"gemini-3.1-pro-preview",displayName:"Gemini 3.1 Pro",provider:"Google",tier:"pro",contextLength:"1M",hasReasoning:!0}',
-                              '{id:"bedrock/dense-uncensored",name:"dense-uncensored",displayName:"Qwen3.6 27B Uncensored (DGX)",provider:"LiteLLM",tier:"pro",contextLength:"224K",hasReasoning:!0},{id:"bedrock/gpt-5.6-sol",name:"gpt-5.6-sol",displayName:"GPT-5.6 Sol (ChatGPT Pro)",provider:"OpenAI",tier:"premium",contextLength:"",hasReasoning:!0},{id:"bedrock/gpt-5.6-terra",name:"gpt-5.6-terra",displayName:"GPT-5.6 Terra (ChatGPT Pro)",provider:"OpenAI",tier:"premium",contextLength:"",hasReasoning:!0},{id:"bedrock/gpt-5.6-luna",name:"gpt-5.6-luna",displayName:"GPT-5.6 Luna (ChatGPT Pro)",provider:"OpenAI",tier:"premium",contextLength:"",hasReasoning:!0}',
+                              '{id:"bedrock/dense-uncensored",name:"dense-uncensored",displayName:"Qwen3.6 27B Uncensored (DGX)",provider:"LiteLLM",tier:"pro",contextLength:"224K",hasReasoning:!0}',
                             ],
                           ];
 
