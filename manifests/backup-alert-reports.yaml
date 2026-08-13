@@ -1,0 +1,178 @@
+# Reportes de alertas y backups al grupo de Telegram de backups
+# (chat -1003785136626, el mismo del receiver backstop-telegram del Alertmanager).
+#
+# Por que existen: el 2026-08-13 se descubrio que Longhorn no se scrapeaba en
+# absoluto -- cero series longhorn_* en VictoriaMetrics -- y por eso el nodo
+# `ubuntu` estuvo dias con allowScheduling=false, dejando a
+# databases/postgres-shared-2 con 2 de 3 replicas sin que saltara nada. Se
+# encontro por casualidad auditando espacio. Tener alertas no basta si nadie
+# mira el panel: estos reportes las empujan.
+#
+# El diario incluye ademas las reglas con health != ok, porque una regla que no
+# evalua no dispara y eso no aparece en ninguna lista de alertas activas.
+# El semanal va los lunes, despues del weekly-all de Velero (domingo 05:00) y de
+# su ventana de reintentos, para hablar de un resultado ya cerrado.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: backup-alert-reports-scripts
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: observability
+data:
+  daily.py: "import json, os, subprocess, urllib.parse, urllib.request, collections, datetime\n\nAM = \"http://vmalertmanager-vm-victoria-metrics-k8s-stack.monitoring.svc.cluster.local:9093\"\nVMALERT = \"http://vmalert-vm-victoria-metrics-k8s-stack.monitoring.svc.cluster.local:8080\"\n\ndef get(url):\n    try:\n        with urllib.request.urlopen(url, timeout=25) as r:\n            return json.load(r)\n    except Exception as e:\n        print(\"WARN %s: %s\" % (url, e))\n        return None\n\ndef tg(text):\n    tok = os.environ[\"TELEGRAM_BOT_TOKEN\"]; chat = os.environ[\"TELEGRAM_CHAT_ID\"]\n    for i in range(0, len(text), 3800):\n        data = urllib.parse.urlencode({\n            \"chat_id\": chat, \"parse_mode\": \"HTML\",\n            \"disable_web_page_preview\": \"true\", \"text\": text[i:i+3800]}).encode()\n        try:\n            urllib.request.urlopen(\"https://api.telegram.org/bot%s/sendMessage\" % tok, data, timeout=30).read()\n        except Exception as e:\n            print(\"ERROR telegram: %s\" % e)\n\nnow = datetime.datetime.now(datetime.timezone.utc).strftime(\"%Y-%m-%d %H:%M UTC\")\nalerts = get(AM + \"/api/v2/alerts?active=true&silenced=false&inhibited=false\") or []\n\nL = [\"\\U0001F4CB <b>Estado diario de alertas</b> — %s\" % now, \"\"]\nif not alerts:\n    L.append(\"✅ <b>Ninguna alerta activa.</b>\")\nelse:\n    sev = collections.Counter(a.get(\"labels\", {}).get(\"severity\", \"sin-severidad\") for a in alerts)\n    L.append(\"\\U0001F514 <b>%d alertas activas</b>\" % len(alerts))\n    L.append(\"  \" + \" · \".join(\"%s: %d\" % (k, v) for k, v in sev.most_common()))\n    L.append(\"\")\n    icon = {\"critical\": \"\\U0001F534\", \"warning\": \"\\U0001F7E0\"}\n    seen = set()\n    for a in sorted(alerts, key=lambda x: (x.get(\"labels\", {}).get(\"severity\", \"\"), x.get(\"labels\", {}).get(\"alertname\", \"\"))):\n        lb = a.get(\"labels\", {}); key = (lb.get(\"alertname\"), lb.get(\"namespace\"))\n        if key in seen:\n            continue\n        seen.add(key)\n        s = (a.get(\"annotations\", {}).get(\"summary\") or \"\")[:120]\n        since = (a.get(\"startsAt\") or \"\")[:16].replace(\"T\", \" \")\n        L.append(\"%s <b>%s</b> <code>%s</code>\" % (icon.get(lb.get(\"severity\"), \"⚪\"), lb.get(\"alertname\"), lb.get(\"namespace\", \"-\")))\n        L.append(\"   desde %s\" % since)\n        if s:\n            L.append(\"   %s\" % s)\n\n# Una regla que no evalua no dispara, y eso no se ve en ningun panel de alertas.\nrules = get(VMALERT + \"/api/v1/rules\")\nbad = []\nif rules:\n    for g in rules.get(\"data\", {}).get(\"groups\", []):\n        for r in g.get(\"rules\", []):\n            if r.get(\"health\") not in (\"ok\", None):\n                bad.append(\"%s / %s: %s\" % (g.get(\"name\"), r.get(\"name\"), (r.get(\"lastError\") or \"\")[:90]))\nif bad:\n    L += [\"\", \"⚠️ <b>Reglas que no evaluan bien</b> (no dispararian):\"] + [\"  \" + b for b in bad]\n\ntg(\"\\n\".join(L))\nprint(\"reporte diario enviado: %d alertas activas, %d reglas rotas\" % (len(alerts), len(bad)))\n"
+  weekly.py: "import json, os, subprocess, urllib.parse, urllib.request, collections, datetime\n\nAM = \"http://vmalertmanager-vm-victoria-metrics-k8s-stack.monitoring.svc.cluster.local:9093\"\n\ndef kc(args):\n    try:\n        return json.loads(subprocess.run([\"kubectl\"] + args + [\"-o\", \"json\"],\n                                         capture_output=True, text=True, timeout=60).stdout)[\"items\"]\n    except Exception as e:\n        print(\"WARN kubectl %s: %s\" % (args, e))\n        return []\n\ndef tg(text):\n    tok = os.environ[\"TELEGRAM_BOT_TOKEN\"]; chat = os.environ[\"TELEGRAM_CHAT_ID\"]\n    for i in range(0, len(text), 3800):\n        data = urllib.parse.urlencode({\n            \"chat_id\": chat, \"parse_mode\": \"HTML\",\n            \"disable_web_page_preview\": \"true\", \"text\": text[i:i+3800]}).encode()\n        try:\n            urllib.request.urlopen(\"https://api.telegram.org/bot%s/sendMessage\" % tok, data, timeout=30).read()\n        except Exception as e:\n            print(\"ERROR telegram: %s\" % e)\n\nnow = datetime.datetime.now(datetime.timezone.utc)\nL = [\"\\U0001F5D3 <b>Informe semanal de backups</b> — %s\" % now.strftime(\"%Y-%m-%d %H:%M UTC\"), \"\"]\n\n# --- Velero. El schedule es la promesa; el phase es la realidad. ---\nL.append(\"<b>Velero</b>\")\ncut = now - datetime.timedelta(days=7)\nrows = []\nfor b in kc([\"-n\", \"velero\", \"get\", \"backups.velero.io\"]):\n    st = b.get(\"status\") or {}\n    s = st.get(\"startTimestamp\")\n    if not s:\n        continue\n    try:\n        t = datetime.datetime.fromisoformat(s.replace(\"Z\", \"+00:00\"))\n    except Exception:\n        continue\n    if t < cut:\n        continue\n    rows.append((t, b[\"metadata\"][\"name\"], st.get(\"phase\"), st.get(\"errors\") or 0, st.get(\"warnings\") or 0))\nrows.sort()\nif not rows:\n    L.append(\"  ⚠️ sin backups en 7 dias\")\nelse:\n    ph = collections.Counter(r[2] for r in rows)\n    L.append(\"  ultimos 7d: \" + \" · \".join(\"%s=%d\" % (k, v) for k, v in ph.most_common()))\n    for t, n, p, e, w in rows:\n        if p != \"Completed\":\n            L.append(\"  ⚠️ %s → %s (%s err, %s warn)\" % (n, p, e, w))\n\n# --- CNPG: el PITR es lo que de verdad protege Postgres. ---\nL += [\"\", \"<b>Postgres (CNPG barman)</b>\"]\nfor c in kc([\"get\", \"clusters.postgresql.cnpg.io\", \"-A\"]):\n    st = c.get(\"status\") or {}\n    cond = {x[\"type\"]: x[\"status\"] for x in st.get(\"conditions\", [])}\n    ok = cond.get(\"LastBackupSucceeded\") == \"True\"\n    L.append(\"  %s %s/%s\" % (\"✅\" if ok else \"⚠️\", c[\"metadata\"][\"namespace\"], c[\"metadata\"][\"name\"]))\n    L.append(\"     ultimo: %s\" % (st.get(\"lastSuccessfulBackup\") or \"nunca\"))\n    L.append(\"     PITR desde: %s · WAL archivando: %s\" % (\n        st.get(\"firstRecoverabilityPoint\") or \"—\", cond.get(\"ContinuousArchiving\", \"?\")))\n\n# --- Longhorn ---\nL += [\"\", \"<b>Longhorn</b>\"]\nvols = kc([\"-n\", \"longhorn-system\", \"get\", \"volumes.longhorn.io\"])\nrob = collections.Counter((v.get(\"status\") or {}).get(\"robustness\") for v in vols)\nL.append(\"  volumenes: \" + \" · \".join(\"%s=%d\" % (k, v) for k, v in rob.most_common()))\nfor v in vols:\n    st = v.get(\"status\") or {}\n    if st.get(\"robustness\") in (\"degraded\", \"faulted\"):\n        ks = st.get(\"kubernetesStatus\", {})\n        L.append(\"  ⚠️ %s/%s → %s\" % (ks.get(\"namespace\"), ks.get(\"pvcName\"), st.get(\"robustness\")))\nnodes = kc([\"-n\", \"longhorn-system\", \"get\", \"nodes.longhorn.io\"])\non = [n[\"metadata\"][\"name\"] for n in nodes if n[\"spec\"].get(\"allowScheduling\")]\noff = [n[\"metadata\"][\"name\"] for n in nodes if not n[\"spec\"].get(\"allowScheduling\")]\nL.append(\"  nodos programables: %d (%s)\" % (len(on), \", \".join(on) or \"—\"))\nif off:\n    L.append(\"  ⚠️ sin programar: %s\" % \", \".join(off))\n\n# --- Alertas ---\nL += [\"\", \"<b>Alertas activas ahora</b>\"]\ntry:\n    with urllib.request.urlopen(AM + \"/api/v2/alerts?active=true&silenced=false&inhibited=false\", timeout=25) as r:\n        al = json.load(r)\n\
+    except Exception:\n    al = []\nif not al:\n    L.append(\"  ninguna\")\nelse:\n    for n, k in collections.Counter(a.get(\"labels\", {}).get(\"alertname\") for a in al).most_common(12):\n        L.append(\"  · %s ×%d\" % (n, k))\n\ntg(\"\\n\".join(L))\nprint(\"informe semanal enviado\")\n"
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: backup-alert-report-daily
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: observability
+spec:
+  schedule: 20 7 * * *
+  timeZone: Etc/UTC
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 600
+      backoffLimit: 1
+      template:
+        spec:
+          restartPolicy: Never
+          serviceAccountName: backup-alert-reporter
+          containers:
+          - name: report
+            image: alpine/k8s:1.32.5
+            command:
+            - python3
+            - /scripts/daily.py
+            env:
+            - name: TELEGRAM_BOT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: alertmanager-telegram-backup
+                  key: bot_token
+            - name: TELEGRAM_CHAT_ID
+              value: '-1003785136626'
+            volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+            resources:
+              requests:
+                cpu: 50m
+                memory: 128Mi
+              limits:
+                memory: 256Mi
+          volumes:
+          - name: scripts
+            configMap:
+              name: backup-alert-reports-scripts
+              defaultMode: 493
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: backup-alert-report-weekly
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: observability
+spec:
+  schedule: 10 8 * * 1
+  timeZone: Etc/UTC
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 900
+      backoffLimit: 1
+      template:
+        spec:
+          restartPolicy: Never
+          serviceAccountName: backup-alert-reporter
+          containers:
+          - name: report
+            image: alpine/k8s:1.32.5
+            command:
+            - python3
+            - /scripts/weekly.py
+            env:
+            - name: TELEGRAM_BOT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: alertmanager-telegram-backup
+                  key: bot_token
+            - name: TELEGRAM_CHAT_ID
+              value: '-1003785136626'
+            volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+            resources:
+              requests:
+                cpu: 50m
+                memory: 128Mi
+              limits:
+                memory: 256Mi
+          volumes:
+          - name: scripts
+            configMap:
+              name: backup-alert-reports-scripts
+              defaultMode: 493
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: backup-alert-reporter
+  namespace: monitoring
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: backup-alert-reporter
+rules:
+- apiGroups:
+  - velero.io
+  resources:
+  - backups
+  - schedules
+  - podvolumebackups
+  verbs:
+  - get
+  - list
+- apiGroups:
+  - postgresql.cnpg.io
+  resources:
+  - clusters
+  - backups
+  - scheduledbackups
+  verbs:
+  - get
+  - list
+- apiGroups:
+  - longhorn.io
+  resources:
+  - volumes
+  - nodes
+  - backups
+  - snapshots
+  verbs:
+  - get
+  - list
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: backup-alert-reporter
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: backup-alert-reporter
+subjects:
+- kind: ServiceAccount
+  name: backup-alert-reporter
+  namespace: monitoring

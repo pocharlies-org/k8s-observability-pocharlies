@@ -21,6 +21,7 @@ resources:
   - manifests/k8sgpt-explainer.yaml
   - manifests/k8sgpt-scrape.yaml
   - manifests/k8sgpt-rules.yaml
+  - manifests/backup-alert-reports.yaml
   - manifests/k8sgpt-tolerations-policy.yaml
   - manifests/aurora-storage.yaml
   - manifests/aurora-frontend-models-policy.yaml
