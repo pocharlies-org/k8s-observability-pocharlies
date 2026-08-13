@@ -573,7 +573,7 @@ backend:
                 # `load_skill` fuera: son 1-5 KB de documentación de la skill
                 # que el agente carga, no evidencia del clúster.
                 #
-                # `keep.` -> `keep_` EN TODO EL TEXTO, y no es cosmética: es lo
+                # `keep.` -> `Keep.` EN TODO EL TEXTO, y no es cosmética: es lo
                 # que hizo fallar la primera pasada real tras reactivar esto
                 # (2026-08-13 18:32, "Got SyntaxError while parsing token
                 # 'keep.api.middlewares...'"). IOHandler.extract_keep_functions
@@ -587,6 +587,22 @@ backend:
                 # 7 de 11 candidatos traían `keep.` — el 64% no habría salido
                 # nunca. Se desinfectan también título y respaldo por el mismo
                 # motivo; el mensaje de Telegram los renderiza igual.
+                #
+                # SÓLO CAMBIA LA MAYÚSCULA, y ésa es toda la gracia. El escáner
+                # compara `text[i:i+5] == "keep."` — sensible a mayúsculas
+                # (iohandler.py:122) —, así que `Keep.` no lo dispara. Y como
+                # DNS no distingue mayúsculas, `https://Keep.lan.e-dani.com`
+                # SIGUE SIENDO UNA URL VÁLIDA.
+                #
+                # La primera versión sustituía por `keep_` y publicó al grupo
+                # (mensaje 72915, 2026-08-13 17:22Z) una instrucción con
+                # `https://keep_lan.e-dani.com`, que no resuelve. 1 de cada 10
+                # mensajes salió así.
+                #
+                # Efecto secundario bueno: la respuesta del LLM es la única
+                # superficie que NO pasa por este regexp, y el modelo copia lo
+                # que ve. Viendo `Keep.` escribe `Keep.`, que tampoco dispara el
+                # escáner. Antes veía `keep_` y ya lo escribió una vez.
                 #
                 # Orden de preferencia: primero los pasos que llevan un comando
                 # real, luego el resto. Sin esto, un incidente con 114
@@ -616,10 +632,10 @@ backend:
                   )
                   SELECT coalesce(c.fp,''),
                          regexp_replace(coalesce(c.titulo,''),
-                                        'keep\.', 'keep_', 'g'),
+                                        'keep\.', 'Keep.', 'g'),
                          coalesce(c.severity::text,''),
                          regexp_replace(coalesce(c.respaldo,''),
-                                        'keep\.', 'keep_', 'g'),
+                                        'keep\.', 'Keep.', 'g'),
                          regexp_replace(coalesce(
                            (SELECT string_agg(e.linea, E'\n\n' ORDER BY e.idx)
                               FROM (SELECT es.step_index AS idx,
@@ -638,7 +654,7 @@ backend:
                                      ORDER BY (es.tool_input ? 'command') DESC,
                                               es.step_index
                                      LIMIT 18) e),
-                           ''), 'keep\.', 'keep_', 'g') AS evidencia,
+                           ''), 'keep\.', 'Keep.', 'g') AS evidencia,
                          coalesce(c.id::text,'') AS aurora_id
                     FROM (VALUES (1)) AS siempre(x)
                     LEFT JOIN cand c ON true
