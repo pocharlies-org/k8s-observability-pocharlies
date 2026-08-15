@@ -116,22 +116,31 @@ spec:
                           const fs = require("fs");
                           const path = require("path");
 
+                          // 2026-08-15: el catalogo ofrecia bedrock/agent, /router, /dense y
+                          // /dense-uncensored. LOS CUATRO ESTAN MUERTOS: agent y router solo
+                          // existen cuando el residente es DeepSeek (perfil llm-tp), y dense/
+                          // dense-uncensored se retiraron al dejar UN solo alias para el 27B.
+                          // Un desplegable que ofrece cuatro modelos inexistentes es peor que
+                          // no tener desplegable.
+                          //
+                          // Se ofrecen DOS, que son los unicos que pasan los tres gates a la vez
+                          // (existir en LiteLLM, estar en la allowlist de la key aurora-rca, y
+                          // llevar prefijo bedrock/):
+                          //   bedrock/tooling                 vivo hoy, 262144 de ventana
+                          //   bedrock/deepseek-v4-flash-0731  dormido en creative, vuelve en llm-tp
+                          //
+                          // `bedrock/qwen35-4b` NO se puede ofrecer aunque este vivo: la key
+                          // aurora-rca no lo tiene en su allowlist y LiteLLM valida el modelo
+                          // PEDIDO antes del hook, asi que daria "key not allowed to access
+                          // model". Para ofrecerlo hay que ampliar la key primero.
                           const REPLACEMENTS = [
                             [
                               '{id:"openai/gpt-5.5",name:"gpt-5.5",displayName:"GPT-5.5",provider:"OpenAI",tier:"premium",contextLength:"1M",hasReasoning:!0}',
-                              '{id:"bedrock/agent",name:"agent",displayName:"Agent DGX (effort low)",provider:"LiteLLM",tier:"premium",contextLength:"256K",hasReasoning:!0}',
+                              '{id:"bedrock/tooling",name:"tooling",displayName:"Tooling DGX (Qwen3.8 27B)",provider:"LiteLLM",tier:"premium",contextLength:"256K",hasReasoning:!0}',
                             ],
                             [
                               '{id:"anthropic/claude-sonnet-4.6",name:"claude-sonnet-4.6",displayName:"Claude Sonnet 4.6",provider:"Anthropic",tier:"pro",contextLength:"1M",hasReasoning:!0}',
-                              '{id:"bedrock/router",name:"router",displayName:"Router DGX (auto)",provider:"LiteLLM",tier:"pro",contextLength:"256K",hasReasoning:!0}',
-                            ],
-                            [
-                              '{id:"anthropic/claude-opus-4.7",name:"claude-opus-4.7",displayName:"Claude Opus 4.7",provider:"Anthropic",tier:"premium",contextLength:"1M",hasReasoning:!0,isSlow:!0}',
-                              '{id:"bedrock/dense",name:"dense",displayName:"Qwen3.6 27B Dense (DGX2)",provider:"LiteLLM",tier:"premium",contextLength:"224K",hasReasoning:!0}',
-                            ],
-                            [
-                              '{id:"google/gemini-3.1-pro-preview",name:"gemini-3.1-pro-preview",displayName:"Gemini 3.1 Pro",provider:"Google",tier:"pro",contextLength:"1M",hasReasoning:!0}',
-                              '{id:"bedrock/dense-uncensored",name:"dense-uncensored",displayName:"Qwen3.6 27B Uncensored (DGX)",provider:"LiteLLM",tier:"pro",contextLength:"224K",hasReasoning:!0}',
+                              '{id:"bedrock/deepseek-v4-flash-0731",name:"deepseek-v4-flash-0731",displayName:"DeepSeek V4 Flash (solo perfil LLM-TP)",provider:"LiteLLM",tier:"pro",contextLength:"384K",hasReasoning:!0}',
                             ],
                           ];
 
@@ -162,7 +171,7 @@ spec:
                                 continue;
                               }
                               if (data.indexOf('displayName:"GPT-5.5"') === -1) continue;
-                              if (data.indexOf('id:"bedrock/agent"') !== -1) continue;
+                              if (data.indexOf('id:"bedrock/tooling"') !== -1) continue;
                               let hits = 0;
                               for (const [oldS, newS] of REPLACEMENTS) {
                                 if (data.includes(oldS)) {
