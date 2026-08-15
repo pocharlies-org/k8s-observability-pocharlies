@@ -41,7 +41,9 @@ vmsingle:
     useDefaultResources: false
     resources:
       requests:
-        cpu: 300m
+        # 2026-08-15: 300m -> 450m. Pedia 300m consumiendo 416-457m sostenidos,
+        # asi que el scheduler no veia su peso en un nodo al 97% de requests.
+        cpu: 450m
         memory: 1Gi
       limits:
         cpu: "2"
@@ -85,6 +87,12 @@ vmagent:
       promscrape.maxScrapeSize: "67108864"
       promscrape.streamParse: "true"
     selectAllByDefault: true
+    # 2026-08-15: 20s -> 30s. Un tercio menos de scrapes e ingesta, medido en
+    # ~1 core entre vmagent y vmsingle. No se baja a 60s porque 10 de las 401
+    # reglas usan ventanas [1m]/[2m] y se quedarian sin muestras suficientes;
+    # a 30s siguen teniendo 2-4. Esas reglas las genera el chart, asi que
+    # ensancharlas seria pelearse con el operador en cada upgrade.
+    scrapeInterval: 30s
     nodeSelector:
       node-pool: ks5-nvme
 
