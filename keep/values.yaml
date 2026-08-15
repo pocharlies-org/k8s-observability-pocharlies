@@ -999,7 +999,10 @@ backend:
     - name: OPENAI_BASE_URL
       value: http://litellm.litellm.svc.cluster.local:4000/v1
     - name: OPENAI_MODEL_NAME
-      value: router
+      # 15-08: `router` -> `tooling`. `router` solo existe con DeepSeek arriba;
+      # en el perfil creative no esta registrado y Keep pedia un modelo que no
+      # existe. `tooling` lo sirve el residente de los dos perfiles.
+      value: tooling
 
     # --- Identidad: headers del oauth2-proxy compartido ---
     # OJO: si el header de roles llega vacío, Keep devuelve 401 en TODA petición
@@ -1226,7 +1229,10 @@ frontend:
     - name: OPENAI_BASE_URL
       value: http://litellm.litellm.svc.cluster.local:4000/v1
     - name: OPENAI_MODEL_NAME
-      value: router
+      # 15-08: `router` -> `tooling`. `router` solo existe con DeepSeek arriba;
+      # en el perfil creative no esta registrado y Keep pedia un modelo que no
+      # existe. `tooling` lo sirve el residente de los dos perfiles.
+      value: tooling
 
   # NEXTAUTH_SECRET: frontend.env sólo admite valores literales (el template no
   # soporta secretKeyRef), así que entra por aquí.

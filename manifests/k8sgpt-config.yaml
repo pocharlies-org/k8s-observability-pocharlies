@@ -94,13 +94,16 @@ spec:
     # LA VIRTUAL KEY TIENE QUE PERMITIRLO. La auth de LiteLLM valida el modelo
     # PEDIDO antes de que el hook lo reescriba, así que una key acotada a
     # ["tooling"] rechaza `tooling` con "key not allowed to access model".
-    # La key k8sgpt-prod se amplió a ["tooling","tooling"] al hacer este
+    # La key k8sgpt-prod permite ["tooling","agent"] (verificado en vivo). Al
     # cambio. Si algún día se recrea la key, hay que incluir ambos.
     # 2026-08-10: `tooling` pasa a significar SIN PENSAR, y k8sgpt diagnostica --
     # razona sobre eventos y estado. `agent` = effort low, el nivel de hoy, pedido
     # por su nombre. LA KEY k8sgpt-prod TIENE QUE PERMITIRLO (ver arriba): la auth
     # de LiteLLM valida el modelo PEDIDO antes de que corra el hook.
-    model: agent
+    # 15-08: `agent` -> `tooling`. `agent` era un nivel de pensamiento pedido por
+    # NOMBRE y solo existia con DeepSeek arriba. El nivel se pide ahora con
+    # reasoning_effort, que el 27B declara (none/low/medium/high/max, medidos).
+    model: tooling
 
     secret:
       name: k8sgptsvc-llm
