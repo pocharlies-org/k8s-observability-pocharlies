@@ -18,7 +18,7 @@ spec:
             description: "{{ $labels.instance }} has failed blackbox probes for more than 2 minutes."
         - alert: CertificateExpiresSoon
           expr: |
-            certmanager_certificate_not_after_timestamp_seconds
+            certmanager_certificate_not_after_timestamp_seconds{issuer_name!="letsencrypt-staging"}
               - time() < 14 * 24 * 3600
           for: 15m
           labels:
@@ -26,18 +26,18 @@ spec:
             area: security
             component: cert-manager
           annotations:
-            summary: "Certificate {{ $labels.namespace }}/{{ $labels.name }} expires within 14 days"
-            description: "Certificate {{ $labels.namespace }}/{{ $labels.name }} expires in {{ $value | humanizeDuration }}. Check its Certificate status, issuer and current CertificateRequest before it reaches clients."
+            summary: "Certificate {{ $labels.exported_namespace }}/{{ $labels.name }} expires within 14 days"
+            description: "Certificate {{ $labels.exported_namespace }}/{{ $labels.name }} expires in {{ $value | humanizeDuration }}. Check its Certificate status, issuer and current CertificateRequest before it reaches clients."
         - alert: CertificateNotReady
-          expr: certmanager_certificate_ready_status{condition="True"} == 0
+          expr: certmanager_certificate_ready_status{condition="True",issuer_name!="letsencrypt-staging"} == 0
           for: 15m
           labels:
             severity: critical
             area: security
             component: cert-manager
           annotations:
-            summary: "Certificate {{ $labels.namespace }}/{{ $labels.name }} is not ready"
-            description: "cert-manager has reported Certificate {{ $labels.namespace }}/{{ $labels.name }} Ready=False for 15 minutes. Inspect its CertificateRequest, Order and Challenge resources."
+            summary: "Certificate {{ $labels.exported_namespace }}/{{ $labels.name }} is not ready"
+            description: "cert-manager has reported Certificate {{ $labels.exported_namespace }}/{{ $labels.name }} Ready=False for 15 minutes. Inspect its CertificateRequest, Order and Challenge resources."
         - alert: CertManagerCertificateMetricsMissing
           expr: absent(certmanager_certificate_not_after_timestamp_seconds)
           for: 15m
