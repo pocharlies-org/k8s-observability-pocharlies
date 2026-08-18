@@ -103,7 +103,14 @@ spec:
             - name: LITELLM_URL
               value: http://litellm.litellm.svc.cluster.local:4000/v1/chat/completions
             - name: LITELLM_MODEL
-              value: agent
+              # 18-08-2026: era `agent`, y `agent` no es local. Medido contra el
+              # gateway: HTTP 200 en 10,9 s devolviendo `gpt-5.6-luna`, o sea la
+              # NUBE, por el desvio de capacidad de LiteLLM. Y este explainer ya
+              # estaba fallando en produccion: 15 ejecuciones `failed`, una con
+              # "You passed in model=agent" y 14 con "empty explanation".
+              # `tooling` lo sirve el residente de LOS DOS perfiles de computo, asi
+              # que es el unico nombre local que no se rompe al cambiar de perfil.
+              value: tooling
             - name: LITELLM_API_KEY
               valueFrom:
                 secretKeyRef:
