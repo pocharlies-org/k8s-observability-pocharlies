@@ -88,12 +88,22 @@ spec:
         # Deployments sit at zero legitimately (alternative model profiles,
         # canaries, retired node variants), so a namespace-wide "== 0" would be
         # pure noise. Add a Deployment here only when zero is never correct.
-        # bge-m3-embedding and bge-reranker are the DGX1 halves, pinned to
-        # minReplicaCount: 1; if their VRAM gate is ever re-armed (min: 0), drop
-        # them from this list and let LlmPoolCapabilityUnavailable cover them.
+        # bge-m3-embedding and bge-reranker-cpu are the halves that actually
+        # serve the two pool Services, pinned to minReplicaCount: 1; if their
+        # VRAM gate is ever re-armed (min: 0), drop them from this list and let
+        # LlmPoolCapabilityUnavailable cover them.
+        #
+        # 2026-08-19: this said `bge-reranker`, and NO SUCH DEPLOYMENT EXISTS —
+        # measured against kube-state-metrics, the only bge Deployments are
+        # bge-m3-embedding, bge-m3-embedding-cpu, bge-m3-embedding-creative,
+        # bge-reranker-cpu and bge-reranker-creative. An absent series can never
+        # satisfy `== 0`, so this arm had been silently dead: the reranker could
+        # be declared at zero forever without paging. The reranker pool is served
+        # by bge-reranker-cpu today. Do not write a Deployment name here without
+        # checking it exists in the metric first.
         - alert: LlmResidentScaledToZero
           expr: |
-            kube_deployment_spec_replicas{namespace="llm",deployment=~"omnivoice-audio|omnivoice-tts-nvfp4|stt-turbo|bge-m3-embedding|bge-reranker"} == 0
+            kube_deployment_spec_replicas{namespace="llm",deployment=~"omnivoice-audio|omnivoice-tts-nvfp4|stt-turbo|bge-m3-embedding|bge-reranker-cpu"} == 0
           for: 15m
           labels:
             severity: critical
@@ -110,18 +120,55 @@ spec:
         # down simultaneously for ~8 minutes (DGX1 parked at zero by the
         # isolation window, DGX2 preempted) and nothing noticed, because there
         # is no CPU fallback since 2026-07-03. Alert on the sum, not the parts.
+        #
+        # 2026-08-19: rewritten off Deployments and onto EndpointSlices, because
+        # the Deployment form was dead for half of what it claimed to cover.
+        # Measured against kube-state-metrics: the `bge-reranker` and
+        # `bge-m3-embedding-dgx2` / `bge-reranker-dgx2` Deployments DO NOT EXIST,
+        # so that whole arm produced zero series and `== 0` on an absent series
+        # never fires. The rule could only ever see the bge-embedding pool.
+        #
+        # EndpointSlices are also the right thing to measure, not a workaround.
+        # These are POOL Services selecting on a label (`bge-pool: embedding` /
+        # `bge-pool: reranker`), not on a Deployment, so the capability is "does
+        # the Service have a ready address", which survives the halves being
+        # renamed or replaced (the reranker pool is served by bge-reranker-cpu
+        # today, a name this rule never mentioned). It also catches the failure
+        # that Deployment counts structurally cannot: a Service whose selector
+        # matches nothing while healthy pods sit right next to it — the brain
+        # then does not fail, it lies, answering 200 with zero sources.
+        #
+        # The `absent() * 0` arms are load-bearing. An EndpointSlice with no
+        # addresses emits NO SERIES AT ALL rather than a zero, so a bare `== 0`
+        # would be mute in exactly the outage this alert exists for (verified:
+        # the empty bge-m3-embedding-cpu slice has no series). absent() yields 1
+        # when the series is gone; label_replace puts the pool label back on it
+        # so the annotation still renders, and `* 0` lands it on the `== 0`.
+        # The `[a-z0-9]+` suffix is anchored by Prometheus and does not match a
+        # hyphen, so `bge-m3-embedding-[a-z0-9]+` selects the pool Service's own
+        # slice and NOT bge-m3-embedding-cpu-*. Verified live: one series per arm.
         - alert: LlmPoolCapabilityUnavailable
           expr: |
             sum by (pool) (
               label_replace(
-                kube_deployment_status_replicas_available{namespace="llm",deployment=~"bge-m3-embedding|bge-m3-embedding-dgx2"},
-                "pool", "bge-embedding", "deployment", ".*"
+                kube_endpointslice_endpoints{namespace="llm",endpointslice=~"bge-m3-embedding-[a-z0-9]+",ready="true"},
+                "pool", "bge-embedding", "endpointslice", ".*"
               )
               or
               label_replace(
-                kube_deployment_status_replicas_available{namespace="llm",deployment=~"bge-reranker|bge-reranker-dgx2"},
-                "pool", "bge-reranker", "deployment", ".*"
+                kube_endpointslice_endpoints{namespace="llm",endpointslice=~"bge-reranker-[a-z0-9]+",ready="true"},
+                "pool", "bge-reranker", "endpointslice", ".*"
               )
+              or
+              label_replace(
+                absent(kube_endpointslice_endpoints{namespace="llm",endpointslice=~"bge-m3-embedding-[a-z0-9]+",ready="true"}),
+                "pool", "bge-embedding", "", ""
+              ) * 0
+              or
+              label_replace(
+                absent(kube_endpointslice_endpoints{namespace="llm",endpointslice=~"bge-reranker-[a-z0-9]+",ready="true"}),
+                "pool", "bge-reranker", "", ""
+              ) * 0
             ) == 0
           for: 5m
           labels:
@@ -129,8 +176,8 @@ spec:
             area: kubernetes
             workload_class: llm-pool
           annotations:
-            summary: "LLM pool has no serving replica on any node"
-            description: "The {{ $labels.pool }} pool has zero available replicas across both GB10 nodes, so its Service has no endpoints and there is no CPU fallback. Everything that embeds or reranks (brain, litellm, openclaw) is failing. Check the KEDA ScaledObjects on both nodes and whether the gpu_arbiter has preempted the DGX2 half while the DGX1 half was already down."
+            summary: "LLM pool Service has no ready endpoint"
+            description: "The {{ $labels.pool }} pool Service has no ready endpoint, so everything that embeds or reranks (brain, litellm, openclaw) is failing and there is no CPU fallback. Note this fires on zero ENDPOINTS, not zero replicas: healthy pods sitting next to a Service whose label selector (bge-pool) matches none of them looks exactly like this, and the brain will answer 200 with zero sources rather than erroring. Check `kubectl get endpointslices -n llm | grep bge` first, then the pods' bge-pool label, then the KEDA ScaledObjects and whether the gpu_arbiter preempted a half."
         - alert: KubernetesStatefulSetUnavailable
           expr: kube_statefulset_replicas > kube_statefulset_status_replicas_ready
           for: 5m
