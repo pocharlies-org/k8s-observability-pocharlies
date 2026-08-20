@@ -45,8 +45,8 @@ fullnameOverride: aurora
 # Al subir la versión del chart en apps/aurora.yaml, subir también este tag.
 # ---------------------------------------------------------------------------
 image:
-  registry: ghcr.io/arvo-ai
-  tag: "1.2.16"
+  registry: ghcr.io/pocharlies-org
+  tag: "sha-e35121aeb7d80293d2e4ce462fe2bc05d9adb469"
 
 # ---------------------------------------------------------------------------
 # Infra compartida en vez de la del chart. Ahorra ~4GB y evita duplicar bases de
@@ -68,6 +68,10 @@ services:
 
 config:
   AURORA_ENV: production
+
+  TOOL_OUTPUT_PASS_THROUGH_CHARS: "16000"
+  TOOL_OUTPUT_MAX_SUMMARIZATION_INPUT_CHARS: "120000"
+  TOOL_CONTEXT_SUMMARIZATION_THRESHOLD_TOKENS: "10000"
 
   # --- Postgres compartido ---
   POSTGRES_HOST: postgres-shared-rw.databases.svc.cluster.local
