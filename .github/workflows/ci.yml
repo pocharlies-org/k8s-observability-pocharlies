@@ -19,8 +19,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
-      - name: Run idempotency and budget tests
-        run: python -m unittest discover -s k8sgpt-explainer/tests -v
+      - name: Run idempotency, budget, and alert-dispatch contracts
+        run: |
+          python -m unittest discover -s k8sgpt-explainer/tests -v
+          python -m unittest discover -s tests -v
 
   standard:
     needs: [k8sgpt-explainer-tests]

@@ -836,8 +836,9 @@ backend:
         # disparar Aurora hasta que un operador lo rearme explícitamente.
         disabled: false
         description: >-
-          Manda cada incidente nuevo a Aurora, que lanza agentes read-only sobre
-          el clúster y produce un RCA, como máximo una vez por fingerprint.
+          Manda sólo incidentes critical nuevos a Aurora, que lanza agentes
+          read-only sobre el clúster y produce un RCA, como máximo una vez por
+          fingerprint.
         triggers:
           - type: incident
             events: [created]
@@ -871,7 +872,13 @@ backend:
                         ),
                         ''
                       ) AS fingerprint,
-                      NULLIF('{{ incident.id }}', '')::uuid AS keep_incident_id
+                      NULLIF('{{ incident.id }}', '')::uuid AS keep_incident_id,
+                      NULLIF('{{ incident.severity }}', '') AS severity
+                    -- Defensa antes del claim: warning/info ni siquiera se
+                    -- convierten en candidatos, por lo que no dejan una marca
+                    -- duradera que impediría investigarlos si después se eleva
+                    -- a critical.
+                    WHERE '{{ incident.severity }}' = 'critical'
                   ), claimed AS (
                     INSERT INTO keep_bridge.aurora_dispatches (
                       fingerprint,
@@ -896,7 +903,7 @@ backend:
             # No hay retry del webhook: si Aurora aceptó la petición pero se
             # perdió la respuesta, reintentar aquí volvería a lanzar sus tareas
             # LLM aunque el incidente de Aurora ya existiera.
-            if: "'{{ steps.claim-dispatch.results.0.0 }}' != ''"
+            if: "'{{ incident.severity }}' == 'critical' and '{{ steps.claim-dispatch.results.0.0 }}' != ''"
             provider:
               type: webhook
               config: "{{ providers.aurora }}"

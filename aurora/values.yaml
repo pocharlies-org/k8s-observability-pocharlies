@@ -346,6 +346,20 @@ tolerations:
 # acercarse al worker, que es quien ejecuta los agentes.
 # ---------------------------------------------------------------------------
 resources:
+  # El frontend de Next.js sostenia ~294m con el limite stock de 300m y quedaba
+  # estrangulado ~94 % del tiempo; tambien rozaba los 512Mi de memoria. Sauvage
+  # tiene margen amplio, asi que dimensionamos el proceso para su carga real en
+  # vez de silenciar CPUThrottlingHigh.
+  frontend:
+    requests:
+      cpu: "100m"
+      memory: 512Mi
+      ephemeral-storage: 512Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+      ephemeral-storage: 1Gi
+
   celeryBeat:
     requests:
       cpu: 50m
