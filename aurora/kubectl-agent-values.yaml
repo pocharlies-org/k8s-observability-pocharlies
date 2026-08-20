@@ -44,11 +44,15 @@ agent:
     pullPolicy: IfNotPresent
 
   resources:
+    # El agente mantiene watches sobre todo el cluster: medido a ~137m con el
+    # limite stock de 200m acumulaba ~50 % de periodos throttled. Sauvage tiene
+    # margen; reservamos su consumo sostenido y dejamos holgura para los bursts
+    # de una investigacion, sin relajar su RBAC de solo lectura.
     requests:
-      cpu: 50m
+      cpu: 200m
       memory: 128Mi
     limits:
-      cpu: 200m
+      cpu: "1"
       memory: 256Mi
 
   podSecurityContext:
