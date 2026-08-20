@@ -499,7 +499,20 @@ spec:
               (
                 max by (namespace, job_name) (kube_job_failed{condition="true"} == 1)
                 and on (namespace, job_name)
-                max by (namespace, job_name) (kube_job_status_start_time > time() - 3600)
+                # 4 h, no 1 h. Un Job que muere por `DeadlineExceeded` lo hace
+                # EXACTAMENTE al cumplirse su activeDeadlineSeconds, asi que la
+                # ventana tiene que exceder el deadline mas largo del cluster o
+                # el fallo es estructuralmente invisible: la condicion se vuelve
+                # falsa a los segundos y NUNCA puede sostener el `for: 15m`.
+                #
+                # Paso el 16-08-2026: logical-dump-postgres-shared-weekly tenia
+                # deadline 3600, murio a T+3600 y este alerta no disparo. Diez
+                # dias sin foto semanal completa y nadie se entero.
+                #
+                # Deadline mas largo hoy: recovery-kit-to-drive, 10800 s (3 h).
+                # REGLA: al subir un activeDeadlineSeconds por encima de 4 h hay
+                # que ensanchar esta ventana en el MISMO commit.
+                max by (namespace, job_name) (kube_job_status_start_time > time() - 14400)
               )
               * on (namespace, job_name) group_left(owner_name)
                 max by (namespace, job_name, owner_name) (kube_job_owner{owner_kind="CronJob"})
@@ -537,6 +550,102 @@ spec:
           annotations:
             summary: "CronJob {{ $labels.namespace }}/{{ $labels.owner_name }} failed"
             description: "Job {{ $labels.job_name }} owned by CronJob {{ $labels.namespace }}/{{ $labels.owner_name }} has failed. The cron-alert-analyzer will post a root-cause analysis to the Telegram 'Crons' topic."
+    - name: pocharlies.backup-freshness
+      rules:
+        # Kubernetes es autoritativo sobre si el backup COMPLETO, mismo criterio
+        # que pocharlies.sii-cronjobs. Estas alertas existen porque el 16-08-2026
+        # `logical-dump-postgres-shared-weekly` murio por DeadlineExceeded a
+        # mitad del rclone copy, dejo en minio el manifest y el .sha256 SIN el
+        # .sql.gz de 2,4 GB, y estuvo DIEZ DIAS asi sin que nada avisara:
+        #
+        #   · el `rclone check` del propio job va DESPUES del copy, asi que un
+        #     job que muere nunca llega a ejecutarlo;
+        #   · su guarda de frescura mira la edad del candidato en el ORIGEN, no
+        #     si la copia al DESTINO termino;
+        #   · un `ls` del prefijo enseña ficheros con fecha reciente: parece sano;
+        #   · K8sCronJobFailed no lo vio por su ventana de 1 h (ya ensanchada
+        #     arriba, en el mismo commit que esto).
+        #
+        # Estas tres alertas prueban que el Job TERMINO BIEN. Que el ARTEFACTO
+        # este completo es otra cosa y NO se cubre aqui: hace falta un
+        # verificador que audite el prefijo (que exista un .sql.gz por cada
+        # .sha256, y que su tamaño cuadre con el del origen). Sin el, un job que
+        # sale 0 habiendo copiado medio fichero sigue siendo invisible.
+        - alert: BackupWeeklySnapshotStale
+          # Domingos 21:40 UTC. 8 dias + 2 h: tolera una semana saltada sin ruido
+          # pero caza dos seguidas. Misma ventana que el `--max-age 8d` con el
+          # que el propio job busca su candidato.
+          expr: |
+            (
+              time() - max by (namespace, cronjob) (
+                kube_cronjob_status_last_successful_time{
+                  namespace="databases",
+                  cronjob="logical-dump-postgres-shared-weekly"
+                }
+              ) > 8 * 86400 + 7200
+            )
+            or
+            absent(kube_cronjob_status_last_successful_time{
+              namespace="databases", cronjob="logical-dump-postgres-shared-weekly"
+            })
+          for: 15m
+          labels:
+            severity: critical
+            area: backup
+            domain: crons
+            component: postgres-shared
+          annotations:
+            summary: "La foto SEMANAL de postgres-shared no completa desde hace mas de 8 dias"
+            description: "El CronJob databases/logical-dump-postgres-shared-weekly no registra exito en Kubernetes en mas de 8 dias, o su metrica esta ausente. Es el UNICO que da profundidad de archivo por encima de los 14 dias de Veeam: pasada la quincena, sin el no hay a que volver. OJO: comprueba los BYTES en minio, no el estado del Job. `kubectl exec -n minio minio-0 -- ls /data/cnpg-backups/logical-dumps/postgres-shared-weekly/` debe tener un .sql.gz por cada .sha256."
+        - alert: BackupRecoveryKitStale
+          # Diario 21:30 UTC. 26 h cubre el retraso normal sin tragarse dos noches.
+          expr: |
+            (
+              time() - max by (namespace, cronjob) (
+                kube_cronjob_status_last_successful_time{
+                  namespace="backup-hub", cronjob="recovery-kit-to-drive"
+                }
+              ) > 26 * 3600
+            )
+            or
+            absent(kube_cronjob_status_last_successful_time{
+              namespace="backup-hub", cronjob="recovery-kit-to-drive"
+            })
+          for: 15m
+          labels:
+            severity: critical
+            area: backup
+            domain: crons
+            component: recovery-kit
+          annotations:
+            summary: "El kit de recuperacion no ha subido a Drive en mas de 26 h"
+            description: "El CronJob backup-hub/recovery-kit-to-drive no registra exito en Kubernetes en mas de 26 h. Fallo CUATRO noches seguidas (16-19 de agosto de 2026) con el emptyDir desbordado y nadie se entero, porque el CronJob estaba fuera de ArgoCD y ninguna Application se ponia en rojo. Es el kit auditable para reconstruir las BBDD sin depender de OVH."
+        - alert: BackupDailyDumpStale
+          # Diario 21:00 UTC. Es la base de la que comen los otros dos: el
+          # semanal promociona SU fichero y el kit lo sube a Drive, asi que
+          # ambos pueden seguir verdes un tiempo prometiendo una copia que ya
+          # no se renueva.
+          expr: |
+            (
+              time() - max by (namespace, cronjob) (
+                kube_cronjob_status_last_successful_time{
+                  namespace="databases", cronjob="logical-dump-postgres-shared"
+                }
+              ) > 26 * 3600
+            )
+            or
+            absent(kube_cronjob_status_last_successful_time{
+              namespace="databases", cronjob="logical-dump-postgres-shared"
+            })
+          for: 15m
+          labels:
+            severity: critical
+            area: backup
+            domain: crons
+            component: postgres-shared
+          annotations:
+            summary: "El dump DIARIO de postgres-shared no completa desde hace mas de 26 h"
+            description: "El CronJob databases/logical-dump-postgres-shared no registra exito en Kubernetes en mas de 26 h. De este dump comen los otros dos: el semanal promociona su fichero y el kit lo sube a Drive."
 ---
 apiVersion: operator.victoriametrics.com/v1beta1
 kind: VMRule
