@@ -167,11 +167,11 @@ data:
           "include": "documents", "include_deleted": false}}
         results_query: documents
         url_query: metadata/source_id
-        url_prefix: "https://brain-k8s.lan.e-dani.com/instances/claude-personal/documents/"
+        url_prefix: "https://brain-k8s.e-dani.com/instances/claude-personal/documents/"
         title_query: text
         content_query: text
         about:
-          website: https://brain-k8s.lan.e-dani.com
+          website: https://brain-k8s.e-dani.com
 ---
 # La API key del brain, desde Vault.
 #

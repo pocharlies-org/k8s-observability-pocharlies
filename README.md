@@ -20,7 +20,7 @@ El stack Kubernetes debe ser la fuente principal:
 
 - **Metrics**: VictoriaMetrics k8s stack, kube-state-metrics, kubelet/cAdvisor y node-exporter.
 - **Logs**: Loki + Alloy en todos los nodos, incluido `sauvage`.
-- **Dashboards**: Grafana en `https://grafana.lan.e-dani.com`.
+- **Dashboards**: Grafana en `https://grafana.e-dani.com`.
 - **Alertas**: VMAlert + VMAlertmanager, con webhook hacia Synapse/OpenClaw.
 - **Estado de servicios**: reglas de disponibilidad de workloads y probes blackbox para ingresses LAN/publicos.
 

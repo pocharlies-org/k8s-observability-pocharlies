@@ -190,7 +190,7 @@ backend:
                 message: |
                   🔴 <b>{{#fn.na}}{{ incident.user_generated_name }}{{/fn.na}}</b>
                   {{ incident.alerts_count }} alertas · {{ incident.services }}
-                  https://keep.lan.e-dani.com/incidents/{{ incident.id }}
+                  https://keep.e-dani.com/incidents/{{ incident.id }}
 
       - id: notify-incident
         name: Telegram — incidentes al tema alertas
@@ -229,7 +229,7 @@ backend:
                 message: |
                   ⚠️ <b>{{#fn.na}}{{ incident.user_generated_name }}{{/fn.na}}</b>
                   {{ incident.alerts_count }} alertas · {{ incident.services }}
-                  https://keep.lan.e-dani.com/incidents/{{ incident.id }}
+                  https://keep.e-dani.com/incidents/{{ incident.id }}
 
       # ---------------------------------------------------------------------
       # EL RESUMEN, AISLADO. Este workflow SÍ puede abortar — ése es justamente
@@ -312,7 +312,7 @@ backend:
 
                   {{ steps.llm-summary.results.response }}
 
-                  https://keep.lan.e-dani.com/incidents/{{ incident.id }}
+                  https://keep.e-dani.com/incidents/{{ incident.id }}
 
           - name: summary-incident
             if: "'{{ incident.severity }}' != 'critical'"
@@ -334,7 +334,7 @@ backend:
 
                   {{ steps.llm-summary.results.response }}
 
-                  https://keep.lan.e-dani.com/incidents/{{ incident.id }}
+                  https://keep.e-dani.com/incidents/{{ incident.id }}
 
       # ---------------------------------------------------------------------
       # LA VUELTA DEL BUCLE: el análisis de Aurora regresa al grupo.
@@ -573,7 +573,7 @@ backend:
                 # SÓLO CAMBIA LA MAYÚSCULA, y ésa es toda la gracia. El escáner
                 # compara `text[i:i+5] == "keep."` — sensible a mayúsculas
                 # (iohandler.py:122) —, así que `Keep.` no lo dispara. Y como
-                # DNS no distingue mayúsculas, `https://Keep.lan.e-dani.com`
+                # DNS no distingue mayúsculas, `https://Keep.e-dani.com`
                 # SIGUE SIENDO UNA URL VÁLIDA.
                 #
                 # La primera versión sustituía por `keep_` y publicó al grupo
@@ -771,7 +771,7 @@ backend:
                   {{ steps.llm-rca.results.response }}
 
                   Severidad: {{ steps.rca-datos.results.0.2 }}
-                  Análisis en Aurora: https://aurora.lan.e-dani.com/incidents/{{ steps.rca-datos.results.0.5 }}
+                  Análisis en Aurora: https://aurora.e-dani.com/incidents/{{ steps.rca-datos.results.0.5 }}
           - name: mark-reported
             if: "'{{ steps.rca-datos.results.0.0 }}' != ''"
             provider:
@@ -882,7 +882,7 @@ backend:
                     incident_id: "{{ incident.id }}"
                   commonAnnotations:
                     summary: "{{#fn.na}}{{ incident.user_generated_name }}{{/fn.na}}"
-                    keep_url: "https://keep.lan.e-dani.com/incidents/{{ incident.id }}"
+                    keep_url: "https://keep.e-dani.com/incidents/{{ incident.id }}"
                   # SIN este array Aurora guarda la alerta y NO abre incidente:
                   # tasks.py:227 hace `if not payload.get("alerts"): return` — un
                   # descarte deliberado, porque las notificaciones de prueba de
@@ -915,7 +915,7 @@ backend:
                       annotations:
                         summary: "{{#fn.na}}{{ incident.user_generated_name }}{{/fn.na}}"
                         description: "{{ incident.alerts_count }} alertas correlacionadas por la regla {{ incident.rule_name }}"
-                        keep_url: "https://keep.lan.e-dani.com/incidents/{{ incident.id }}"
+                        keep_url: "https://keep.e-dani.com/incidents/{{ incident.id }}"
 
       # Guardián de invariante: hace que una severidad fuera del vocabulario
       # canónico sea CONSULTABLE en vez de invisible. Enriquece y punto — no
@@ -947,7 +947,7 @@ backend:
     # URL pública del backend, la que el navegador usa. Con el ingress del chart
     # desactivado hay que fijarla: los helpers caerían a /backend.
     - name: KEEP_API_URL
-      value: https://keep-api.lan.e-dani.com
+      value: https://keep-api.e-dani.com
     - name: PORT
       value: "8080"
     # Los secretos de providers se guardan como Secrets de k8s en este namespace
@@ -1163,7 +1163,7 @@ frontend:
     # Así que oauth2-proxy veía las dos sin sesión y devolvía 302 a Keycloak.
     # El navegador lo cuenta como fallo de CORS y la UI pinta "API server is not
     # available / 503" — comprobado con curl el 2026-08-07: OPTIONS a
-    # keep-api.lan.e-dani.com responde 302 a auth-next.
+    # keep-api.e-dani.com responde 302 a auth-next.
     #
     # Es exactamente la trampa que documenta aurora/values.yaml y que a Aurora
     # se le arregló moviendo su API a /backend del mismo host. Keep tenía el
@@ -1173,9 +1173,9 @@ frontend:
     # relativo: hay código que construye `new URL(apiUrl)` y una ruta suelta lo
     # rompería. El host es el mismo, que es lo que importa para la cookie.
     - name: API_URL_CLIENT
-      value: https://keep.lan.e-dani.com/backend   # el que resuelve el navegador
+      value: https://keep.e-dani.com/backend   # el que resuelve el navegador
     - name: NEXTAUTH_URL
-      value: https://keep.lan.e-dani.com
+      value: https://keep.e-dani.com
     - name: AUTH_TYPE
       value: OAUTH2PROXY
     - name: KEEP_OAUTH2_PROXY_USER_HEADER

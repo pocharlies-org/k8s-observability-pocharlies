@@ -16,18 +16,18 @@ spec:
       labels:
         scope: lan
       targets:
-        - https://adguard.lan.e-dani.com/
-        - https://argocd.lan.e-dani.com/
-        - https://grafana.lan.e-dani.com/
-        - https://alertmanager.lan.e-dani.com/
-        - https://vm.lan.e-dani.com/
+        - https://adguard.e-dani.com/
+        - https://argocd.e-dani.com/
+        - https://grafana.e-dani.com/
+        - https://alertmanager.e-dani.com/
+        - https://vm.e-dani.com/
         - https://harbor.lan.e-dani.com/
-        - https://litellm.lan.e-dani.com/health/liveliness
-        - https://longhorn.lan.e-dani.com/
-        - https://minio.lan.e-dani.com/
-        - https://s3.lan.e-dani.com/
-        - https://teslamate.lan.e-dani.com/
-        - https://vault.lan.e-dani.com/
+        - https://litellm.e-dani.com/health/liveliness
+        - https://longhorn.e-dani.com/
+        - https://minio.e-dani.com/
+        - https://minio-s3.e-dani.com/
+        - https://teslamate.e-dani.com/
+        - https://vault.e-dani.com/
 ---
 apiVersion: operator.victoriametrics.com/v1beta1
 kind: VMProbe

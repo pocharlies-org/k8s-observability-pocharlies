@@ -156,8 +156,8 @@ grafana:
         key: client-secret
   grafana.ini:
     server:
-      domain: grafana.lan.e-dani.com
-      root_url: https://grafana.lan.e-dani.com/
+      domain: grafana.e-dani.com
+      root_url: https://grafana.e-dani.com/
     auth.generic_oauth:
       enabled: true
       name: Keycloak
