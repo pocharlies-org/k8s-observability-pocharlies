@@ -253,27 +253,9 @@ backend:
       # nada que parsear y el 400 no puede ocurrir. Telegram autoenlaza la URL
       # igualmente.
       #
-      # `model: litellmrouter`, MEDIDO el 2026-08-10 con un prompt de 5,6 KB y
-      # 300 tokens de salida desde este mismo pod:
-      #
-      #   tooling             >180 s  (timeout)
-      #   router                31,2 s
-      #   litellmrouter         10,5 s   <-- 17x mas rapido que tooling
-      #   qwen36-35b-tooling    13,3 s
-      #
-      # `tooling` no responde en 3 minutos, y de ahi salian los read-timeout de
-      # 60 s del provider. `litellmrouter` hace failover a Ornith, que es lo que
-      # manda usar la regla del proyecto.
-      #
-      # (Lo de abajo era el argumento de cuando esto apuntaba a tooling-ha,
-      # alias retirado el 2026-08-10.)
-      # `model: tooling` y no `router`: tooling lleva cadena de fallback
-      # (tooling → dense) por el hook `litellm_strip_params` del
-      # repo k8s-litellm-pocharlies, así que sobrevive a las rotaciones del
-      # backend-sync que provocaron los 34 errores de conexión. OJO: tooling
-      # NO aparece en /v1/models y aun así responde 200 — comprobado el
-      # 2026-08-05 desde este mismo pod con la key del provider `llm`. No lo
-      # quites porque "no está en la lista".
+      # `model: tooling`: es el alias estable de capacidad y LiteLLM lo apunta
+      # al backend local que esté listo. Keep no queda acoplado al nombre del
+      # modelo residente ni a un alias de enrutado automático.
       # ---------------------------------------------------------------------
       - id: incident-summary
         name: Telegram — resumen LLM del incidente
@@ -300,7 +282,7 @@ backend:
               type: litellm
               config: "{{ providers.llm }}"
               with:
-                model: litellmrouter
+                model: tooling
                 temperature: 0.1
                 max_tokens: 400
                 prompt: |
@@ -689,31 +671,14 @@ backend:
               type: litellm
               config: "{{ providers.llm }}"
               with:
-                # `tooling`, NO `litellmrouter`. MEDIDO el 2026-08-13 con el
-                # payload EXACTO de este step (mismo prompt, 12.066 B de
-                # evidencia real, temperature 0.1, max_tokens 500), cinco
-                # pasadas de cada uno contra el Service in-cluster:
-                #
-                #   litellmrouter   finish=length ×5, content=null ×5, 14-23 s
-                #   tooling         finish=stop   ×5, 259-367 tok RCA, 11-16 s
-                #
-                # El motivo es del hook `litellm_strip_params`, no del modelo:
-                # `litellmrouter` está en AUTO_ROUTED_MODELS y la palabra
-                # "investiga" del prompt fijo cae en ROUTER_HIGH_HINTS
-                # (manifest.yaml:876-883) => tier HIGH => razonamiento. Con 500
-                # tokens de techo se los come enteros en `reasoning_content` y
-                # devuelve `content` vacío, igual que le pasa al k8sgpt-explainer.
-                #
-                # Subir max_tokens NO es la salida: el provider de Keep tiene
-                # `timeout=60` HARDCODEADO (litellm_provider.py:95) y en tier
-                # HIGH la latencia se va por encima. Reescribir el prompt para
-                # esquivar la palabra tampoco: la EVIDENCIA la escribe kubectl y
-                # trae "incidente", "producción" o "deploy" cuando le toca, y
-                # cada una de ésas vuelve a disparar HIGH.
-                #
-                # `tooling` es alias de capacidad con THINKING_TIERS "off"
-                # (manifest.yaml:1218-1223): no razona, así que `content` nunca
-                # sale vacío. NO aparece en /v1/models y aun así responde 200.
+                # `tooling` se midió el 2026-08-13 con el payload exacto de
+                # este step (12.066 B de evidencia real, temperature 0.1 y
+                # max_tokens 500): terminó en 11-16 s con 259-367 tokens de RCA.
+                # Es el alias de capacidad sin razonamiento forzado, así que el
+                # presupuesto se dedica a `content` y cabe en el timeout de 60 s
+                # que Keep fija en su provider. De este modo también sigue al
+                # backend local listo cuando LiteLLM cambia el modelo residente.
+                # Con este perfil `content` no sale vacío.
                 model: tooling
                 temperature: 0.1
                 max_tokens: 500
