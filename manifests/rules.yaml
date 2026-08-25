@@ -1496,3 +1496,63 @@ spec:
             description: >-
               Con Watchdog activo debería haber tráfico constante hacia el
               webhook. Silencio total sugiere que la ruta no está entregando.
+---
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMRule
+metadata:
+  name: deepseek-v4-runtime-health
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: deepseek-v4-flash-0731
+    app.kubernetes.io/component: alerting
+spec:
+  groups:
+    - name: deepseek-v4.runtime-health
+      rules:
+        # Firma medida el 25-08-2026 durante el bloqueo TP: los dos GB10
+        # permanecieron al 96% de utilizacion pero por debajo de 22 W mientras
+        # habia 2-4 requests activas y el motor generaba 0.36 tokens/s.
+        - alert: DeepSeekTpSpinWaitSuspected
+          expr: |
+            (
+              max(vllm:num_requests_running{
+                job="deepseek-v4-flash-0731",
+                model_name="deepseek-v4-flash-0731"
+              }) > 0
+            )
+              and on()
+            (
+              sum(rate(vllm:generation_tokens_total{
+                job="deepseek-v4-flash-0731",
+                model_name="deepseek-v4-flash-0731"
+              }[2m])) < 2
+            )
+              and on()
+            (
+              count(DCGM_FI_DEV_GPU_UTIL{
+                Hostname=~"gx10-ec3d|nvidia-dgx",
+                exported_namespace="llm",
+                exported_pod=~"deepseek-v4-flash-0731-(head|worker)-.*"
+              } > 90) == 2
+            )
+              and on()
+            (
+              count(DCGM_FI_DEV_POWER_USAGE{
+                Hostname=~"gx10-ec3d|nvidia-dgx",
+                exported_namespace="llm",
+                exported_pod=~"deepseek-v4-flash-0731-(head|worker)-.*"
+              } < 30) == 2
+            )
+          for: 2m
+          labels:
+            severity: critical
+            area: gpu
+            workload_class: gpu-llm
+            component: deepseek-v4-flash-0731
+          annotations:
+            summary: "DeepSeek TP=2 parece bloqueado en espera activa"
+            description: >-
+              DeepSeek tiene peticiones activas y genera menos de 2 tokens/s,
+              mientras ambos GB10 superan 90% de utilizacion con menos de 30 W.
+              Esta es la firma medida del spin-wait TP/NCCL: comprobar los logs
+              de head y worker y reiniciar ambos ranks juntos si no se recupera.
