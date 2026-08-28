@@ -1556,3 +1556,73 @@ spec:
               mientras ambos GB10 superan 90% de utilizacion con menos de 30 W.
               Esta es la firma medida del spin-wait TP/NCCL: comprobar los logs
               de head y worker y reiniciar ambos ranks juntos si no se recupera.
+---
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMRule
+metadata:
+  name: qwen38-flash-next-runtime-health
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: qwen38-flash-next
+    app.kubernetes.io/component: alerting
+spec:
+  groups:
+    - name: qwen38-flash-next.runtime-health
+      rules:
+        # OJO AL LEER ESTAS METRICAS A MANO: el mismo pod lo raspan TRES jobs
+        # (`qwen38-flash-next`, `qwen38-flash-next-head` y `tooling`), asi que
+        # un `sum()` triplica. El 28-08 eso hizo leer 24 peticiones en vuelo
+        # donde habia 8 -- justo el techo de max_running_requests, que era el
+        # dato que importaba. Estas tres reglas dejan la serie ya deduplicada
+        # para que el post-mortem no repita el error.
+        - record: qwen38:spec_accept_length:max
+          expr: max by (pod) (sglang:spec_accept_length{model_name="qwen38-flash-next"})
+        - record: qwen38:running_reqs:max
+          expr: max by (pod) (sglang:num_running_reqs{model_name="qwen38-flash-next"})
+        - record: qwen38:gen_throughput:max
+          expr: max by (pod) (sglang:gen_throughput{model_name="qwen38-flash-next"})
+
+        # FIRMA MEDIDA el 28-08-2026 en el historico de VictoriaMetrics.
+        #
+        # La especulacion NEXTN no se rompe al arrancar: se degrada en caliente
+        # y se queda pegada. El 27-08 sirvio todo el dia entre 1.5 y 3.9 en seis
+        # pods. El pod del 28-08 arranco sano a las 01:30, y a las 08:30 el
+        # accept length cayo a exactamente 1.00 y NO se recupero en seis horas;
+        # en ese mismo minuto las peticiones en vuelo llegaron a 8. Solo lo cura
+        # reiniciar el pod.
+        #
+        # accept length 1.00 = se rechaza el 100% de los tokens de draft. Es la
+        # misma firma que describe sglang#36537 para el bucle de token id 0, que
+        # con este tokenizer se ve como `!!!!!`. O sea que esta alerta es el
+        # detector de la corrupcion, no solo un aviso de rendimiento.
+        #
+        # Se exige trafico de decode (`gen_throughput > 0`) porque en reposo el
+        # accept length se queda en su ultimo valor y daria un falso positivo.
+        - alert: Qwen38SpeculationWedged
+          expr: |
+            (
+              qwen38:spec_accept_length:max <= 1.05
+            )
+              and
+            (
+              qwen38:gen_throughput:max > 0
+            )
+          for: 5m
+          labels:
+            severity: critical
+            area: gpu
+            workload_class: gpu-llm
+            component: qwen38-flash-next
+          annotations:
+            summary: "qwen38-flash-next: la especulacion NEXTN esta atascada (accept length 1.00)"
+            description: >-
+              El accept length lleva 5 minutos en 1.00 o menos con trafico de
+              decode: se esta rechazando el 100% de los tokens de draft. Es la
+              firma del bucle de token 0 (sglang#36537) y del ~2x de coste
+              inutil de la especulacion. QUE MIRAR, y en este orden, porque es
+              lo que falto las tres veces anteriores: 1) `qwen38:running_reqs:max`
+              en el minuto en que empezo -- el 28-08 coincidio con llegar a 8,
+              el techo de max_running_requests; 2) que cliente estaba dentro y
+              si mandaba tools; 3) `sglang:gen_throughput` antes y despues. NO
+              reinicies antes de anotar esos tres datos: el reinicio lo cura y
+              se pierde la unica ventana de diagnostico.
