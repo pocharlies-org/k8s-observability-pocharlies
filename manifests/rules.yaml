@@ -1581,6 +1581,10 @@ spec:
           expr: max by (pod) (sglang:num_running_reqs{model_name="qwen38-flash-next"})
         - record: qwen38:gen_throughput:max
           expr: max by (pod) (sglang:gen_throughput{model_name="qwen38-flash-next"})
+        # Concurrencia MINIMA sostenida: si nunca baja de 1 en 20 minutos, hay al
+        # menos un slot que no se libera. Ver la alerta Qwen38ZombieRequests.
+        - record: qwen38:running_reqs:min20m
+          expr: min_over_time(qwen38:running_reqs:max[20m:1m])
 
         # FIRMA MEDIDA el 28-08-2026 en el historico de VictoriaMetrics.
         #
@@ -1617,12 +1621,63 @@ spec:
             summary: "qwen38-flash-next: la especulacion NEXTN esta atascada (accept length 1.00)"
             description: >-
               El accept length lleva 5 minutos en 1.00 o menos con trafico de
-              decode: se esta rechazando el 100% de los tokens de draft. Es la
-              firma del bucle de token 0 (sglang#36537) y del ~2x de coste
-              inutil de la especulacion. QUE MIRAR, y en este orden, porque es
-              lo que falto las tres veces anteriores: 1) `qwen38:running_reqs:max`
-              en el minuto en que empezo -- el 28-08 coincidio con llegar a 8,
-              el techo de max_running_requests; 2) que cliente estaba dentro y
-              si mandaba tools; 3) `sglang:gen_throughput` antes y despues. NO
-              reinicies antes de anotar esos tres datos: el reinicio lo cura y
-              se pierde la unica ventana de diagnostico.
+              decode: se esta rechazando el 100% de los tokens de draft.
+              CORREGIDO el 28-08 por la tarde: esto casi siempre es CONSECUENCIA
+              de peticiones zombi, no una causa. Un zombi decodifica basura para
+              siempre y su accept rate es 0, asi que arrastra la media. La
+              version anterior de esta anotacion culpaba a la saturacion de
+              concurrencia y era al reves: los zombis ocupan los slots y POR ESO
+              se llega al techo. PRIMERO mira si hay zombis --
+              `kubectl logs -n llm deploy/qwen38-flash-next-head | grep -c
+              "state was deleted"`-- y la alerta Qwen38ZombieRequests. Si no hay
+              zombis, entonces si es otra cosa: anota `qwen38:running_reqs:max`
+              del minuto en que empezo, que cliente estaba dentro y si mandaba
+              tools, y el gen_throughput antes y despues. NO reinicies antes de
+              anotarlo: el reinicio cura y se pierde la ventana.
+
+        # LA CAUSA REAL, identificada el 28-08-2026 con evidencia de log.
+        #
+        # sglang#36333 / #36876: al cancelar el cliente, el TokenizerManager
+        # borra `rid_to_state` SIN avisar al scheduler, que sigue decodificando
+        # esa peticion hasta max_new_tokens y no libera nunca su slot. Cada paso
+        # escupe `Received output for rid=... but the state was deleted in
+        # TokenizerManager`. Medido en el head: 11.899 de 12.850 lineas de log
+        # (92.6%) eran ese error, de TRES rids; el primero nacio a las 16:05:57
+        # y el accept rate colapso a las 16:10 -- la causa VA ANTES.
+        #
+        # Firma en metricas: la concurrencia nunca vuelve a bajar, porque los
+        # slots no se liberan. `min_over_time(...[20m])>=1` significa que ha
+        # habido al menos una peticion en vuelo de forma ININTERRUMPIDA durante
+        # 20 minutos.
+        #
+        # Por que 20m y no menos: el peor caso legitimo es una peticion sola
+        # agotando max_tokens (16384) al throughput mas lento medido (19 tok/s),
+        # o sea 14.4 min. 20m deja fuera ese caso. Validado contra el historico:
+        # con 20m dispara 06:25-13:05 y 16:10-16:55 (los dos episodios largos de
+        # hoy) y en ningun tramo sano.
+        #
+        # El parche de sglang#35936 va horneado desde la imagen v0.4.0. Si esta
+        # alerta vuelve a disparar CON esa imagen, el abort si se envio y se
+        # perdio en la ventana de transicion de batch de sglang#36876 -- que
+        # sigue sin parche upstream. Eso seria la evidencia que a ese issue le
+        # falta: captura el rid y el timestamp y comentalo alli.
+        - alert: Qwen38ZombieRequests
+          expr: qwen38:running_reqs:min20m >= 1
+          for: 5m
+          labels:
+            severity: critical
+            area: gpu
+            workload_class: gpu-llm
+            component: qwen38-flash-next
+          annotations:
+            summary: "qwen38-flash-next: peticiones zombi ocupando slots (concurrencia que no baja)"
+            description: >-
+              La concurrencia no ha bajado de 1 en 20 minutos seguidos: hay al
+              menos un slot que no se libera. Confirmalo con
+              `kubectl logs -n llm deploy/qwen38-flash-next-head --since=60s |
+              grep -c "state was deleted"` (debe ser 0; el 28-08 daba 4752 en 60
+              segundos) y saca los rid con
+              `... | grep -oP "rid='\\K[0-9a-f]+" | sort | uniq -c`. Reiniciar
+              el pod los mata, pero ANOTA antes los rid y la hora del primero:
+              con la imagen v0.4.0 en marcha, un zombi nuevo es evidencia
+              directa de la ventana de sglang#36876.
