@@ -254,6 +254,83 @@ spec:
           annotations:
             summary: "Disk IO saturation is sustained"
             description: "{{ $labels.instance }} {{ $labels.device }} has both a high IO queue and >80% IO busy time for more than 30 minutes. This is actionable saturation, not just queued writes on a slow disk."
+
+        # SC-316 (H6): el p99 del pool BGE por encima del gate.
+        #
+        # Las dos historias de silencio que cubre esta regla:
+        #   - 14-08: un backend sin parche escribio vectores truncados a 512
+        #     durante 1h45m. El embedder tardo mas de lo normal y nadie lo vio.
+        #   - 07-09 (hoy): el reranker CPU da timeouts con ArgoCD en verde. El
+        #     p99 medido a las 17:00 es 10 s contra un gate de 3 s, y las
+        #     llamadas del brain a /rerank mueren por timeout del lado cliente:
+        #     el error NUNCA pasa por el pool, asi que LlmPoolCapabilityUnavailable
+        #     (endpoints OK) no puede verlo. Esta regla es la unica que ve el
+        #     incidente de hoy desde metricas.
+        #
+        # Fuente de latencia: los dos residentees BGE son Text Embeddings
+        # Inference (TEI) y publican tei_request_duration_seconds_bucket en
+        # /metrics (scrapeados por vmagent, job bge-m3-embedding / bge-reranker).
+        # No hace falta instrumentar nada: el histograma ya existe y el p99 se
+        # puede calcular hoy. Los dos pools comparten Service canonico por
+        # perfil (bge-m3-embedding / bge-reranker) y la etiqueta `service`
+        # viene del scrape, asi que se agrupa por service.
+        #
+        # El gate es por pool segun la epica (2 s embedder, 3 s reranker). El
+        # embedder esta sano: p99 medido 0.19 s. El reranker esta ROTO ahora
+        # mismo: p99 10 s desde las 15:11.
+        #
+        # Umbrales y ventanas, con la evidencia detras (medida en vmsingle el
+        # 07-09 con sum by (service) de rate(tei_request_duration_seconds_count)):
+        #   - el guard de trafico: `and` sobre el conteo a 0.003 req/s, o sea
+        #     menos de ~3 peticiones en la ventana de 15m. Con 1 o 2 muestras
+        #     el p99 ES la peticion mas lenta: sin guard, 2 peticiones lentas
+        #     en 15 min paginan critical (hallazgo del bot, confirmado por pm).
+        #     Con trafico cero no habia falsa alarma ni antes (todas las tasas
+        #     de bucket a 0 -> histogram_quantile NaN -> no dispara); el guard
+        #     cubre la franja de 1-2 peticiones. Calibrado para no poder cegar
+        #     el incidente real: suelo del reranker en 24h 0.0089 req/s (3x
+        #     sobre el guard), trafico actual 0.026-0.030 (10x); embedder
+        #     0.092-0.644 (30x). Un guard mas alto (p. ej. 0.1 req/s) SI
+        #     cegaria: el reranker real va a ~1.6 rpm (lotes de ~25 docs).
+        #   - 15m de ventana + for 10m para los dos pools. El reranker real va
+        #     a 0.026-0.030 req/s (~1.6 rpm): 15m da ~24-27 peticiones; en 5m
+        #     habria ~8 y el p99 seria ruido. El embedder va a ~0.31 req/s,
+        #     15m sobra. El coste es que un pico de 6 min no dispara: para
+        #     timeouts de 10 s sostenidos (el de hoy lleva 2h) es irrelevante.
+        #   - severity critical: el arbol de Alertmanager es allowlist para
+        #     warning (ver docs/alert-routing-matrix.md); un warning no listado
+        #     cae al blackhole. Un pool lento degrada el RAG del brain, es page.
+        #   - area/workload_class/component: la taxonomia del fichero; Keep
+        #     enruta por severity=critical a la lane de Aurora.
+        - alert: BgePoolLatencyAboveGate
+          expr: |
+            histogram_quantile(0.99, sum by (le, service) (
+              rate(tei_request_duration_seconds_bucket{namespace="llm",service=~"bge-m3-embedding|bge-reranker"}[15m])
+            )) > on(service) (
+              label_replace(vector(2), "service", "bge-m3-embedding", "", "")
+              or
+              label_replace(vector(3), "service", "bge-reranker", "", "")
+            )
+            and on(service) (
+              sum by (service) (rate(tei_request_duration_seconds_count{namespace="llm",service=~"bge-m3-embedding|bge-reranker"}[15m])) > 0.003
+            )
+          for: 10m
+          labels:
+            severity: critical
+            area: llm
+            workload_class: llm-pool
+            component: bge-pool
+          annotations:
+            summary: "Pool BGE {{ $labels.service }}: p99 por encima del gate"
+            description: >-
+              El p99 de {{ $labels.service }} es {{ $value | humanizeDuration }}
+              sostenido 10 minutos (gate: 2 s embedder, 3 s reranker). Comprueba
+              el residente real detras del Service:
+              `kubectl get endpointslices -n llm | grep bge` y luego los pods
+              (CPU del reranker en x86, `kubectl top pod -n llm | grep bge`).
+              El incidente del 14-08 (vectores truncados a 512) se parecio a
+              esto visto desde el embedder; el de hoy (reranker CPU con
+              timeouts, ArgoCD verde) se ve desde aqui.
 ---
 apiVersion: operator.victoriametrics.com/v1beta1
 kind: VMRule
