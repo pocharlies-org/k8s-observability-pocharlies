@@ -279,15 +279,24 @@ spec:
         # embedder esta sano: p99 medido 0.19 s. El reranker esta ROTO ahora
         # mismo: p99 10 s desde las 15:11.
         #
-        # Umbrales y ventanas, con la evidencia detras:
-        #   - el guard de trafico: sin peticiones no hay p99 util (rate 0 no
-        #     produce serie), y "sin trafico" no es "sano" — por eso el `and`
-        #     sobre el conteo.
-        #   - 15m de ventana + for 10m para los dos pools. El reranker va a
-        #     ~0.13 req/s: en 5m habria ~40 peticiones y el p99 seria ruido;
-        #     15m da ~120. El embedder va a ~0.35 req/s, 15m sobra. El coste
-        #     es que un pico de 6 min no dispara: para timeouts de 10 s
-        #     sostenidos (el de hoy lleva 2h) eso es irrelevante.
+        # Umbrales y ventanas, con la evidencia detras (medida en vmsingle el
+        # 07-09 con sum by (service) de rate(tei_request_duration_seconds_count)):
+        #   - el guard de trafico: `and` sobre el conteo a 0.003 req/s, o sea
+        #     menos de ~3 peticiones en la ventana de 15m. Con 1 o 2 muestras
+        #     el p99 ES la peticion mas lenta: sin guard, 2 peticiones lentas
+        #     en 15 min paginan critical (hallazgo del bot, confirmado por pm).
+        #     Con trafico cero no habia falsa alarma ni antes (todas las tasas
+        #     de bucket a 0 -> histogram_quantile NaN -> no dispara); el guard
+        #     cubre la franja de 1-2 peticiones. Calibrado para no poder cegar
+        #     el incidente real: suelo del reranker en 24h 0.0089 req/s (3x
+        #     sobre el guard), trafico actual 0.026-0.030 (10x); embedder
+        #     0.092-0.644 (30x). Un guard mas alto (p. ej. 0.1 req/s) SI
+        #     cegaria: el reranker real va a ~1.6 rpm (lotes de ~25 docs).
+        #   - 15m de ventana + for 10m para los dos pools. El reranker real va
+        #     a 0.026-0.030 req/s (~1.6 rpm): 15m da ~24-27 peticiones; en 5m
+        #     habria ~8 y el p99 seria ruido. El embedder va a ~0.31 req/s,
+        #     15m sobra. El coste es que un pico de 6 min no dispara: para
+        #     timeouts de 10 s sostenidos (el de hoy lleva 2h) es irrelevante.
         #   - severity critical: el arbol de Alertmanager es allowlist para
         #     warning (ver docs/alert-routing-matrix.md); un warning no listado
         #     cae al blackhole. Un pool lento degrada el RAG del brain, es page.
@@ -301,6 +310,9 @@ spec:
               label_replace(vector(2), "service", "bge-m3-embedding", "", "")
               or
               label_replace(vector(3), "service", "bge-reranker", "", "")
+            )
+            and on(service) (
+              sum by (service) (rate(tei_request_duration_seconds_count{namespace="llm",service=~"bge-m3-embedding|bge-reranker"}[15m])) > 0.003
             )
           for: 10m
           labels:
