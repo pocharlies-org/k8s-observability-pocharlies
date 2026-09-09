@@ -1758,3 +1758,64 @@ spec:
               el pod los mata, pero ANOTA antes los rid y la hora del primero:
               con la imagen v0.4.0 en marcha, un zombi nuevo es evidencia
               directa de la ventana de sglang#36876.
+---
+# SC-389: auditor de pedidos Shopify-Picqer (CronJob skirmshop/
+# shopify-picqer-order-audit, diario 02:30 Europe/Madrid). El auditor empuja el
+# gauge `shopify_picqer_order_audit_findings` (job="shopify_picqer_order_audit"
+# via extra_label del push) a vmsingle en TODO barrido completado, tambien con
+# valor 0 - la forma la fija el contrato de SC-389, no cambiar los nombres.
+# Copiada la forma de las reglas SII de este fichero: vmalert evalua con
+# queryStep de 5 min y la metrica es diaria, de ahi las ventanas anchas
+# last_over_time/absent_over_time. severity=warning viaja Keep -> Telegram
+# tema 34494 (docs/alert-routing-matrix.md), no el chat principal.
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMRule
+metadata:
+  name: pocharlies-picqer-order-audit
+  namespace: monitoring
+spec:
+  groups:
+    - name: pocharlies.picqer-order-audit
+      rules:
+        - alert: ShopifyPicqerAuditFindings
+          # Hallazgos en el ultimo barrido completado. Permanece activa hasta
+          # que un barrido posterior empuje 0 (contrato: se empuja siempre).
+          expr: |
+            last_over_time(shopify_picqer_order_audit_findings{
+              job="shopify_picqer_order_audit"
+            }[27h]) > 0
+          for: 15m
+          labels:
+            severity: warning
+            area: commerce
+            domain: crons
+            component: shopify-picqer-order-audit
+          annotations:
+            summary: "Shopify-Picqer order audit reported findings"
+            description: "The last completed sweep of CronJob skirmshop/shopify-picqer-order-audit pushed shopify_picqer_order_audit_findings={{ $value }} (> 0). Reconcile the affected orders between Shopify and Picqer; the sweep detail is in `kubectl -n skirmshop logs job/<latest-shopify-picqer-order-audit-job>`."
+        - alert: ShopifyPicqerAuditTelemetryMissing
+          # Only fires while Kubernetes still proves a recent successful run
+          # (same guard shape as SiiInvoicingTelemetryMissing, window 48 h per
+          # SC-389); once that run is stale the cron itself is the problem,
+          # not the telemetry path.
+          expr: |
+            absent_over_time(shopify_picqer_order_audit_findings{
+              job="shopify_picqer_order_audit"
+            }[48h])
+            and on()
+            (
+              time() - max by (namespace, cronjob) (
+                kube_cronjob_status_last_successful_time{
+                  namespace="skirmshop", cronjob="shopify-picqer-order-audit"
+                }
+              ) < 48 * 3600
+            )
+          for: 15m
+          labels:
+            severity: warning
+            area: commerce
+            domain: crons
+            component: shopify-picqer-order-audit
+          annotations:
+            summary: "Shopify-Picqer order audit completed but emitted no run telemetry"
+            description: "Kubernetes records a recent successful shopify-picqer-order-audit Job, but VictoriaMetrics has no shopify_picqer_order_audit_findings sample in 48 hours. The audit may have completed, but business alerting is blind. Check the Job logs and the VictoriaMetrics import request (push path with extra_label job=shopify_picqer_order_audit)."
