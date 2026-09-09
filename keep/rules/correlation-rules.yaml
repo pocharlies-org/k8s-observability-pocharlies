@@ -629,3 +629,44 @@ rules:
     incidentPrefix: SII
     incidentNameTemplate: "CronJobs fiscales SII degradados"
     groupDescription: Facturación diaria e informe fiscal mensual del SII.
+
+  # ---------------------------------------------------------------------------
+  # SC-389 — auditor de pedidos Shopify-Picqer (CronJob skirmshop/
+  # shopify-picqer-order-audit, diario 02:30 Europe/Madrid)
+  #
+  # Réplica exacta de la forma de `sii-cronjobs` (arriba), el precedente que
+  # aprobó el CTO: SiiInvoicingFunctionalFailure llega a Telegram hoy PORQUE
+  # `sii-cronjobs` agrupa la familia `Sii*` en un incidente. Sin regla, la alerta
+  # queda sólo registrada y callada (tercera capa del encabezado), que es justo
+  # el fallo que motivó SC-389: la VMRule dispara (activeAt 09:15) y Keep recibe
+  # el webhook (event_id 09:31:04Z), pero NINGUNA regla de correlación casaba
+  # con ella -> 0 incidentes -> 0 Telegram.
+  #
+  # Casa por FAMILIA de nombre igual que SII (`name.startsWith`), no por
+  # severidad: las dos alertas del dominio (`ShopifyPicqerAuditFindings` y
+  # `ShopifyPicqerAuditTelemetryMissing`, manifests/rules.yaml) son `warning`,
+  # y Keep normaliza a `info` toda severidad fuera de su mapa -- la cobertura la
+  # da el nombre. Sin criterios de agrupación: los dos modos de fallo del mismo
+  # CronJob (hallazgos > 0 / telemetría ciega) son UN incidente de auditoría.
+  #
+  # NO se excluye del critical-safety-net, y no rompe la INVARIANTE 1 por la
+  # misma razón que `k8sgpt-degraded`: ese safety-net sólo captura
+  # `severity == "critical"` o `labels.severity == "page"`, y las dos alertas de
+  # auditoría son `warning`. Sin solape posible hoy.
+  - ruleName: shopify-picqer-audit
+    celQuery: 'name.startsWith("ShopifyPicqer")'
+    sqlQuery:
+      sql: "((name like :name_1))"
+      params:
+        name_1: ShopifyPicqer%
+    timeframeInSeconds: 3600
+    timeUnit: minutes
+    groupingCriteria: []
+    createOn: any
+    resolveOn: all_resolved
+    incidentPrefix: PQAUD
+    incidentNameTemplate: "Auditoría de pedidos Shopify-Picqer degradada"
+    groupDescription: >-
+      El CronJob skirmshop/shopify-picqer-order-audit (diario 02:30) encuentra
+      descuadres Shopify/Picqer o completa sin emitir telemetría. Mismo patrón
+      que sii-cronjobs: familia de nombre -> un incidente -> Telegram tema 34494.
