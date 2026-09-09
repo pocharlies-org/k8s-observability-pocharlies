@@ -1,6 +1,6 @@
 # Matriz de routing de alertas — estado actual y destino en Keep
 
-Generado el 2026-09-07 por `scripts/alert_routing.py matrix` desde el clúster
+Generado el 2026-09-09 por `scripts/alert_routing.py matrix` desde el clúster
 `x86-k3s`, simulando el matching de Alertmanager sobre
 `VMAlertmanagerConfig monitoring/synapse-webhook`.
 
@@ -15,15 +15,15 @@ llega a algún sitio únicamente si su `alertname` aparece listado antes.
 
 | destino hoy | series | % |
 |---|---:|---:|
-| keep | 300 | 97% |
+| keep | 302 | 97% |
 | backstop-telegram + keep | 10 | 3% |
-| **TOTAL** | **310** | 100% |
+| **TOTAL** | **312** | 100% |
 
 ### Taxonomía de severidad realmente emitida
 
 | valor | series | ¿lo contempla el árbol? |
 |---|---:|---|
-| `warning` | 173 | sí — `severity = warning` → blackhole |
+| `warning` | 175 | sí — `severity = warning` → blackhole |
 | `critical` | 127 | sí — `severity = critical` |
 | `info` | 8 | **no** — cae al receiver raíz |
 | `none` | 2 | **no** — cae al receiver raíz |
@@ -202,7 +202,7 @@ despiertan a nadie pese a llamarse `page`.
 | `LabelsValkeyEvictions` | `critical` | keep |  |
 | `LabelsValkeyExporterDown` | `critical` | keep |  |
 | `LabelsValkeyMasterCountInvalid` | `critical` | keep |  |
-| `LabelsValkeyMemoryGrowth` | `warning` | keep | 1 |
+| `LabelsValkeyMemoryGrowth` | `warning` | keep |  |
 | `LabelsValkeyMemoryHigh` | `warning` | keep | 1 |
 | `LabelsValkeyMetricsMissing` | `critical` | keep |  |
 | `LabelsValkeyRejectedConnections` | `critical` | keep |  |
@@ -254,7 +254,7 @@ despiertan a nadie pese a llamarse `page`.
 | `NodeCPUHighUsage` | `info` | keep |  |
 | `NodeClockNotSynchronising` | `warning` | keep |  |
 | `NodeClockSkewDetected` | `warning` | keep |  |
-| `NodeDiskIOSaturation` | `warning` | keep |  |
+| `NodeDiskIOSaturation` | `warning` | keep | 1 |
 | `NodeFileDescriptorLimit` | `critical` | keep |  |
 | `NodeFileDescriptorLimit` | `warning` | keep |  |
 | `NodeFilesystemAlmostOutOfFiles` | `critical` | keep |  |
@@ -294,7 +294,7 @@ despiertan a nadie pese a llamarse `page`.
 |---|---|---|---:|
 | `RabbitmqClusterPartition` | `critical` | keep |  |
 | `RabbitmqClusterSizeBelowExpected` | `critical` | keep |  |
-| `RabbitmqDlqGrowth` | `warning` | keep | 8 |
+| `RabbitmqDlqGrowth` | `warning` | keep | 10 |
 | `RabbitmqFunctionalQueueNoConsumer` | `warning` | backstop-telegram + keep | 7 |
 | `RabbitmqHeadMessageStale` | `critical` | backstop-telegram + keep |  |
 | `RabbitmqMemoryAlarmActive` | `critical` | keep |  |
@@ -350,9 +350,9 @@ despiertan a nadie pese a llamarse `page`.
 | `SynapseReconcileApplyFailed` | `critical` | keep |  |
 | `SynapseReconcileApplyPartial` | `critical` | keep |  |
 | `SynapseReconcileRevertFailed` | `critical` | keep |  |
-| `SynapseScheduledWorkflowStalled` | `warning` | keep | 7 |
+| `SynapseScheduledWorkflowStalled` | `warning` | keep | 4 |
 | `SynapseUnroutableMessages` | `warning` | backstop-telegram + keep |  |
-| `SynapseWorkflowFailed` | `warning` | keep | 3 |
+| `SynapseWorkflowFailed` | `warning` | keep | 2 |
 
 ### Target (1)
 
@@ -384,7 +384,7 @@ despiertan a nadie pese a llamarse `page`.
 | `TrackingIngestionSilent` | `warning` | keep |  |
 | `TrackingPage404Spike` | `critical` | keep |  |
 
-### otros (105)
+### otros (107)
 
 | alertname | sev | destino hoy | firing |
 |---|---|---|---:|
@@ -398,7 +398,7 @@ despiertan a nadie pese a llamarse `page`.
 | `BackupDailyDumpStale` | `critical` | keep |  |
 | `BackupRecoveryKitStale` | `critical` | keep |  |
 | `BackupWeeklySnapshotStale` | `critical` | keep |  |
-| `BgePoolLatencyAboveGate` | `critical` | keep | 1 |
+| `BgePoolLatencyAboveGate` | `critical` | keep |  |
 | `CPUThrottlingHigh` | `info` | keep | 1 |
 | `CertManagerCertificateMetricsMissing` | `critical` | keep |  |
 | `CertificateExpiresSoon` | `warning` | keep |  |
@@ -417,7 +417,7 @@ despiertan a nadie pese a llamarse `page`.
 | `GpuArbiterStateObservationUnavailable` | `warning` | keep |  |
 | `HighQueueDepth` | `warning` | keep |  |
 | `IndexDBRecordsDrop` | `critical` | keep |  |
-| `InfoInhibitor` | `none` | keep | 3 |
+| `InfoInhibitor` | `none` | keep | 2 |
 | `K8sCronJobFailed` | `warning` | keep |  |
 | `K8sGptExplainerUnavailable` | `warning` | keep |  |
 | `K8sGptFindingsSpike` | `warning` | keep |  |
@@ -429,7 +429,7 @@ despiertan a nadie pese a llamarse `page`.
 | `LitellmNotReady` | `critical` | keep |  |
 | `LlmPoolCapabilityUnavailable` | `critical` | keep |  |
 | `LlmResidentDeploymentUnavailable` | `critical` | keep |  |
-| `LlmResidentScaledToZero` | `critical` | keep | 1 |
+| `LlmResidentScaledToZero` | `critical` | keep | 2 |
 | `LogErrors` | `warning` | keep |  |
 | `MetadataCacheUtilizationIsTooHigh` | `warning` | keep |  |
 | `MetricNameStatsCacheUtilizationIsTooHigh` | `warning` | keep |  |
@@ -472,6 +472,8 @@ despiertan a nadie pese a llamarse `page`.
 | `SharedValkeyRejectedConnections` | `critical` | keep |  |
 | `SharedValkeyReplicaCountLow` | `critical` | keep |  |
 | `SharedValkeyScrapeTargetsLow` | `warning` | keep |  |
+| `ShopifyPicqerAuditFindings` | `warning` | keep |  |
+| `ShopifyPicqerAuditTelemetryMissing` | `warning` | keep |  |
 | `StreamAggrDedupFlushTimeout` | `warning` | keep |  |
 | `StreamAggrFlushTimeout` | `warning` | keep |  |
 | `Studio3dJobsStuckWaitingGpu` | `warning` | keep |  |
