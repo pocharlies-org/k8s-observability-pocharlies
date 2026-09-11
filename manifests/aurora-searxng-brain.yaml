@@ -173,17 +173,18 @@ data:
         about:
           website: https://brain-k8s.e-dani.com
 ---
-# La API key del brain, desde Vault.
+# La API key del brain, desde 1Password.
 #
-# Se apunta a la MISMA ruta que usa el ExternalSecret del propio brain
-# (skirmshop-brain/prod/app -> dashboard_api_key) en vez de copiar el Secret entre
-# namespaces o crear una entrada nueva: así una rotación se propaga sola a los dos
-# sitios en <=1h y no hay dos fuentes de verdad para el mismo secreto. Es una
-# excepción consciente al patrón de manifests/aurora-secrets.yaml, donde todo
-# cuelga de `secret/aurora`.
+# Se apunta al MISMO campo que usa el ExternalSecret del propio brain
+# (item skirmshop-brain-prod-app, campo dashboard_api_key) en vez de copiar el
+# Secret entre namespaces o crear una entrada nueva: así una rotación se propaga
+# sola a los dos sitios en <=6h y no hay dos fuentes de verdad para el mismo
+# secreto. Es una excepción consciente al patrón de manifests/aurora-secrets.yaml,
+# donde todo cuelga del item `aurora`.
 #
-# El ClusterSecretStore `vault-backend` es cluster-wide, así que leer esa ruta
-# desde el namespace `aurora` no necesita política nueva en Vault.
+# El ClusterSecretStore `onepassword` es cluster-wide, así que leer ese item desde
+# el namespace `aurora` no necesita permiso nuevo: el service account ya es Read &
+# Write sobre el vault `k8s-pocharlies`.
 apiVersion: external-secrets.io/v1
 kind: ExternalSecret
 metadata:
@@ -193,9 +194,9 @@ metadata:
     app.kubernetes.io/name: aurorasvc-searxng
     app.kubernetes.io/component: brain
 spec:
-  refreshInterval: "1h"
+  refreshInterval: 6h
   secretStoreRef:
-    name: vault-backend
+    name: onepassword
     kind: ClusterSecretStore
   target:
     name: aurorasvc-brain
@@ -204,8 +205,7 @@ spec:
   data:
     - secretKey: BRAIN_API_KEY
       remoteRef:
-        key: skirmshop-brain/prod/app
-        property: dashboard_api_key
+        key: skirmshop-brain-prod-app/dashboard_api_key
 ---
 apiVersion: apps/v1
 kind: Deployment

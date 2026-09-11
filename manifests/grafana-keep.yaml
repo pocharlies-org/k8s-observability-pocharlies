@@ -24,9 +24,9 @@ metadata:
   name: grafana-datasource-keep-pg
   namespace: monitoring
 spec:
-  refreshInterval: 1h
+  refreshInterval: 6h
   secretStoreRef:
-    name: vault-backend
+    name: onepassword
     kind: ClusterSecretStore
   target:
     name: grafana-datasource-keep-pg
@@ -58,12 +58,10 @@ spec:
   data:
     - secretKey: db_user
       remoteRef:
-        key: secret/keep
-        property: DB_USER
+        key: keep/DB_USER
     - secretKey: db_password
       remoteRef:
-        key: secret/keep
-        property: DB_PASSWORD
+        key: keep/DB_PASSWORD
 ---
 apiVersion: v1
 kind: ConfigMap

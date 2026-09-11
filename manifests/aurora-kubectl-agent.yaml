@@ -12,9 +12,9 @@ metadata:
   name: aurorasvc-kubectl-agent
   namespace: aurora
 spec:
-  refreshInterval: 1h
+  refreshInterval: 6h
   secretStoreRef:
-    name: vault-backend
+    name: onepassword
     kind: ClusterSecretStore
   target:
     name: aurorasvc-kubectl-agent
@@ -22,5 +22,4 @@ spec:
   data:
     - secretKey: AURORA_AGENT_TOKEN
       remoteRef:
-        key: secret/aurora
-        property: KUBECTL_AGENT_TOKEN
+        key: aurora/KUBECTL_AGENT_TOKEN
