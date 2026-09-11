@@ -499,9 +499,9 @@ metadata:
     app.kubernetes.io/name: aurora
     app.kubernetes.io/component: brain-kb-sync
 spec:
-  refreshInterval: "1h"
+  refreshInterval: 6h
   secretStoreRef:
-    name: vault-backend
+    name: onepassword
     kind: ClusterSecretStore
   target:
     name: aurorasvc-brain-sync
@@ -510,12 +510,10 @@ spec:
   data:
     - secretKey: QDRANT_API_KEY
       remoteRef:
-        key: skirmshop-brain/prod/app
-        property: qdrant_api_key
+        key: skirmshop-brain-prod-app/qdrant_api_key
     - secretKey: AURORA_USER_ID
       remoteRef:
-        key: secret/aurora
-        property: AURORA_USER_ID
+        key: aurora/AURORA_USER_ID
 ---
 apiVersion: batch/v1
 kind: CronJob

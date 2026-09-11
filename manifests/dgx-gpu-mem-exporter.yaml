@@ -227,10 +227,10 @@ metadata:
   name: opencode-node-ops
   namespace: monitoring
 spec:
-  refreshInterval: 1h
+  refreshInterval: 6h
   secretStoreRef:
     kind: ClusterSecretStore
-    name: vault-backend
+    name: onepassword
   target:
     name: opencode-node-ops
     creationPolicy: Owner
@@ -238,8 +238,7 @@ spec:
   data:
     - secretKey: token
       remoteRef:
-        key: secret/dgx-opencode-node-ops
-        property: token
+        key: dgx-opencode-node-ops/token
 ---
 apiVersion: apps/v1
 kind: Deployment
