@@ -22,13 +22,13 @@ aurora:
   # porque el deployment monta el Secret del chart con `envFrom` y además expone
   # `env`, y en Kubernetes una variable declarada en `env` GANA sobre la misma
   # variable venida de `envFrom`. El Secret del chart aporta la cadena vacía y el
-  # secretKeyRef la sobrescribe con la de Vault.
+  # secretKeyRef la sobrescribe con la de 1Password.
   agentToken: ""
 
 agent:
   replicaCount: 1
 
-  # El token, desde Vault vía ESO. Ver manifests/aurora-kubectl-agent.yaml.
+  # El token, desde 1Password vía ESO (SC-496). Ver manifests/aurora-kubectl-agent.yaml.
   env:
     - name: AURORA_AGENT_TOKEN
       valueFrom:
@@ -99,8 +99,8 @@ tolerations:
 #
 # El chart trae `secrets` con get/list/watch en el bloque de recursos core. Eso
 # daría a Aurora lectura del CONTENIDO de todos los Secrets del clúster: el
-# token de Vault, las credenciales del Postgres compartido, la key de LiteLLM,
-# los bot tokens de Telegram. Y no se queda ahí: lo que el agente lee entra en
+# token del kubectl-agent, las credenciales del Postgres compartido, la key de
+# LiteLLM, los bot tokens de Telegram. Y no se queda ahí: lo que el agente lee entra en
 # el contexto de un LLM y acaba resumido en un mensaje de Telegram.
 #
 # Para diagnosticar un incidente nunca hace falta el contenido de un secreto —
