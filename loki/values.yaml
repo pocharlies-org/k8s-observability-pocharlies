@@ -32,11 +32,16 @@ loki:
       s3ForcePathStyle: true
       insecure: true
   limits_config:
-    retention_period: 48h
-    max_query_lookback: 48h
+    # INFRA-43 (INFRA-23 H1): los enforces del AgentGateway exigen responder qué
+    # principals llamaron una ruta en las ultimas 72 h. 48h (bajada 2026-07-22 tras
+    # auditoria de disco) no cubre la ventana; 7d deja margen sobre las 72 h.
+    # Ingesta medida 2026-09-12: ~36 KB/s cluster (~3 GB/dia en crudo, chunks
+    # comprimidos en MinIO). Vigilar el HDD RAID de sauvage tras el primer ciclo.
+    retention_period: 168h
+    max_query_lookback: 168h
     # Do not accept samples that Loki can no longer retain or query.
     reject_old_samples: true
-    reject_old_samples_max_age: 48h
+    reject_old_samples_max_age: 168h
     ingestion_rate_mb: 16
     ingestion_burst_size_mb: 32
   compactor:
