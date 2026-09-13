@@ -43,7 +43,10 @@ vmsingle:
       requests:
         # 2026-08-15: 300m -> 450m. Pedia 300m consumiendo 416-457m sostenidos,
         # asi que el scheduler no veia su peso en un nodo al 97% de requests.
-        cpu: 450m
+        # 2026-09-13 (INFRA-42/INFRA-82): 450m -> 700m. p95 14d = 645m con
+        # throttling real (es la TSDB). Sin sidecar: request del pod = request
+        # del contenedor.
+        cpu: 700m
         memory: 1Gi
       limits:
         cpu: "2"
@@ -72,7 +75,10 @@ vmagent:
     useDefaultResources: false
     resources:
       requests:
-        cpu: 200m
+        # 2026-09-13 (INFRA-42/INFRA-82): 200m -> 390m. p95 14d = 603m. SRE
+        # mide el pod entero (210m = 200m + 10m config-reloader); objetivo
+        # 400m/pod => 390m aqui + 10m del reloader de abajo.
+        cpu: 390m
         memory: 300Mi
       limits:
         cpu: "1"

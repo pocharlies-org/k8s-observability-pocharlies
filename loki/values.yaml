@@ -69,7 +69,10 @@ singleBinary:
   # (and all log history) when replicas drop to 0. Retain keeps the data.
   resources:
     requests:
-      cpu: 100m
+      # 2026-09-13 (INFRA-42/INFRA-82): 100m -> 190m. p95 14d = 180m. SRE mide
+      # el pod entero (110m = 100m + 10m sidecar loki-sc-rules); objetivo
+      # 200m/pod => 190m aqui + 10m del sidecar.
+      cpu: 190m
       memory: 256Mi
     limits:
       memory: 2Gi
