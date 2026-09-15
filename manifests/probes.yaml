@@ -161,3 +161,33 @@ spec:
       # business webhooks (shopify, stripe, telegram, gmail, whatsapp), so
       # dropping the probe would have left them with no edge check at all.
       - https://synapse.e-dani.com/webhooks/stripe
+---
+# Availability of the AgentGateway /cto-office route (SC-49 c7, ADR-0004).
+# A GET without JWT answers 401 (JwtAuth) while the gateway is healthy — the
+# http_alive_tls module counts 401 as alive (measured 2026-09-15: curl without
+# token -> HTTP 401, cert *.lan.e-dani.com Let's Encrypt, verify ok). The host
+# is served by traefik-lan, reachable from blackbox exactly like the other
+# lan.e-dani.com targets in k8s-lan-ingresses (probe_success=1). Connection
+# refused / TLS failure => probe_success 0. The alerting rule
+# (AgentGatewayCtoOfficeDown) lives with the gateway in
+# k8s-agentgateway-pocharlies k8s/base/agentgateway-alerts.yaml (PR hermano).
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMProbe
+metadata:
+  name: agentgateway-cto-office
+  namespace: monitoring
+spec:
+  jobName: agentgateway-cto-office
+  interval: 30s
+  scrapeTimeout: 10s
+  module: http_alive_tls
+  vmProberSpec:
+    url: blackbox-exporter.monitoring.svc.cluster.local:9115
+    path: /probe
+  targets:
+    staticConfig:
+      labels:
+        scope: lan
+        component: agentgateway
+      targets:
+        - https://agentgateway-mcp.lan.e-dani.com/cto-office
