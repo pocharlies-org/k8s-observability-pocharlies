@@ -47,6 +47,14 @@ resources:
   - manifests/dcgm-scrape.yaml
   - manifests/rabbitmq-scrape.yaml
   - manifests/cert-manager-scrape.yaml
+  # DGX-112 fase 0: el controller de external-secrets contaba sus llamadas a
+  # proveedores desde siempre y no las recogía nadie — así se agotó dos veces la
+  # cuota de 1Password sin un dato donde mirar. El scrape va aquí, no en
+  # k8s-gitops: en este clúster los scrapes de componentes de plataforma viven en
+  # este repo (patrón cert-manager-scrape.yaml), como dejó escrito el comentario
+  # del values.yaml de infra/external-secrets.
+  - manifests/external-secrets-scrape.yaml
+  - manifests/external-secrets-rules.yaml
   - manifests/dgx-gpu-mem-exporter.yaml
   - manifests/kyverno-policy-exceptions.yaml
   - manifests/dgx-cluster-health-watcher.yaml
