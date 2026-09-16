@@ -185,7 +185,10 @@ backend:
               type: telegram
               config: "{{ providers.telegram_ops }}"
               with:
-                chat_id: "-1003785136626"
+                chat_id: "-1004409526898"
+                # Infra=1248 en Pocharlies Operations (antes caía al grupo
+                # general del monitor por no llevar topic).
+                topic_id: 1248
                 parse_mode: html
                 message: |
                   🔴 <b>{{#fn.na}}{{ incident.user_generated_name }}{{/fn.na}}</b>
@@ -195,8 +198,9 @@ backend:
       - id: notify-incident
         name: Telegram — incidentes al tema alertas
         description: >-
-          Resto de incidentes al tema 34494 del grupo Synapse, donde publicaba
-          el ops-explainer. Un mensaje por incidente, no por alerta.
+          Resto de incidentes al topic Infra (1248) de Pocharlies Operations
+          (antes: tema 34494 del grupo Synapse del ops-explainer). Un mensaje
+          por incidente, no por alerta.
         triggers:
           - type: incident
             events: [created]
@@ -214,7 +218,7 @@ backend:
               type: telegram
               config: "{{ providers.telegram_ops }}"
               with:
-                chat_id: "-1003785136626"
+                chat_id: "-1004409526898"
                 # `topic_id`, NO `message_thread_id`. Esto estuvo mal desde el
                 # cutover: el _notify del provider de telegram declara `topic_id`
                 # (telegram_provider.py:55-64) y cualquier otro nombre cae en
@@ -224,7 +228,7 @@ backend:
                 # publicaba el ops-explainer. Se detectó al comparar contra el
                 # workflow aurora-report-back, que sí usa topic_id y sí aparece
                 # dentro del tema.
-                topic_id: 34494
+                topic_id: 1248
                 parse_mode: html
                 message: |
                   ⚠️ <b>{{#fn.na}}{{ incident.user_generated_name }}{{/fn.na}}</b>
@@ -306,7 +310,10 @@ backend:
               type: telegram
               config: "{{ providers.telegram_ops }}"
               with:
-                chat_id: "-1003785136626"
+                chat_id: "-1004409526898"
+                # Infra=1248: el resumen del incidente crítico viaja con su
+                # incidente, no al grupo general.
+                topic_id: 1248
                 message: |
                   🧠 Resumen — {{#fn.na}}{{ incident.user_generated_name }}{{/fn.na}}
 
@@ -324,11 +331,11 @@ backend:
               type: telegram
               config: "{{ providers.telegram_ops }}"
               with:
-                chat_id: "-1003785136626"
+                chat_id: "-1004409526898"
                 # `topic_id`, NO `message_thread_id`. Ver el comentario de
                 # telegram-incident: cualquier otro nombre cae en **kwargs y se
                 # descarta sin error, y el mensaje acaba en el grupo general.
-                topic_id: 34494
+                topic_id: 1248
                 message: |
                   🧠 Resumen — {{#fn.na}}{{ incident.user_generated_name }}{{/fn.na}}
 
@@ -734,11 +741,11 @@ backend:
               type: telegram
               config: "{{ providers.telegram_ops }}"
               with:
-                chat_id: "-1003785136626"
+                chat_id: "-1004409526898"
                 # `topic_id`, NO `message_thread_id`: el _notify del provider
                 # declara topic_id, y cualquier otro nombre cae en **kwargs y se
                 # descarta sin avisar.
-                topic_id: 34494
+                topic_id: 1248
                 # Sin parse_mode a propósito: con `html` el unescape del
                 # IOHandler (iohandler.py:673) resucita los `<pod-name>` que
                 # escribe el LLM y Telegram devuelve 400.
