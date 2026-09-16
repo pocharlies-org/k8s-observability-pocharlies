@@ -274,3 +274,62 @@ kube-state-metrics:
       memory: 256Mi
   nodeSelector:
     node-pool: ks5-nvme
+  # DGX-128 — telemetría del sync 1Password -> Vault (external-secrets).
+  # ESO no expone una métrica de "última sincronización con éxito":
+  # .status.refreshTime vive solo en el CR (veredicto del tech lead en
+  # DGX-125). El mecanismo estándar para exponerlo es la CustomResourceState
+  # de kube-state-metrics (docs v2.18.0,
+  # docs/metrics/extend/customresourcestate-metrics.md): "RFC3339 times are
+  # parsed to float timestamp", de ahí que el gauge sobre [status,
+  # refreshTime] dé un unixtime y las alertas de "sync viejo" sean
+  # time() - metric > umbral. Con metricNamePrefix "eso" las familias salen
+  # como eso_externalsecret_status_refresh_time /
+  # eso_pushsecret_status_refresh_time. Si un objeto nunca sincronizó, la
+  # serie no existe para ese objeto: lo cubren las alertas Missing/Absent de
+  # manifests/external-secrets-rules.yaml, no nilIsZero (una serie en 0
+  # fingiría un sync que no ha pasado).
+  customResourceState:
+    enabled: true
+    config:
+      kind: CustomResourceStateMetrics
+      spec:
+        resources:
+          - groupVersionKind:
+              group: external-secrets.io
+              version: v1
+              kind: ExternalSecret
+            metricNamePrefix: eso
+            labelsFromPath:
+              name: [metadata, name]
+              namespace: [metadata, namespace]
+            metrics:
+              - name: externalsecret_status_refresh_time
+                help: "Unix timestamp of the last successful refresh of the ExternalSecret (.status.refreshTime), per name/namespace."
+                each:
+                  type: Gauge
+                  gauge:
+                    path: [status, refreshTime]
+          - groupVersionKind:
+              group: external-secrets.io
+              version: v1alpha1
+              kind: PushSecret
+            metricNamePrefix: eso
+            labelsFromPath:
+              name: [metadata, name]
+              namespace: [metadata, namespace]
+            metrics:
+              - name: pushsecret_status_refresh_time
+                help: "Unix timestamp of the last successful refresh of the PushSecret (.status.refreshTime), per name/namespace."
+                each:
+                  type: Gauge
+                  gauge:
+                    path: [status, refreshTime]
+  # El ClusterRole del subchart (vm-kube-state-metrics) no trae
+  # external-secrets.io; sin list/watch aquí la CRS falla en silencio (el
+  # docs de KSM: "needs list and watch permissions ... as well as to the
+  # resources you want to gather metrics from").
+  rbac:
+    extraRules:
+      - apiGroups: [external-secrets.io]
+        resources: [externalsecrets, pushsecrets]
+        verbs: [list, watch]
