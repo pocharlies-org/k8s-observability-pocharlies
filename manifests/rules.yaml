@@ -1757,7 +1757,17 @@ spec:
         # sigue sin parche upstream. Eso seria la evidencia que a ese issue le
         # falta: captura el rid y el timestamp y comentalo alli.
         - alert: Qwen38ZombieRequests
-          expr: qwen38:running_reqs:min20m >= 1
+          # Bajo vLLM la flota (30+ sesiones) mantiene concurrencia >= 1 de
+          # forma sostenida SIN zombis: el `min20m >= 1` a secas era el
+          # criterio bajo sglang, donde entre ráfagas la concurrencia caía a
+          # 0. El invariante que sobrevive a la migración es el otro: un slot
+          # zombi NUNCA completa. Exigimos además cero peticiones completadas
+          # en la ventana (medido 17-09: con salud, 351 completadas/20m con
+          # running>=1; el expr viejo disparaba falso).
+          expr: |
+            qwen38:running_reqs:min20m >= 1
+            and
+            sum(increase(vllm:request_success_total{model_name="qwen38-flash-next"}[20m])) == 0
           for: 5m
           labels:
             severity: critical
