@@ -1652,12 +1652,30 @@ spec:
         # donde habia 8 -- justo el techo de max_running_requests, que era el
         # dato que importaba. Estas tres reglas dejan la serie ya deduplicada
         # para que el post-mortem no repita el error.
+        # MIGRADO A vLLM el 17-09-2026: el head pasó de sglang a vLLM nightly y
+        # las cuatro recording rules quedaron consultando `sglang:*` que ya no
+        # existe -> 0 samples -> RecordingRulesNoData de vmalert disparando
+        # permanente (incidente MON-5912). Equivalencias:
+        #   - running_reqs:  vllm:num_requests_running (misma semántica).
+        #   - gen_throughput: rate de generation_tokens_total (sglang lo servía
+        #     como tasa ya calculada).
+        #   - spec_accept_length: sglang lo exponía directo; vLLM solo expone
+        #     contadores. accept_length = 1 + accepted/drafts (el bonus token
+        #     siempre se acepta), que mantiene la ESCALA de sglang: 1.00 = "se
+        #     rechaza el 100% de los drafts", o sea el umbral <=1.05 de
+        #     Qwen38SpeculationWedged sigue significando lo mismo. Ventana 5m
+        #     porque los contadores por paso de decode son ruidosos a 1m.
         - record: qwen38:spec_accept_length:max
-          expr: max by (pod) (sglang:spec_accept_length{model_name="qwen38-flash-next"})
+          expr: |
+            1 + (
+              max by (pod) (rate(vllm:spec_decode_num_accepted_tokens_total{model_name="qwen38-flash-next"}[5m]))
+              /
+              max by (pod) (rate(vllm:spec_decode_num_drafts_total{model_name="qwen38-flash-next"}[5m]))
+            )
         - record: qwen38:running_reqs:max
-          expr: max by (pod) (sglang:num_running_reqs{model_name="qwen38-flash-next"})
+          expr: max by (pod) (vllm:num_requests_running{model_name="qwen38-flash-next"})
         - record: qwen38:gen_throughput:max
-          expr: max by (pod) (sglang:gen_throughput{model_name="qwen38-flash-next"})
+          expr: max by (pod) (rate(vllm:generation_tokens_total{model_name="qwen38-flash-next"}[1m]))
         # Concurrencia MINIMA sostenida: si nunca baja de 1 en 20 minutos, hay al
         # menos un slot que no se libera. Ver la alerta Qwen38ZombieRequests.
         - record: qwen38:running_reqs:min20m
@@ -1750,10 +1768,10 @@ spec:
             summary: "qwen38-flash-next: peticiones zombi ocupando slots (concurrencia que no baja)"
             description: >-
               La concurrencia no ha bajado de 1 en 20 minutos seguidos: hay al
-              menos un slot que no se libera. Confirmalo con
-              `kubectl logs -n llm deploy/qwen38-flash-next-head --since=60s |
-              grep -c "state was deleted"` (debe ser 0; el 28-08 daba 4752 en 60
-              segundos) y saca los rid con
+              menos un slot que no se libera. OJO: la firma `state was deleted` era de sglang y el head corre
+              vLLM desde la migración (17-09); con vLLM la confirmación es la
+              propia concurrencia clavada y `kubectl logs -n llm
+              deploy/qwen38-flash-next-head --since=60m | tail`. En sglang sacabas los rid con
               `... | grep -oP "rid='\\K[0-9a-f]+" | sort | uniq -c`. Reiniciar
               el pod los mata, pero ANOTA antes los rid y la hora del primero:
               con la imagen v0.4.0 en marcha, un zombi nuevo es evidencia
