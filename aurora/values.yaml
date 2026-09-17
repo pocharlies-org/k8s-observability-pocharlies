@@ -58,7 +58,8 @@ services:
   minio:
     enabled: false   # -> minio-s3.minio, bucket `aurora` con usuario propio
   vault:
-    enabled: false   # -> vault.vault, mount KV `aurora` con política acotada
+    enabled: false   # ya no hay sustituto: el backend de runtime quedó retirado
+                     # a propósito (SC-563). Ver el bloque en `config:` abajo.
   memgraph:
     enabled: false   # el propio chart lo marca opcional
   redis:
@@ -84,14 +85,42 @@ config:
   STORAGE_USE_SSL: "false"
   STORAGE_VERIFY_SSL: "false"
 
-  # --- Vault: mount propio, no el compartido ---
-  # `aurora` es un mount KV v2 distinto de `secret`, y el token de Aurora está
-  # acotado por política a `aurora/*`: no puede leer los secretos del resto del
-  # clúster ni con el token en la mano.
-  SECRETS_BACKEND: vault
-  VAULT_ADDR: http://vault.vault.svc.cluster.local:8200
-  VAULT_KV_MOUNT: aurora
-  VAULT_KV_BASE_PATH: users
+  # --- Backend de secretos en runtime: RETIRADO a propósito (SC-563) ---
+  #
+  # Ruling del CTO (12-09): el backend Vault de runtime de Aurora está muerto
+  # desde el 09-03 (auth del token caída) y nadie lo echó de menos; las hojas
+  # `secret/aurora*` ya viven en 1Password y los consumidores leen de ahí. El
+  # monte `aurora/` de Vault queda descartado a propósito (ver
+  # _ops/vault-to-1password/fase6-evidencia/SIN-MIGRAR.md en el workspace).
+  #
+  # Qué se quita y qué NO se puede quitar, verificado con `helm template`
+  # contra el chart aurora-oss 1.2.16 y con el código del commit del que se
+  # construye la imagen (e35121a, server/utils/secrets/):
+  #   - `VAULT_TOKEN`: fuera del ES `aurorasvc-backend` (manifests/
+  #     aurora-secrets.yaml). Es el retiro real: sin token, `_initialize_client`
+  #     loguea "VAULT_TOKEN not set. Vault secrets backend will not be
+  #     available." y queda not-available SIN conectar a ninguna dirección
+  #     (corta antes de usar `VAULT_ADDR`). Es exactamente el comportamiento
+  #     que el servicio lleva teniendo desde el 09-03, solo que antes el fallo
+  #     era de auth.
+  #   - `VAULT_ADDR`: fuera de aquí. El chart la emite SIEMPRE
+  #     (templates/configmap.yaml) y sin override cae a
+  #     `http://aurora-vault:8200`, un servicio inexistente
+  #     (`services.vault.enabled=false`): el ConfigMap deja de apuntar al Vault
+  #     real de `vault.vault`. Este cambio del CM es el que REINICIA los pods
+  #     (checksum/config) y, con él, el Secret sin VAULT_TOKEN por fin se
+  #     materializa en el entorno de los contenedores (envFrom se resuelve en
+  #     el arranque del pod).
+  #   - `SECRETS_BACKEND` y `VAULT_KV_*` NO son quitables de este repo: son
+  #     defaults del propio chart (su values.yaml) y se emiten igual sin
+  #     ponemos nada. Y no hay valor neutro que las desactive: `SECRETS_BACKEND`
+  #     solo admite "vault" o "aws_secrets_manager"; cualquier otro valor
+  #     (incluido "") lanza ValueError en el primer uso (__init__.py). Se
+  #     quedan con su default "vault", inofensivo sin token.
+  #
+  # Las credenciales de las integraciones que el backend resolvía (cloudflare,
+  # tailscale, grafana) llevan rotas desde el 09-03: si alguna hace falta, se
+  # rehace por env o se da de baja en la UI de Aurora.
 
   # --- URLs públicas ---
   #
@@ -275,7 +304,8 @@ config:
   # de sólo lectura y sin `secrets` (aurora/kubectl-agent-values.yaml), no hay
   # PRs automáticos (NEXT_PUBLIC_ENABLE_INCIDENT_PREVENTION=false) y los
   # guardarraíles siguen activos. Revertir: poner "true" aquí y borrar la clave
-  # `aurora-ssh-key` de los authorized_keys (ver secret/infra/ssh/tailnet).
+  # `aurora-ssh-key` de los authorized_keys (ver el item `infra-ssh-tailnet`
+  # de 1Password, antes ruta `infra/ssh/tailnet` de Vault).
   ENABLE_POD_ISOLATION: "false"
   TERMINAL_NAMESPACE: untrusted
   TERMINAL_POD_TTL: "3600"

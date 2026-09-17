@@ -487,9 +487,9 @@ data:
 # Secret PROPIO y no una clave más en `aurorasvc-app`: rotar la api-key de Qdrant no
 # debe tocar el Secret del que cuelgan aurora-server y los workers.
 #
-# Se apunta a las MISMAS rutas de Vault que ya usan sus dueños (el brain para
-# qdrant_api_key, Keep para AURORA_USER_ID) en vez de duplicar valores: así una
-# rotación se propaga sola y no hay dos fuentes de verdad.
+# Se apunta a los MISMOS items de 1Password que ya usan sus dueños (el brain
+# para qdrant_api_key, Keep para AURORA_USER_ID) en vez de duplicar valores:
+# así una rotación se propaga sola y no hay dos fuentes de verdad.
 apiVersion: external-secrets.io/v1
 kind: ExternalSecret
 metadata:

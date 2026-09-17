@@ -1,4 +1,4 @@
-# Token del kubectl-agent de Aurora, desde Vault.
+# Token del kubectl-agent de Aurora, desde 1Password (SC-496).
 #
 # El token lo emite Aurora y vive en su tabla `kubectl_agent_tokens` (formato
 # `aurora_kubectl_` + 48 bytes urlsafe, igual que su `generate_token()`). El
