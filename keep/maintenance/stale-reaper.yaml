@@ -1,0 +1,219 @@
+# Reaper de incidents zombis: alerta resuelta en Alertmanager -> incident resuelto en Keep.
+#
+# POR QUÉ EXISTE. El flujo AM -> Keep es push y el evento `resolved` se envía
+# UNA sola vez, en la transición. Si Keep está reiniciando (o AM/vmalert, que
+# pierde el estado en memoria y ya no llega a enviarlo), el resolved se pierde
+# PARA SIEMPRE: la alerta queda `firing` en Keep para siempre y, con
+# `resolveOn: all_resolved`, su incident también. Medido el 17-09: 113 incidents
+# `firing` con CERO alertas activas en AM, el más antiguo de julio.
+#
+# QUÉ HACE. Reconcilia desde el otro lado: pide a AM la lista de fingerprints
+# activos (fuente de verdad) y a Keep sus incidents `firing`. Para cada alerta
+# de un incident que NO esté activa en AM, reenvía el evento `resolved` por el
+# MISMO canal de ingesta que usa AM (`POST /alerts/event/prometheus`, formato
+# webhook con clave `alerts` — en formato array Keep lo descarta en silencio,
+# verificado el 17-09). El motor de Keep resuelve el incident solo al quedar
+# todas sus alertas resolved; como red de seguridad, si tras el replay sigue
+# `firing` y todas sus alertas están resolved, lo resuelve por API.
+#
+# NUNCA resuelve nada si AM no responde: el criterio de "zombi" es la ausencia
+# en AM, y una AM inalcansable no es prueba de nada. Ante cualquier fallo al
+# listar alertas activas, sale sin tocar nada.
+#
+# IDEMPOTENTE: resolved sobre una alerta ya resolved es un no-op. Cada 15 min
+# (mismo ritmo que el repeat_interval de AM) el coste es una página de incidents.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: keepsvc-stale-reaper
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: keep
+    app.kubernetes.io/component: maintenance
+data:
+  reaper.py: |
+    """Resuelve en Keep las alertas/incidents que Alertmanager ya dio por resueltos."""
+    import base64
+    import json
+    import os
+    import sys
+    import time
+    import urllib.error
+    import urllib.request
+
+    KEEP = os.environ["KEEP_API_URL"].rstrip("/")
+    KEY = os.environ["KEEP_API_KEY"]
+    AM = os.environ["ALERTMANAGER_URL"].rstrip("/")
+    # Margen para no competir con eventos en vuelo: un incident visto hace menos
+    # de esto no se toca aunque todas sus alertas parezcan zombis.
+    GRACE_SECONDS = int(os.environ.get("GRACE_SECONDS", "900"))
+    # Pausas entre llamadas: cada replay encolado dispara la evaluación de las
+    # ~20 reglas de correlación, y la primera versión del reaper (sin pausas,
+    # 17-09) saturó el worker de eventos de Keep: los webhooks de AM empezaron
+    # a morir por context deadline exceeded, generando JUSTO los zombies que
+    # este job viene a evitar. El steady-state son segundos; el primer barrido
+    # tras un backlog grande tarda minutos a propósito.
+    PAUSE = float(os.environ.get("PAUSE_SECONDS", "0.5"))
+
+    def call(url, method="GET", payload=None, headers=None):
+        req = urllib.request.Request(
+            url,
+            method=method,
+            data=json.dumps(payload).encode() if payload is not None else None,
+            headers={"Content-Type": "application/json", **(headers or {})},
+        )
+        with urllib.request.urlopen(req, timeout=60) as r:
+            body = r.read()
+            return json.loads(body) if body else None
+
+    keep_h = {"x-api-key": KEY}
+    am_h = {"Authorization": "Basic " + base64.b64encode(f"api_key:{KEY}".encode()).decode()}
+
+    # 1. Fuente de verdad: fingerprints VIVOS en Alertmanager. VIVO = presente
+    # en la respuesta, esté active, pending (aún no cumple `for`), silenciada o
+    # inhibida: todas son señales de que AM tiene la alerta viva, y borrarla de
+    # Keep sería disparar el incident otra vez cuando pase a active. La
+    # respuesta vacía es un fallo de AM, no un "todo resuelto" (Watchdog está
+    # siempre activa, así que vacío == roto): se sale sin tocar nada.
+    try:
+        am_alerts = call(f"{AM}/api/v2/alerts")
+    except Exception as e:
+        print(f"ALERTMANAGER no accesible ({e}); no resuelvo nada", file=sys.stderr)
+        sys.exit(1)
+    if not am_alerts:
+        print("ALERTMANAGER responde vacío (Watchdog ausente); no resuelvo nada", file=sys.stderr)
+        sys.exit(1)
+    live = {a["fingerprint"] for a in am_alerts if a.get("fingerprint")}
+    print(f"AM: {len(live)} fingerprints vivos")
+
+    # 2. Incidents firing en Keep. El parámetro `status` no filtra en esta
+    # versión (devuelve el total); el CEL sí lo hace server-side y en una
+    # sola consulta.
+    import urllib.parse
+    cel = urllib.parse.quote('status == "firing"')
+    firing = call(f"{KEEP}/incidents?cel={cel}&limit=500", headers=keep_h).get("items", [])
+    print(f"Keep: {len(firing)} incidents firing")
+
+    now = time.time()
+    replayed = resolved = 0
+    for inc in firing:
+        try:
+            resp = call(f"{KEEP}/incidents/{inc['id']}/alerts?limit=1000", headers=keep_h)
+        except Exception as e:
+            print(f"  {inc['id'][:8]}: sin alerts ({e})", file=sys.stderr)
+            continue
+        items = resp.get("items", resp) if isinstance(resp, dict) else resp
+        zombies = [a for a in items
+                   if a.get("status") == "firing" and a.get("fingerprint") not in live]
+        if zombies:
+            # Un incident visto hace poco puede estar a medio actualizar: fuera.
+            last_seen = (inc.get("last_seen_time") or "")[:19]
+            try:
+                ls_epoch = time.mktime(time.strptime(last_seen, "%Y-%m-%dT%H:%M:%S"))
+                if now - ls_epoch < GRACE_SECONDS:
+                    continue
+            except ValueError:
+                pass
+
+        for a in zombies:
+            payload = {
+                "receiver": "keepsvc-stale-reaper",
+                "status": "resolved",
+                "alerts": [{
+                    "status": "resolved",
+                    "labels": a.get("labels") or {"alertname": a.get("name")},
+                    "annotations": a.get("annotations") or {},
+                    "startsAt": (a.get("startedAt") or "2026-01-01 00:00:00").replace(" ", "T") + "Z",
+                    "endsAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                    "fingerprint": a["fingerprint"],
+                }],
+            }
+            try:
+                call(f"{KEEP}/alerts/event/prometheus", method="POST", payload=payload, headers=am_h)
+                replayed += 1
+            except Exception as e:
+                print(f"  replay {a['fingerprint'][:12]} falló: {e}", file=sys.stderr)
+            time.sleep(PAUSE)
+
+        # El motor resuelve solo al resolverse la última alerta; se comprueba y,
+        # si no, se resuelve por API (mismo camino que la UI). Solo cuando este
+        # incident tenía zombis: sin zombis no hay nada que reconciliar.
+        if zombies:
+            time.sleep(2)
+            try:
+                fresh = call(f"{KEEP}/incidents/{inc['id']}", headers=keep_h)
+                if fresh.get("status") != "firing":
+                    resolved += 1
+                else:
+                    resp2 = call(f"{KEEP}/incidents/{inc['id']}/alerts?limit=1000", headers=keep_h)
+                    s2 = resp2.get("items", resp2) if isinstance(resp2, dict) else resp2
+                    if not [a for a in s2 if a.get("status") == "firing"
+                            and a.get("fingerprint") not in live]:
+                        call(f"{KEEP}/incidents/{inc['id']}/status", method="POST",
+                             payload={"status": "resolved"}, headers=keep_h)
+                        resolved += 1
+            except Exception as e:
+                print(f"  {inc['id'][:8]}: estado tras replay no confirmable ({e})", file=sys.stderr)
+        time.sleep(PAUSE)
+
+    print(f"replayed: {replayed} alertas zombi | incidents resueltos: {resolved}")
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: keepsvc-stale-reaper
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: keep
+    app.kubernetes.io/component: maintenance
+spec:
+  # Cada 15 min, el mismo ritmo que el repeat_interval de AM hacia Keep.
+  schedule: "*/15 * * * *"
+  timeZone: Europe/Madrid
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  startingDeadlineSeconds: 300
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      ttlSecondsAfterFinished: 86400
+      template:
+        spec:
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+          containers:
+            - name: reaper
+              image: python:3.12-slim
+              command: ["python3", "/scripts/reaper.py"]
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              env:
+                - name: KEEP_API_URL
+                  value: http://keep-backend.monitoring.svc.cluster.local:8080
+                - name: KEEP_API_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: keepsvc-provisioning
+                      key: API_KEY_PROVISIONER
+                - name: ALERTMANAGER_URL
+                  value: http://vmalertmanager-vm-victoria-metrics-k8s-stack.monitoring.svc.cluster.local:9093
+              resources:
+                requests:
+                  cpu: 10m
+                  memory: 64Mi
+                limits:
+                  cpu: 200m
+                  memory: 128Mi
+              volumeMounts:
+                - name: scripts
+                  mountPath: /scripts
+          volumes:
+            - name: scripts
+              configMap:
+                name: keepsvc-stale-reaper

@@ -38,6 +38,10 @@ resources:
   # Ventana de mantenimiento diaria de las 04:00: las de Keep no tienen
   # recurrencia (start_time/end_time y punto), así que un CronJob la reprograma.
   - keep/maintenance/daily-window.yaml
+  # Reaper de incidents zombis: reconcilia Keep contra Alertmanager cada 15 min
+  # (el resolved de AM se pierde si Keep estaba reiniciando y el incident se queda
+  # firing para siempre con resolveOn: all_resolved).
+  - keep/maintenance/stale-reaper.yaml
   - manifests/alertmanager-config.yaml
   - manifests/probes.yaml
   - manifests/rules.yaml
