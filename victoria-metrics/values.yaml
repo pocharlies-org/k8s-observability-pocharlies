@@ -16,6 +16,12 @@ defaultRules:
       create: false
     NodeDiskIOSaturation:
       create: false
+    # Reemplazada por pocharlies-node-memory (manifests/rules.yaml): la copia
+    # del chart no puede excluir los Sparks, y con el perfil llm-tp residente
+    # nvidia-dgx/gx10-ec3d viven >90 % por diseño (vLLM preasigna el KV cache;
+    # gx10-ec3d memoria unificada ~115/119 GB según ~/k8s/CLAUDE.md).
+    NodeMemoryHighUtilization:
+      create: false
   groups:
     etcd:
       create: false

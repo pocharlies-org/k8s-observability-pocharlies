@@ -1847,3 +1847,32 @@ spec:
           annotations:
             summary: "Shopify-Picqer order audit completed but emitted no run telemetry"
             description: "Kubernetes records a recent successful shopify-picqer-order-audit Job, but VictoriaMetrics has no shopify_picqer_order_audit_findings sample in 48 hours. The audit may have completed, but business alerting is blind. Check the Job logs and the VictoriaMetrics import request (push path with extra_label job=shopify_picqer_order_audit)."
+---
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMRule
+metadata:
+  name: pocharlies-node-memory
+  namespace: monitoring
+spec:
+  groups:
+    - name: pocharlies.node-memory
+      rules:
+        - alert: NodeMemoryHighUtilization
+          # Copia de la regla homónima del chart (desactivada en
+          # victoria-metrics/values.yaml) con los Sparks excluidos: con el
+          # perfil llm-tp residente, nvidia-dgx y gx10-ec3d superan el 90 %
+          # por diseño (vLLM preasigna el KV cache; gx10-ec3d tiene memoria
+          # unificada y el nodo vive ~115/119 GB según ~/k8s/CLAUDE.md). El
+          # join con kube_pod_info es porque las series de node-exporter no
+          # traen label de nodo (instance = podIP:9100).
+          expr: |
+            (100 - ((node_memory_MemAvailable_bytes{job="node-exporter"} / node_memory_MemTotal_bytes{job="node-exporter"}) * 100)) > 90
+            and on(pod)
+            kube_pod_info{namespace="monitoring", pod=~"vm-prometheus-node-exporter-.*", node!~"nvidia-dgx|gx10-ec3d"}
+          for: 15m
+          labels:
+            severity: warning
+            area: capacity
+          annotations:
+            summary: "Host is running out of memory"
+            description: "Memory is filling up at {{ $labels.pod }}, has been above 90% for the last 15 minutes, is currently at {{ printf \"%.2f\" $value }}%. Sparks (nvidia-dgx/gx10-ec3d) are excluded by design while the llm-tp profile is resident — check the gpu-arbiter CM before assuming drift."
