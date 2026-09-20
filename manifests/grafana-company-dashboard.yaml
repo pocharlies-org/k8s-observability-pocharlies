@@ -1,0 +1,93 @@
+# «La compañía» — auditoría del supervisor jira-epic-trigger (x86-host-runtime-pocharlies #229).
+# Cada sube y baja de la compañía es un peldaño aquí: unidades vivas vs tope, quién ocupa las
+# peticiones del residente, y los contadores de eventos (lanzamientos y paradas).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-company
+  namespace: monitoring
+  labels:
+    grafana_dashboard: "1"
+data:
+  company.json: |
+    {
+      "annotations": {"list": []},
+      "editable": true,
+      "graphTooltip": 1,
+      "uid": "company",
+      "title": "La compañía",
+      "tags": ["compania", "jira-epic-trigger"],
+      "timezone": "Europe/Madrid",
+      "refresh": "30s",
+      "schemaVersion": 39,
+      "version": 1,
+      "panels": [
+        {
+          "id": 1, "type": "timeseries", "title": "Sesiones de la compañía y tope",
+          "gridPos": {"h": 9, "w": 12, "x": 0, "y": 0},
+          "datasource": {"type": "prometheus", "uid": "VictoriaMetrics"},
+          "fieldConfig": {"defaults": {"custom": {"drawStyle": "line", "lineWidth": 2, "fillOpacity": 8, "spanNulls": true}}, "overrides": [
+            {"matcher": {"id": "byName", "options": "tope dinámico"}, "properties": [{"id": "custom.lineStyle", "value": {"fill": "dash", "dash": [10, 6]}}]},
+            {"matcher": {"id": "byName", "options": "tope base"}, "properties": [{"id": "custom.lineStyle", "value": {"fill": "dash", "dash": [2, 4]}}]}
+          ]},
+          "targets": [
+            {"expr": "company_unidades_activas", "legendFormat": "{{tipo}}", "refId": "A"},
+            {"expr": "company_tope_dinamico", "legendFormat": "tope dinámico", "refId": "B"},
+            {"expr": "company_max_activas", "legendFormat": "tope base", "refId": "C"}
+          ]
+        },
+        {
+          "id": 2, "type": "timeseries", "title": "Peticiones del residente (vLLM)",
+          "description": "En ejecución y cola del qwen residente. Las mismas que condicionan el tope dinámico (objetivo 4).",
+          "gridPos": {"h": 9, "w": 12, "x": 12, "y": 0},
+          "datasource": {"type": "prometheus", "uid": "VictoriaMetrics"},
+          "fieldConfig": {"defaults": {"custom": {"drawStyle": "line", "lineWidth": 2, "fillOpacity": 10, "spanNulls": true}}, "overrides": []},
+          "targets": [
+            {"expr": "company_llm_en_ejecucion", "legendFormat": "en ejecución", "refId": "A"},
+            {"expr": "company_llm_en_cola", "legendFormat": "en cola", "refId": "B"}
+          ]
+        },
+        {
+          "id": 3, "type": "timeseries", "title": "Quién ocupa el modelo (turno en curso)",
+          "description": "Sesiones Claude busy: las interactivas de Dani y las de la compañía. La diferencia entre este total y «en ejecución» son los subagentes (makers) de cada sesión.",
+          "gridPos": {"h": 9, "w": 12, "x": 0, "y": 9},
+          "datasource": {"type": "prometheus", "uid": "VictoriaMetrics"},
+          "fieldConfig": {"defaults": {"custom": {"drawStyle": "line", "lineWidth": 2, "fillOpacity": 20, "stacking": {"mode": "normal"}, "spanNulls": true}}, "overrides": []},
+          "targets": [
+            {"expr": "company_sesiones_ocupadas", "legendFormat": "{{tipo}}", "refId": "A"}
+          ]
+        },
+        {
+          "id": 4, "type": "timeseries", "title": "Épicas del supervisor",
+          "gridPos": {"h": 9, "w": 12, "x": 12, "y": 9},
+          "datasource": {"type": "prometheus", "uid": "VictoriaMetrics"},
+          "fieldConfig": {"defaults": {"custom": {"drawStyle": "line", "lineWidth": 2, "fillOpacity": 8, "spanNulls": true}}, "overrides": []},
+          "targets": [
+            {"expr": "company_epicas", "legendFormat": "{{estado}}", "refId": "A"}
+          ]
+        },
+        {
+          "id": 5, "type": "timeseries", "title": "Eventos: lanzamientos",
+          "description": "Cada peldaño = sesiones lanzadas por el supervisor en la ventana. Auditado también en el journal (journalctl --user -u jira-epic-trigger).",
+          "gridPos": {"h": 9, "w": 12, "x": 0, "y": 18},
+          "datasource": {"type": "prometheus", "uid": "VictoriaMetrics"},
+          "fieldConfig": {"defaults": {"custom": {"drawStyle": "bars", "fillOpacity": 60, "spanNulls": false}, "unit": "short"}, "overrides": []},
+          "targets": [
+            {"expr": "sum by (tipo, proyecto) (increase(company_lanzamientos_total[30m]))", "legendFormat": "{{tipo}} · {{proyecto}}", "refId": "A"}
+          ]
+        },
+        {
+          "id": 6, "type": "timeseries", "title": "Eventos: paradas",
+          "description": "motivo=zombi: unidad activa sin agente dentro (la para el barrido). motivo=parada: parada por el protocolo (respuesta de Dani, épica cerrada).",
+          "gridPos": {"h": 9, "w": 12, "x": 12, "y": 18},
+          "datasource": {"type": "prometheus", "uid": "VictoriaMetrics"},
+          "fieldConfig": {"defaults": {"custom": {"drawStyle": "bars", "fillOpacity": 60, "spanNulls": false}}, "overrides": []},
+          "targets": [
+            {"expr": "sum by (motivo) (increase(company_paradas_total[30m]))", "legendFormat": "{{motivo}}", "refId": "A"}
+          ]
+        }
+      ],
+      "time": {"from": "now-24h", "to": "now"},
+      "timepicker": {},
+      "templating": {"list": []}
+    }

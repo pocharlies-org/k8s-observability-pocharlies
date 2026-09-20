@@ -51,6 +51,11 @@ resources:
   - manifests/dcgm-scrape.yaml
   - manifests/rabbitmq-scrape.yaml
   - manifests/cert-manager-scrape.yaml
+  # La compañía (Dani 20-09): auditar cada sube y baja — el supervisor del x86 expone /metrics
+  # (unidades, tope, peticiones del residente, contadores de lanzamientos/paradas) y este scrape
+  # lo trae a VictoriaMetrics; el dashboard «La compañía» lo pinta.
+  - manifests/company-scrape.yaml
+  - manifests/grafana-company-dashboard.yaml
   # DGX-112 fase 0: el controller de external-secrets contaba sus llamadas a
   # proveedores desde siempre y no las recogía nadie — así se agotó dos veces la
   # cuota de 1Password sin un dato donde mirar. El scrape va aquí, no en
