@@ -1,0 +1,51 @@
+# La compañía: el supervisor `jira-epic-trigger` corre como systemd --user en el x86 (nodo `ubuntu`)
+# y escucha SÓLO en su IP del tailnet. Service sin selector + Endpoints fijo: así vmagent lo alcanza
+# como a cualquier objetivo del clúster. (ArgoCD excluye EndpointSlice del apply; el slice se deriva
+# aquí, en el clúster, a partir de este Endpoints — ver el gotcha del slice de opencode-edge-host.)
+# El /metrics lo sirve libexec/jira-epic-trigger.py (x86-host-runtime-pocharlies #229): unidades
+# activas, tope dinámico, peticiones del residente y contadores de eventos (lanzamientos/paradas).
+apiVersion: v1
+kind: Service
+metadata:
+  name: company-supervisor
+  namespace: monitoring
+  labels:
+    app: company-supervisor
+    infra: "true"
+spec:
+  ports:
+    - name: http
+      port: 19911
+      targetPort: 19911
+---
+apiVersion: v1
+kind: Endpoints
+metadata:
+  name: company-supervisor
+  namespace: monitoring
+  labels:
+    app: company-supervisor
+subsets:
+  - addresses:
+      - ip: 100.83.56.98   # x86 por el tailnet; el supervisor no escucha en 0.0.0.0 a propósito
+    ports:
+      - name: http
+        port: 19911
+        protocol: TCP
+---
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMServiceScrape
+metadata:
+  name: company-supervisor
+  namespace: monitoring
+spec:
+  namespaceSelector:
+    matchNames: ["monitoring"]
+  selector:
+    matchLabels:
+      app: company-supervisor
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 30s
+      scrapeTimeout: 10s
