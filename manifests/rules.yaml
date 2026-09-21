@@ -1895,13 +1895,28 @@ spec:
           # head-age y no-consumer son ciegas a esto por construccion. La unica
           # senal que distingue "dia tranquilo" de "cadena rota" es el flujo por
           # salto: entran facturas (incoming.ingest delivered > 0) y en la misma
-          # ventana el salto OCR no consume nada (ocr.extract delivered == 0).
-          # Medido el 21-09 durante la incidencia real: actividad en la cola de
-          # ingest a las 15:15 y cero en ocr/classify/posting hasta las 18:00.
+          # ventana el salto OCR no consume nada (ocr.extract delivered == 0 o
+          # serie ausente). Medido el 21-09 durante la incidencia real: actividad
+          # en la cola de ingest a las 15:15 y cero en ocr/classify/posting hasta
+          # las 18:00.
           # Los contadores de entregas por cola los expone el broker en el
           # family channel_queue_metrics (scrape anadido en la misma PR; en
           # 3.13.7 los families queue_message_stats/queue_delivery_metrics no
           # emiten series — verificado contra el endpoint vivo).
+          # MUDEZ MEDIDA Y CORREGIDA (INFRA-214, 21-09): la version original
+          # (A and on (vhost) B==0) era ESTRUCTURALMENTE MUDA. El family
+          # channel_queue_metrics no emite la serie delivered_total del canal
+          # ocr.extract pese a consumers=1 en la cola — misterio del exporter,
+          # no bloqueante (medido: serie ausente >=24 h; /api/v1/query a las
+          # 19:00Z devolvia el RHS como VECTOR VACIO). A and on (vhost) B con B
+          # vacio es vacio para cualquier A: con facturas entrando la alerta no
+          # se ponia ni pending. Por eso el RHS es ahora `unless on (vhost)
+          # (B > 0)`: serie en cero O AUSENTE deja el LHS intacto y la alerta
+          # DISPARA tras for: 30m — degrada a fuego, no a silencio. Si alguien
+          # "arregla" el exporter y la serie vuelve, la semantica NO cambia (OCR
+          # fluyendo quita el vhost del resultado); NO se debe volver a `and
+          # ... == 0`, eso re-entronizaria la mudez. Descartado `or vector(0)`:
+          # pierde la etiqueta vhost y rompe el join.
           expr: |
             (
               sum by (vhost) (
@@ -1910,13 +1925,13 @@ spec:
                 }[6h])
               ) > 0
             )
-            and on (vhost)
+            unless on (vhost)
             (
               sum by (vhost) (
                 increase(rabbitmq_detailed_channel_messages_delivered_total{
                   vhost="/synapse", queue="adapter.invoicing.ocr.extract"
                 }[6h])
-              ) == 0
+              ) > 0
             )
           for: 30m
           labels:
@@ -1928,8 +1943,10 @@ spec:
             summary: "Ingesta de facturas Skirmbooks parada: entran facturas y OCR no avanza"
             description: >-
               En las ultimas 6 h hay entregas consumidas en la cola
-              adapter.invoicing.incoming.ingest (> 0) y cero en
-              adapter.invoicing.ocr.extract. La cadena esta rota entre ingest y OCR:
+              adapter.invoicing.incoming.ingest (> 0) y la serie de entregas de
+              adapter.invoicing.ocr.extract esta en cero o AUSENTE (serie ausente
+              es disparador legitimo: el exporter no la emite para ese canal —
+              ver comentario de la regla). La cadena esta rota entre ingest y OCR:
               el adapter no publica el comando ocr.extract (modo de fallo INFRA-211).
               Consumers y colas parecen sanos — esa es la trampa, no mires ahi.
               Revisa los logs de los pods skirmbooks-invoicing-* en el namespace
