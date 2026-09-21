@@ -908,12 +908,20 @@ spec:
           # disagree (one still sees a consumer), max keeps the optimistic value and
           # the alert stays quiet. Better a late alert than a false one during the
           # seconds-long consumer gap of a normal rollout.
+          #
+          # whatsapp_contact_sync EXCLUIDA (2026-09-21): su consumidor no es
+          # permanente, es un KEDA ScaledObject con trigger cron
+          # (keda-synapse-adapter-messaging-contact-sync, ventana 03:30-07:30
+          # Europe/Madrid, minReplicas 0). Fuera de la ventana hay SIEMPRE
+          # consumers==0 y el backlog del día > 0: la alerta disparaba cada
+          # noche por diseño, no por fallo. Su señal de fallo real es
+          # RabbitmqContactSyncBacklogAfterWindow, justo debajo.
           expr: |
             (
               max by (vhost, queue) (
                 rabbitmq_detailed_queue_consumers{
                   vhost="/synapse",
-                  queue!~"dlq\\..+|archive\\..+|adapter\\.[^.]+"
+                  queue!~"dlq\\..+|archive\\..+|adapter\\.[^.]+|adapter\\.messaging\\.whatsapp_contact_sync"
                 }
               ) == 0
             )
@@ -922,7 +930,7 @@ spec:
               max by (vhost, queue) (
                 rabbitmq_detailed_queue_messages_ready{
                   vhost="/synapse",
-                  queue!~"dlq\\..+|archive\\..+|adapter\\.[^.]+"
+                  queue!~"dlq\\..+|archive\\..+|adapter\\.[^.]+|adapter\\.messaging\\.whatsapp_contact_sync"
                 }
               ) > 0
             )
@@ -934,6 +942,33 @@ spec:
           annotations:
             summary: "RabbitMQ queue {{ $labels.queue }} has messages but no consumer"
             description: "Queue {{ $labels.queue }} (vhost {{ $labels.vhost }}) has ready messages with zero consumers for 10m. The handler is dead or disconnected — messages will sit until a consumer reattaches."
+
+        - alert: RabbitmqContactSyncBacklogAfterWindow
+          # Fallo del consumidor cron de whatsapp_contact_sync: si a las
+          # 05:00-06:59 UTC (ventana que cubre el fin del drain tanto en
+          # horario de invierno —05:30Z— como de verano —04:30Z—, Madrid)
+          # sigue habiendo mensajes ready, la ventana de esta mañana no los
+          # drenó: KEDA no escaló, el pod murió al arrancar o el adaptador
+          # no consume. Medido 21-09: en régimen normal ready vuelve a 0
+          # sobre las 02:10Z y no empieza a crecer hasta ~10:00Z.
+          expr: |
+            (
+              max by (vhost, queue) (
+                rabbitmq_detailed_queue_messages_ready{
+                  vhost="/synapse",
+                  queue="adapter.messaging.whatsapp_contact_sync"
+                }
+              ) > 0
+            )
+            and on() (hour() >= 5 and hour() < 7)
+          for: 15m
+          labels:
+            severity: warning
+            area: messaging
+            component: shared-rabbitmq
+          annotations:
+            summary: "whatsapp_contact_sync backlog survived its cron window"
+            description: "Queue adapter.messaging.whatsapp_contact_sync still has ready messages after the 03:30-07:30 Europe/Madrid cron window. Check `kubectl -n synapse get scaledobject keda-synapse-adapter-messaging-contact-sync` and the pod logs from the window; the consumer is KEDA-cronned, its absence outside the window is by design."
 
         # --- critical: cluster membership / partition ----------------------
         # Added after the 2026-07-10 01:08Z split-brain (P1): a Tailscale flap
