@@ -1917,18 +1917,37 @@ spec:
           # fluyendo quita el vhost del resultado); NO se debe volver a `and
           # ... == 0`, eso re-entronizaria la mudez. Descartado `or vector(0)`:
           # pierde la etiqueta vhost y rompe el join.
+          # COUNTER MUERTO EN LA FUENTE (INFRA-214 revision 3, medido 21-09):
+          # delivered_total mapea deliver_get, que en RabbitMQ 3.13.7 SOLO
+          # cuenta basic.get; los adapters consumen con basic.consume +
+          # manual-ack, asi que ese counter no suma nunca (92/92 canales a 0
+          # con muestras frescas) — la regla era sorda por la metrica, no por
+          # el join. El hermano delivered_ack_total SI esta vivo: canal de
+          # ingest = 2, paso 1->2 a las 19:20Z = la entrega real de la prueba
+          # A (19:18:45Z). Por eso AMBOS lados usan ahora
+          # delivered_ack_total. NO volver a delivered_total: re-entronizaria
+          # una regla sorda, igual que volver a `and ... == 0` re-entronizaba
+          # la mudez del join (parrafo anterior, sigue vigente: la serie de
+          # canal puede faltar y el unless lo cubre). Y max by (vhost) en vez
+          # de sum by: el scrape dual shared-rabbitmq +
+          # shared-rabbitmq-headless duplica cada serie y sum inflaria el
+          # valor x2.
+          # LIMITACION DE SEMANTICA: delivered_ack_total ve la ENTREGA al
+          # consumidor del siguiente salto, no el procesamiento posterior.
+          # Una regla sobre ready/unacked (family queue_coarse_metrics) seria
+          # otra historia — no montarla aqui.
           expr: |
             (
-              sum by (vhost) (
-                increase(rabbitmq_detailed_channel_messages_delivered_total{
+              max by (vhost) (
+                increase(rabbitmq_detailed_channel_messages_delivered_ack_total{
                   vhost="/synapse", queue="adapter.invoicing.incoming.ingest"
                 }[6h])
               ) > 0
             )
             unless on (vhost)
             (
-              sum by (vhost) (
-                increase(rabbitmq_detailed_channel_messages_delivered_total{
+              max by (vhost) (
+                increase(rabbitmq_detailed_channel_messages_delivered_ack_total{
                   vhost="/synapse", queue="adapter.invoicing.ocr.extract"
                 }[6h])
               ) > 0
@@ -1942,24 +1961,38 @@ spec:
           annotations:
             summary: "Ingesta de facturas Skirmbooks parada: entran facturas y OCR no avanza"
             description: >-
-              En las ultimas 6 h hay entregas consumidas en la cola
-              adapter.invoicing.incoming.ingest (> 0) y la serie de entregas de
-              adapter.invoicing.ocr.extract esta en cero o AUSENTE (serie ausente
-              es disparador legitimo: el exporter no la emite para ese canal —
-              ver comentario de la regla). La cadena esta rota entre ingest y OCR:
-              el adapter no publica el comando ocr.extract (modo de fallo INFRA-211).
+              En las ultimas 6 h hay entregas-ack consumidas en la cola
+              adapter.invoicing.incoming.ingest (delivered_ack_total > 0) y las
+              entregas-ack de adapter.invoicing.ocr.extract estan en cero o
+              AUSENTE (serie ausente es disparador legitimo: sin canal de
+              consumidor con entregas no hay serie — ver comentario de la
+              regla). La cadena esta rota entre ingest y OCR: el adapter no
+              publica el comando ocr.extract (modo de fallo INFRA-211).
               Consumers y colas parecen sanos — esa es la trampa, no mires ahi.
-              Revisa los logs de los pods skirmbooks-invoicing-* en el namespace
-              skirmshop y las filas 'received' antiguas en gestoria_invoicing.
+              Nota de semantica: la regla ve entregas al consumidor OCR, no el
+              procesamiento posterior. Revisa los logs de los pods
+              skirmbooks-invoicing-* en el namespace skirmshop y las filas
+              'received' antiguas en gestoria_invoicing.
         - alert: SkirmbooksInvoicingChainTelemetryMissing
-          # Si la serie de entregas de alguno de los dos saltos desaparece
-          # (regresion de scrape o consumidor caido >30 min), la regla de arriba
-          # queda ciega: declaralo. Mismo patron que SiiInvoicingTelemetryMissing.
+          # Si la telemetria por cola desaparece (regresion de scrape o broker
+          # caido >30 min), la regla de arriba queda ciega: declaralo. Mismo
+          # patron que SiiInvoicingTelemetryMissing.
+          # INFRA-214 revision 3: la version anterior vigilaba la serie
+          # delivered_total por cola y disparaba PERMANENTEMENTE por el
+          # motivo equivocado — ese counter esta muerto en la fuente (solo
+          # basic.get, ver regla ChainStalled) y ademas el exporter nunca emite
+          # la serie del canal ocr.extract: ausencia estructural, no regresion.
+          # Se vigila ahora rabbitmq_detailed_queue_consumers (family
+          # queue_consumer_count): serie por cola que existe siempre que el
+          # scrape detailed del broker reporta el vhost; su ausencia SI es
+          # regresion y deja ciega a ChainStalled. La ausencia de la serie de
+          # canal de entregas NO se alerta aqui: para ChainStalled es
+          # disparador legitimo via unless.
           expr: |
-            absent(rabbitmq_detailed_channel_messages_delivered_total{
+            absent(rabbitmq_detailed_queue_consumers{
               vhost="/synapse", queue="adapter.invoicing.incoming.ingest"
             })
-            or absent(rabbitmq_detailed_channel_messages_delivered_total{
+            or absent(rabbitmq_detailed_queue_consumers{
               vhost="/synapse", queue="adapter.invoicing.ocr.extract"
             })
           for: 30m
@@ -1971,8 +2004,11 @@ spec:
           annotations:
             summary: "Sin metricas de la cadena de ingesta de facturas Skirmbooks"
             description: >-
-              Falta la serie rabbitmq_detailed_channel_messages_delivered_total de
-              adapter.invoicing.incoming.ingest o adapter.invoicing.ocr.extract durante
-              30 min: sin ella SkirmbooksInvoicingChainStalled no ve nada. Revisa el
-              VMServiceScrape shared-rabbitmq-detailed (family channel_queue_metrics)
-              y que el adapter mantenga su canal de consumidor.
+              Falta la serie rabbitmq_detailed_queue_consumers de
+              adapter.invoicing.incoming.ingest o adapter.invoicing.ocr.extract
+              durante 30 min: el scrape detailed del broker o el propio
+              RabbitMQ han dejado de reportar el vhost /synapse y
+              SkirmbooksInvoicingChainStalled no ve nada. Revisa shared-rabbitmq
+              en el namespace databases y el VMServiceScrape
+              shared-rabbitmq-detailed (families queue_consumer_count /
+              channel_queue_metrics).
