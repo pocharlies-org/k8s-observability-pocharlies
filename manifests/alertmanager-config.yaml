@@ -94,11 +94,16 @@ spec:
       # ---------------------------------------------------------------------
       # FALLOS SILENCIOSOS DE PROCESAMIENTO (2026-08-04)
       #
-      # Estas cuatro NO son un dead-man's switch: Keep las recibe igual (de ahí
+      # Estas cinco NO son un dead-man's switch: Keep las recibe igual (de ahí
       # el `continue: true`, igual que arriba). Van también por Telegram porque
       # su modo de fallo es invisible por definición y ya ha costado caro tres
       # veces: el consumidor de RabbitMQ muere, el pod sigue vivo, las probes
       # siguen en verde y NADA se cae — así que ningún aviso de salud dispara.
+      #
+      # SkirmbooksInvoicingChainStalled (INFRA-214, 21-09) es el cuarto caso y
+      # un escalón más sutil: ni siquiera el consumidor muere — la cadena de
+      # ingesta de facturas dejó de publicar ocr.extract, con consumers=1 y
+      # colas vacías, parada del 17 al 21-09 descubierta a mano.
       #
       # El caso que motivó esto: el 31-07 el adapter de gmail perdió su canal
       # tras un reinicio del broker y estuvo 9,5 h sin procesar correo, con 588
@@ -106,7 +111,7 @@ spec:
       # correctamente; nadie lo miró. Antes ya había pasado con whatsapp
       # (19-21 jul) y expenses (16-21 jul).
       #
-      # Son de bajo ruido por construcción: las cuatro llevan `for` de 10-30m y
+      # Son de bajo ruido por construcción: las cinco llevan `for` de 10-30m y
       # excluyen los buffers sin consumidor legítimo, así que un rollout normal
       # (hueco de segundos) no las activa. Medido el 04-08: 0 series activas en
       # estado estable.
@@ -115,7 +120,7 @@ spec:
       # afinar SU expresión — no sacarla de aquí y volver a quedarse ciego.
       # ---------------------------------------------------------------------
       - matchers:
-          - 'alertname =~ "RabbitmqFunctionalQueueNoConsumer|RabbitmqUnackedStuck|RabbitmqHeadMessageStale|SynapseUnroutableMessages"'
+          - 'alertname =~ "RabbitmqFunctionalQueueNoConsumer|RabbitmqUnackedStuck|RabbitmqHeadMessageStale|SynapseUnroutableMessages|SkirmbooksInvoicingChainStalled"'
         receiver: backstop-telegram
         continue: true
         group_by:

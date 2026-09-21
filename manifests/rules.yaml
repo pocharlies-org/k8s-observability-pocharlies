@@ -1876,3 +1876,86 @@ spec:
           annotations:
             summary: "Host is running out of memory"
             description: "Memory is filling up at {{ $labels.pod }}, has been above 90% for the last 15 minutes, is currently at {{ printf \"%.2f\" $value }}%. Sparks (nvidia-dgx/gx10-ec3d) are excluded by design while the llm-tp profile is resident — check the gpu-arbiter CM before assuming drift."
+
+---
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMRule
+metadata:
+  name: pocharlies-skirmbooks-ingest
+  namespace: monitoring
+spec:
+  groups:
+    - name: pocharlies.skirmbooks-ingest
+      rules:
+        - alert: SkirmbooksInvoicingChainStalled
+          # C4 INFRA-210: la ingesta de facturas estuvo parada del 17 al 21-09
+          # y se descubrio a mano. El modo de fallo (INFRA-211, medido): la
+          # cadena no publica el comando ocr.extract tras ingerir. Consecuencia:
+          # consumers=1, colas vacias, DLQs vacias — las reglas de backlog,
+          # head-age y no-consumer son ciegas a esto por construccion. La unica
+          # senal que distingue "dia tranquilo" de "cadena rota" es el flujo por
+          # salto: entran facturas (incoming.ingest delivered > 0) y en la misma
+          # ventana el salto OCR no consume nada (ocr.extract delivered == 0).
+          # Medido el 21-09 durante la incidencia real: actividad en la cola de
+          # ingest a las 15:15 y cero en ocr/classify/posting hasta las 18:00.
+          # Los contadores de entregas por cola los expone el broker en el
+          # family channel_queue_metrics (scrape anadido en la misma PR; en
+          # 3.13.7 los families queue_message_stats/queue_delivery_metrics no
+          # emiten series — verificado contra el endpoint vivo).
+          expr: |
+            (
+              sum by (vhost) (
+                increase(rabbitmq_detailed_channel_messages_delivered_total{
+                  vhost="/synapse", queue="adapter.invoicing.incoming.ingest"
+                }[6h])
+              ) > 0
+            )
+            and on (vhost)
+            (
+              sum by (vhost) (
+                increase(rabbitmq_detailed_channel_messages_delivered_total{
+                  vhost="/synapse", queue="adapter.invoicing.ocr.extract"
+                }[6h])
+              ) == 0
+            )
+          for: 30m
+          labels:
+            severity: critical
+            area: gestoria
+            domain: invoicing-pipeline
+            component: skirmbooks-invoicing
+          annotations:
+            summary: "Ingesta de facturas Skirmbooks parada: entran facturas y OCR no avanza"
+            description: >-
+              En las ultimas 6 h hay entregas consumidas en la cola
+              adapter.invoicing.incoming.ingest (> 0) y cero en
+              adapter.invoicing.ocr.extract. La cadena esta rota entre ingest y OCR:
+              el adapter no publica el comando ocr.extract (modo de fallo INFRA-211).
+              Consumers y colas parecen sanos — esa es la trampa, no mires ahi.
+              Revisa los logs de los pods skirmbooks-invoicing-* en el namespace
+              skirmshop y las filas 'received' antiguas en gestoria_invoicing.
+        - alert: SkirmbooksInvoicingChainTelemetryMissing
+          # Si la serie de entregas de alguno de los dos saltos desaparece
+          # (regresion de scrape o consumidor caido >30 min), la regla de arriba
+          # queda ciega: declaralo. Mismo patron que SiiInvoicingTelemetryMissing.
+          expr: |
+            absent(rabbitmq_detailed_channel_messages_delivered_total{
+              vhost="/synapse", queue="adapter.invoicing.incoming.ingest"
+            })
+            or absent(rabbitmq_detailed_channel_messages_delivered_total{
+              vhost="/synapse", queue="adapter.invoicing.ocr.extract"
+            })
+          for: 30m
+          labels:
+            severity: warning
+            area: gestoria
+            domain: invoicing-pipeline
+            component: skirmbooks-invoicing
+          annotations:
+            summary: "Sin metricas de la cadena de ingesta de facturas Skirmbooks"
+            description: >-
+              Falta la serie rabbitmq_detailed_channel_messages_delivered_total de
+              adapter.invoicing.incoming.ingest o adapter.invoicing.ocr.extract durante
+              30 min: sin ella SkirmbooksInvoicingChainStalled no ve nada. Revisa el
+              VMServiceScrape shared-rabbitmq-detailed (family channel_queue_metrics)
+              y que el adapter mantenga su canal de consumidor.

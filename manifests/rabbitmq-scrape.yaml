@@ -34,6 +34,17 @@ spec:
 # /metrics/detailed -> per-queue series (labels vhost,queue). The `family`
 # params bound cardinality to exactly what the alerts need: ready/unacked,
 # consumer count and head_message_timestamp.
+#
+# 2026-09-21 (INFRA-214): `channel_queue_metrics` added. It exposes
+# rabbitmq_detailed_channel_messages_delivered_total{queue=...} — the only
+# per-queue "commands processed" counter this broker version emits (3.13.7:
+# the queue_message_stats/queue_delivery_metrics families return zero series;
+# verified against the live endpoint). It powers
+# SkirmbooksInvoicingChainStalled: the 17..21-09 stall had consumers alive
+# and queues empty, so backlog/head-age rules could not see it — only the
+# flow through each hop of the ingest -> ocr -> classify -> posting chain
+# distinguishes "quiet" from "broken chain". Cardinality measured on the
+# live endpoint: ~200 series/node (only open consumer channels).
 apiVersion: operator.victoriametrics.com/v1beta1
 kind: VMServiceScrape
 metadata:
@@ -56,5 +67,6 @@ spec:
           - queue_coarse_metrics
           - queue_consumer_count
           - queue_metrics
+          - channel_queue_metrics
       interval: 30s
       scrapeTimeout: 25s
