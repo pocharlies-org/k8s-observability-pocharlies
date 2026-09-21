@@ -194,7 +194,7 @@ metadata:
     app.kubernetes.io/name: aurorasvc-searxng
     app.kubernetes.io/component: brain
 spec:
-  refreshInterval: 6h
+  refreshInterval: 24h
   secretStoreRef:
     name: onepassword
     kind: ClusterSecretStore

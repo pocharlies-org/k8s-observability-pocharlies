@@ -24,7 +24,7 @@ metadata:
   name: grafana-datasource-keep-pg
   namespace: monitoring
 spec:
-  refreshInterval: 6h
+  refreshInterval: 24h
   secretStoreRef:
     name: onepassword
     kind: ClusterSecretStore

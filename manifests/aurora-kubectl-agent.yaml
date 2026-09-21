@@ -12,7 +12,7 @@ metadata:
   name: aurorasvc-kubectl-agent
   namespace: aurora
 spec:
-  refreshInterval: 6h
+  refreshInterval: 24h
   secretStoreRef:
     name: onepassword
     kind: ClusterSecretStore

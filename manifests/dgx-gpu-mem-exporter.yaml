@@ -227,7 +227,7 @@ metadata:
   name: opencode-node-ops
   namespace: monitoring
 spec:
-  refreshInterval: 6h
+  refreshInterval: 24h
   secretStoreRef:
     kind: ClusterSecretStore
     name: onepassword
