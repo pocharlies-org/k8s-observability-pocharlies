@@ -1042,12 +1042,26 @@ backend:
                     value: "https://aurora.e-dani.com/incidents/{{ steps.link-datos.results.0.1 }}"
                   - key: incident_title
                     value: "{{ steps.link-datos.results.0.3 }}"
-          # mark-linked va DESPUÉS de enriquecer, no antes: si el enrich falla
-          # el workflow muere sin marcar y la siguiente pasada reintenta. Al
-          # revés quedaría un despacho marcado como enlazado sin badge.
+          # mark-linked va DESPUÉS de enriquecer y CONDICIONADO a su éxito (N1,
+          # medido 23-09 en el pod keep-backend, keep 0.52.1,
+          # keep/workflowmanager/workflow.py: run_actions itera todas las
+          # actions y run_action CAPTURA la excepción de cada una
+          # (action_ran=False + error registrado) sin cortar la cadena: el
+          # único break exige action_ran=True con continue: false. Es decir,
+          # un link-incident que lanza NO impedía que mark-linked se
+          # ejecutara: la fila quedaba marcada como enlazada sin badge y sin
+          # reintento (WHERE aurora_incident_id IS NULL). Por eso el if exige
+          # además que el enrich haya devuelto: en el camino de éxito
+          # BaseProvider.notify devuelve el kwargs del mock (dict con
+          # `fingerprint`) y set_step_context lo publica; en el de fallo
+          # set_step_context no llega a llamarse y results queda en la lista
+          # vacía que sembró set_step_vars, así que
+          # steps.link-incident.results.fingerprint renderiza '' (medido con
+          # el chevron del pod: el if evalúa False). Sin marcar, la siguiente
+          # pasada reintenta el enlace.
           # Action y no step: el provider postgres solo hace commit en _notify.
           - name: mark-linked
-            if: "'{{ steps.link-datos.results.0.0 }}' != ''"
+            if: "'{{ steps.link-datos.results.0.0 }}' != '' and '{{ steps.link-incident.results.fingerprint }}' != ''"
             provider:
               type: postgres
               config: "{{ providers.aurora_db }}"

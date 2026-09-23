@@ -12,7 +12,9 @@ Two workflows are pinned here, both as Helm values rather than Python:
   enrichment (INFRA-229).  Hard design constraint: the step is READ-ONLY
   (writing inside a step is what took down the alerting system in July — steps
   never commit); both writes are actions, and ``mark-linked`` must run AFTER
-  ``link-incident``.  The mock action's ``fingerprint`` must receive the Keep
+  ``link-incident`` AND only when it succeeded (N1: keep 0.52.1 run_actions
+  catches a failing action and continues the chain — order alone does not
+  gate).  The mock action's ``fingerprint`` must receive the Keep
   incident uuid with dashes (``results.0.0``), never the 16-hex alert
   fingerprint: Keep indexes incident enrichments by ``cast(incident.id)``
   (measured in INFRA-231 / nota-sre-paso0.md).
@@ -140,13 +142,36 @@ class KeepAuroraLinkContractTests(unittest.TestCase):
             self.block.index("- name: link-incident"),
             self.block.index("- name: mark-linked"),
         )
-        # mark-linked is an action (commits), guarded by the same non-empty row.
+        # mark-linked is an action (commits), guarded by the non-empty row AND
+        # by the enrich having returned (see the N1 test below).
         actions = self.block[self.block.index("        actions:"):]
         self.assertIn(
-            "if: \"'{{ steps.link-datos.results.0.0 }}' != ''\"",
+            "if: \"'{{ steps.link-datos.results.0.0 }}' != '' and "
+            "'{{ steps.link-incident.results.fingerprint }}' != ''\"",
             actions,
         )
         self.assertIn("AND aurora_incident_id IS NULL", actions)
+
+    def test_mark_linked_gated_on_the_enrich_result_not_just_on_order(self):
+        # N1 (measured 23-09 against keep 0.52.1 as deployed in keep-backend:
+        # keep/workflowmanager/workflow.py run_actions): an action that raises
+        # does NOT cut the chain — run_action catches the exception, records
+        # action_ran=False and the loop continues to the next action (the only
+        # break needs action_ran=True with `continue: false`).  Order alone
+        # therefore let mark-linked write aurora_incident_id over a failed
+        # enrich: the row would sit marked as linked, badge missing, and the
+        # WHERE aurora_incident_id IS NULL guard means no retry.  The if must
+        # additionally require that link-incident published its result: on the
+        # failure path set_step_context is never reached and results stays the
+        # empty list seeded by set_step_vars, so
+        # steps.link-incident.results.fingerprint renders '' and the condition
+        # evaluates False (verified with the pod's own chevron).
+        mark = self.block[self.block.index("- name: mark-linked"):]
+        if_line = next(
+            line for line in mark.splitlines() if line.strip().startswith("if:")
+        )
+        self.assertIn("steps.link-incident.results.fingerprint", if_line)
+        self.assertIn("steps.link-datos.results.0.0", if_line)
 
     def test_report_back_workflow_is_untouched_by_the_link(self):
         # aurora-report-back (Telegram) must not gain any of the link machinery:
