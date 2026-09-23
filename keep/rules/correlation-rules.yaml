@@ -407,6 +407,38 @@ rules:
       detalle de cada hallazgo no viaja en la alerta (las métricas sólo llevan
       conteos) — está en los CR Result: kubectl -n k8sgpt get results
 
+  # Cobertura del RCA de Aurora (INFRA-230, criterio C3 de INFRA-217). Mismo
+  # patrón que k8sgpt-degraded: no avisa de que algo del clúster esté roto,
+  # sino de que la HERRAMIENTA que investiga los fallos no está cumpliendo —
+  # Aurora arriba y devolviendo cero RCA es el mes de 403 (26-08..21-09: 159
+  # despachos sin análisis completo, mudo). Sin esta regla las AuroraRcaCoverage*
+  # quedarían registradas y calladas; con ella aparecen como incidente en el
+  # tablero. Las dos alertas son `warning` (manifests/rules.yaml, grupo
+  # aurora.rca-coverage), así que no solapan con critical-safety-net — igual
+  # que K8sGpt, y por el mismo motivo no se la excluye de su lista.
+  #
+  # 1800s como k8sgpt-degraded: un reintento del worker no debe abrir
+  # incidente nuevo cada pocos minutos.
+  - ruleName: aurora-rca-degraded
+    celQuery: 'name.startsWith("Aurora")'
+    sqlQuery:
+      sql: "((name like :name_1))"
+      params:
+        name_1: Aurora%
+    timeframeInSeconds: 1800
+    timeUnit: minutes
+    groupingCriteria: []
+    createOn: any
+    resolveOn: all_resolved
+    incidentPrefix: AUR
+    incidentNameTemplate: "Investigación de incidentes degradada"
+    groupDescription: >-
+      Aurora no devuelve análisis completo a los despachos de Keep
+      (AuroraRcaCoverageLow) o la métrica de cobertura ha desaparecido
+      (AuroraRcaCoverageAbsent, ceguera de la anterior). Revisa worker de
+      celery y logs; el conteo es de fingerprints distintos en ventana móvil
+      de 24h con gracia de 4h.
+
   # =========================================================================
   # SYNAPSE
   # =========================================================================

@@ -2059,3 +2059,103 @@ spec:
               en el namespace databases y el VMServiceScrape
               shared-rabbitmq-detailed (families queue_consumer_count /
               channel_queue_metrics).
+---
+# INFRA-230 (P-B de INFRA-217): cobertura del RCA de Aurora. Hace imposible
+# repetir el mes de 403 silencioso (26-08..21-09: 159 despachos sin análisis
+# completo, nadie se enteró). La serie la produce la consulta a medida del
+# exporter CNPG de postgres-shared (k8s-infra-pocharlies, PR #158: ConfigMap
+# postgres-shared-aurora-rca-coverage, ns databases, primary=true).
+#
+# Nombres de serie: el exporter compone `<collector>_<query>_<column>` y el
+# collector se instancia con nombre fijo "cnpg" (operator 1.29.1,
+# internal/management/controller/instance_controller.go:1022). El diseño fijó
+# `aurora_rca_coverage_*`; la serie REAL lleva el prefijo (verificado en vivo:
+# las consultas por defecto salen como cnpg_backends_total). Si tras el
+# despliegue la serie apareciera sin prefijo, corregir aquí — es el punto 5
+# del contrato de la nota del architect.
+#
+# Predicado y umbral fijados por el tech-lead con la medida F1
+# (nota-sre-medida-f1.md, INFRA-230):
+#   - "análisis completo" = source_type='grafana' AND aurora_status='complete'
+#     emparejado por fingerprint. El mes muerto quedó en `error`, NO en
+#     `complete` con summary vacío: no añadir condición de summary.
+#   - ratio without_rca/dispatched >= 0,8 (el mes muerto dio 159/159 = 1,0;
+#     hoy 2/3 = 0,67, verde).
+#   - SUELO dispatched >= 3: con n pequeño el ratio solo toma valores k/n y
+#     para n<5 cruza 0,8 únicamente con fallo total (n/n); sin suelo un solo
+#     complete en la ventana apaga la alerta aunque el 75 % esté muerto
+#     (hallazgo §4 de la medida SRE). El suelo se rechazó subirlo a 5: con
+#     ~3 despachos/24 h un fallo total de 3 no dispararía.
+#   - `dispatched` cuenta fingerprints distintos (PK de aurora_dispatches),
+#     no eventos de despacho.
+#
+# SEVERIDAD warning y NUNCA critical: `critical-safety-net` la convertiría en
+# incidente y el workflow `aurora-investigate` despacharía "Aurora está rota"
+# a la propia Aurora. Las dos van además al matcher FALLOS SILENCIOSOS DE
+# PROCESAMIENTO de manifests/alertmanager-config.yaml (backstop-telegram,
+# sobrevive a Keep) y a la regla aurora-rca-degraded de
+# keep/rules/correlation-rules.yaml (incidente en el tablero).
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMRule
+metadata:
+  name: aurora-rca-coverage
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/component: alerting
+spec:
+  groups:
+    - name: aurora.rca-coverage
+      rules:
+        - alert: AuroraRcaCoverageLow
+          # clamp_min en el denominador: sin dispatched no hay ratio (y el
+          # suelo >= 3 corta el caso n=1..2, donde el ratio no significa nada).
+          expr: |
+            (
+              cnpg_aurora_rca_coverage_without_rca{namespace="databases"}
+              / clamp_min(cnpg_aurora_rca_coverage_dispatched{namespace="databases"}, 1)
+            ) >= 0.8
+            and
+            cnpg_aurora_rca_coverage_dispatched{namespace="databases"} >= 3
+          for: 30m
+          labels:
+            severity: warning
+            area: alerting
+            component: aurora-rca
+          annotations:
+            summary: "Aurora sin RCA para la mayoría de despachos ({{ $value | humanizePercentage }})"
+            description: >-
+              En la ventana móvil de 24h (gracia 4h) hay
+              cnpg_aurora_rca_coverage_without_rca despachos sin análisis
+              completo de un total de cnpg_aurora_rca_coverage_dispatched:
+              Aurora está recibiendo workflows y no devolviendo RCA — el modo
+              de fallo del mes de 403 (26-08..21-09), que quedó mudo porque
+              nada medía la cobertura. Revisa el worker de celery y los logs
+              de Aurora (incidents con aurora_status='error'); el conteo es de
+              fingerprints distintos, no de eventos. NO es critical a
+              propósito: aurora-investigate despacharía esta alerta a la
+              propia Aurora.
+        - alert: AuroraRcaCoverageAbsent
+          # La otra pata del "imposible de repetir": si la serie desaparece,
+          # la alerta de cobertura queda ciega y eso ES noticia. Ojo: antes
+          # de dar por buena esta regla tras el merge hay que aplicar la DDL
+          # de la funcion keep_bridge.aurora_rca_coverage() (contrato §2,
+          # PR 43) — sin ella la consulta del exporter muere con "function
+          # does not exist" y esto dispara en falso.
+          expr: |
+            absent(cnpg_aurora_rca_coverage_dispatched{namespace="databases"})
+          for: 30m
+          labels:
+            severity: warning
+            area: alerting
+            component: aurora-rca
+          annotations:
+            summary: "Sin métricas de cobertura RCA de Aurora"
+            description: >-
+              La consulta cnpg_aurora_rca_coverage_dispatched no aparece
+              durante 30 min: o el exporter de postgres-shared no la evalúa
+              (falta la DDL de la funcion keep_bridge.aurora_rca_coverage(),
+              contrato §2, o el ConfigMap
+              postgres-shared-aurora-rca-coverage no está desplegado), o el
+              scrape del endpoint 9187 está caído. Sin esta serie la alerta de
+              cobertura no ve nada — es el mismo tipo de ceguera del 28-07
+              (PostgresSharedMetricsMissing).
