@@ -1,9 +1,11 @@
 # Contrato Keep ↔ Aurora
 
-> Estado: **v1.1** (INFRA-217 P-A, 2026-09-23; corregido post-qa el mismo día
-> tras la medición en vivo de P-B: las series del exporter salen con prefijo
-> `cnpg_` y hacen falta grants/policy manuales para el rol del exporter — ver
-> §2 y §7). Escrito desde
+> Estado: **v1.2** (INFRA-217, 2026-09-23; revisión del architect: la
+> cobertura del RCA se lee con la función SECURITY DEFINER
+> `keep_bridge.aurora_rca_coverage()` y se retira el GRANT + policy sobre
+> `public.incidents` que aprobaba v1.1 — ver §2 y §5. v1.1 (2026-09-23,
+> corregido post-qa tras la medición en vivo de P-B) fijó el prefijo `cnpg_`
+> de las series del exporter — ver §7. Escrito desde
 > `nota-cto-diseno-keep-aurora.md` (punto 4) + su lista F4. Este fichero es la
 > referencia del enlace cruzado Keep↔Aurora: qué se guarda en cada sitio, con
 > qué clave, quién escribe qué y qué superficie NO se puede cambiar sin
@@ -91,32 +93,62 @@ ALTER TABLE keep_bridge.aurora_dispatches
   `mark-linked` del workflow `aurora-link` (`WHERE fingerprint = … AND
   aurora_incident_id IS NULL` → idempotente, un enlace por despacho).
 
-### Permisos de lectura del exporter CNPG (v1.1, medido por P-B)
+### Cobertura del RCA: la función `keep_bridge.aurora_rca_coverage()` (v1.2)
 
-Premisa del diseño corregida por la medición en vivo: las consultas del
+Premisa del diseño corregida por la medición en vivo (v1.1): las consultas del
 exporter **no corren como `postgres` con `pg_monitor`**; corren como el rol
 `cnpg_metrics_exporter`, sin `BYPASSRLS`, y `incidents` tiene RLS
-(`select_by_org`). Sin estos permisos la consulta de cobertura no ve filas.
-DDL manual (BBDD `aurora`, contra el primario CNPG como `postgres`; la aprueba
-el tech-lead y la ejecuta el operador):
+(`select_by_org`). La respuesta de v1.1 —GRANT SELECT sobre `incidents` +
+política `USING (true)`— **se retira en v1.2** (revisión del architect,
+nota-cto-revision-prs-infra217.md): `cnpg_metrics_exporter` es el rol con el
+que corren **todas** las consultas a medida de `postgres-shared` en cualquier
+BBDD, y una política `USING (true)` sobre `incidents` le daría filas completas
+de todas las orgs —el payload de las alertas y los resúmenes, no dos
+contadores—, exposible además a cualquier ConfigMap futuro. La lectura va
+desde v1.2 por una función SECURITY DEFINER en nuestro esquema que devuelve
+solo los agregados. DDL manual (BBDD `aurora`, contra el primario CNPG como
+`postgres`; la ejecuta el operador):
 
 ```sql
+CREATE OR REPLACE FUNCTION keep_bridge.aurora_rca_coverage()
+  RETURNS TABLE (dispatched bigint, without_rca bigint)
+  LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, public
+AS $$ SELECT count(*), count(*) FILTER (WHERE c.fp IS NULL)
+    FROM keep_bridge.aurora_dispatches d
+    LEFT JOIN (SELECT DISTINCT alert_metadata->>'fingerprint' AS fp FROM public.incidents
+                WHERE source_type='grafana' AND aurora_status='complete') c ON c.fp = d.fingerprint
+   WHERE d.dispatched_at <= now()-interval '4 hours' AND d.dispatched_at > now()-interval '28 hours' $$;
+ALTER FUNCTION keep_bridge.aurora_rca_coverage() OWNER TO postgres;
+REVOKE ALL ON FUNCTION keep_bridge.aurora_rca_coverage() FROM PUBLIC;
 GRANT USAGE ON SCHEMA keep_bridge TO cnpg_metrics_exporter;
-GRANT SELECT ON keep_bridge.aurora_dispatches TO cnpg_metrics_exporter;
-GRANT SELECT ON incidents TO cnpg_metrics_exporter;
-CREATE POLICY cnpg_metrics_coverage_read ON incidents
-  FOR SELECT TO cnpg_metrics_exporter USING (true);
+GRANT EXECUTE ON FUNCTION keep_bridge.aurora_rca_coverage() TO cnpg_metrics_exporter;
 ```
 
-- **Orden de merge (P-B)**: PR 158 → ejecutar esta DDL → confirmar que las
-  series `cnpg_aurora_rca_coverage_*` aparecen en vmsingle → PR 44.
-- Aditiva y solo lectura. Con esta policy el exporter no necesita el prólogo
-  `myapp.current_org_id` de §4: la policy es `FOR SELECT TO
-  cnpg_metrics_exporter USING (true)`, así que para ese rol `incidents` ya
-  devuelve filas sin fijar el org.
-- **Auto-monitoreo**: si una migración futura de Aurora borrara la policy, la
-  serie desaparece y `AuroraRcaCoverageAbsent` (§7) la detecta por sí sola; no
-  hace falta un watchdog aparte.
+- El dueño es `postgres` (superusuario), así que la función **salta la RLS de
+  `incidents` sin tocar `incidents`**: ningún GRANT ni política sobre una tabla
+  de tercero (§5).
+- **No crea dependencias** sobre `incidents`, así que no bloquea las
+  migraciones de Aurora — la misma razón por la que no hay vistas (§5).
+- Sigue el **patrón de DDL manual de `keep_bridge`** que documenta este §2:
+  DDL a mano sobre la BBDD viva, nunca en el camino caliente del dispatch.
+
+El predicado de «análisis completo» y la ventana (de 4 a 28 h sobre
+`dispatched_at`) viven ahora dentro de la función; los fijó el tech-lead con
+la medida F1 (§7). La consulta del exporter pasa a ser
+`SELECT dispatched, without_rca FROM keep_bridge.aurora_rca_coverage()` y las
+series no cambian de nombre.
+
+- **Orden de merge (corregido por el architect)**: este PR (#43) → aplicar la
+  DDL de la función → PR 158 → confirmar las series
+  `cnpg_aurora_rca_coverage_*` en vmsingle → PR 44. La DDL antes que el PR 158
+  evita errores de consulta del exporter en el intervalo.
+- **Auto-monitorización (rectificada en v1.2)**: se retira la frase de v1.1
+  según la cual `AuroraRcaCoverageAbsent` detectaría la pérdida de la
+  política: era falsa. Con GRANT+policy, perdida la política la consulta no
+  fallaba — devolvía 0 filas, `without_rca` igualaba a `dispatched` y saltaba
+  `AuroraRcaCoverageLow` **en falso**, no `Absent`. Con la función ese modo de
+  fallo no existe (no hay política que perder); si el rol perdiera EXECUTE, la
+  consulta daría error y la serie faltaría — eso sí lo cubre `Absent`.
 
 ## 3. Los dos formatos de deep-link
 
@@ -170,10 +202,6 @@ CREATE POLICY cnpg_metrics_coverage_read ON incidents
 - **Nadie escribe en `public.*` de Aurora** desde Keep: el esquema propio de
   Aurora es territorio de sus migraciones (tercero).
 - **Nada de vistas sobre `incidents`**: bloquearían las migraciones de Aurora.
-- **La policy `cnpg_metrics_coverage_read` (§2) es la única DDL que aplicamos
-  sobre una tabla de tercero (`incidents`), y es solo lectura**: `FOR SELECT`
-  con `USING (true)` para el rol del exporter; no abre escritura ni cambia lo
-  que ven los demás roles.
 - El contenido del RCA vive en `incidents.aurora_summary`,
   `incident_thoughts` y `execution_steps`; la tabla `rca_findings` existe en el
   esquema de Aurora pero está **sin usar** (no la leas ni la escribas).
