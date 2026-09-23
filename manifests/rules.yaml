@@ -2137,10 +2137,10 @@ spec:
         - alert: AuroraRcaCoverageAbsent
           # La otra pata del "imposible de repetir": si la serie desaparece,
           # la alerta de cobertura queda ciega y eso ES noticia. Ojo: antes
-          # de dar por buena esta regla tras el merge hay que aplicar la
-          # accion DDL de la PR #158 (grants + policy para cnpg_metrics_exporter)
-          # — sin ella la consulta del exporter muere con permission denied y
-          # esto dispara en falso.
+          # de dar por buena esta regla tras el merge hay que aplicar la DDL
+          # de la funcion keep_bridge.aurora_rca_coverage() (contrato §2,
+          # PR 43) — sin ella la consulta del exporter muere con "function
+          # does not exist" y esto dispara en falso.
           expr: |
             absent(cnpg_aurora_rca_coverage_dispatched{namespace="databases"})
           for: 30m
@@ -2153,7 +2153,8 @@ spec:
             description: >-
               La consulta cnpg_aurora_rca_coverage_dispatched no aparece
               durante 30 min: o el exporter de postgres-shared no la evalúa
-              (falta la accion DDL de grants/policy, o el ConfigMap
+              (falta la DDL de la funcion keep_bridge.aurora_rca_coverage(),
+              contrato §2, o el ConfigMap
               postgres-shared-aurora-rca-coverage no está desplegado), o el
               scrape del endpoint 9187 está caído. Sin esta serie la alerta de
               cobertura no ve nada — es el mismo tipo de ceguera del 28-07
