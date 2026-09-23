@@ -1,6 +1,9 @@
 # Contrato Keep ↔ Aurora
 
-> Estado: **v1** (INFRA-217 P-A, 2026-09-23). Escrito desde
+> Estado: **v1.1** (INFRA-217 P-A, 2026-09-23; corregido post-qa el mismo día
+> tras la medición en vivo de P-B: las series del exporter salen con prefijo
+> `cnpg_` y hacen falta grants/policy manuales para el rol del exporter — ver
+> §2 y §7). Escrito desde
 > `nota-cto-diseno-keep-aurora.md` (punto 4) + su lista F4. Este fichero es la
 > referencia del enlace cruzado Keep↔Aurora: qué se guarda en cada sitio, con
 > qué clave, quién escribe qué y qué superficie NO se puede cambiar sin
@@ -88,6 +91,33 @@ ALTER TABLE keep_bridge.aurora_dispatches
   `mark-linked` del workflow `aurora-link` (`WHERE fingerprint = … AND
   aurora_incident_id IS NULL` → idempotente, un enlace por despacho).
 
+### Permisos de lectura del exporter CNPG (v1.1, medido por P-B)
+
+Premisa del diseño corregida por la medición en vivo: las consultas del
+exporter **no corren como `postgres` con `pg_monitor`**; corren como el rol
+`cnpg_metrics_exporter`, sin `BYPASSRLS`, y `incidents` tiene RLS
+(`select_by_org`). Sin estos permisos la consulta de cobertura no ve filas.
+DDL manual (BBDD `aurora`, contra el primario CNPG como `postgres`; la aprueba
+el tech-lead y la ejecuta el operador):
+
+```sql
+GRANT USAGE ON SCHEMA keep_bridge TO cnpg_metrics_exporter;
+GRANT SELECT ON keep_bridge.aurora_dispatches TO cnpg_metrics_exporter;
+GRANT SELECT ON incidents TO cnpg_metrics_exporter;
+CREATE POLICY cnpg_metrics_coverage_read ON incidents
+  FOR SELECT TO cnpg_metrics_exporter USING (true);
+```
+
+- **Orden de merge (P-B)**: PR 158 → ejecutar esta DDL → confirmar que las
+  series `cnpg_aurora_rca_coverage_*` aparecen en vmsingle → PR 44.
+- Aditiva y solo lectura. Con esta policy el exporter no necesita el prólogo
+  `myapp.current_org_id` de §4: la policy es `FOR SELECT TO
+  cnpg_metrics_exporter USING (true)`, así que para ese rol `incidents` ya
+  devuelve filas sin fijar el org.
+- **Auto-monitoreo**: si una migración futura de Aurora borrara la policy, la
+  serie desaparece y `AuroraRcaCoverageAbsent` (§7) la detecta por sí sola; no
+  hace falta un watchdog aparte.
+
 ## 3. Los dos formatos de deep-link
 
 - Aurora: `https://aurora.e-dani.com/incidents/<uuid-id-de-Aurora>` — es el
@@ -140,6 +170,10 @@ ALTER TABLE keep_bridge.aurora_dispatches
 - **Nadie escribe en `public.*` de Aurora** desde Keep: el esquema propio de
   Aurora es territorio de sus migraciones (tercero).
 - **Nada de vistas sobre `incidents`**: bloquearían las migraciones de Aurora.
+- **La policy `cnpg_metrics_coverage_read` (§2) es la única DDL que aplicamos
+  sobre una tabla de tercero (`incidents`), y es solo lectura**: `FOR SELECT`
+  con `USING (true)` para el rol del exporter; no abre escritura ni cambia lo
+  que ven los demás roles.
 - El contenido del RCA vive en `incidents.aurora_summary`,
   `incident_thoughts` y `execution_steps`; la tabla `rca_findings` existe en el
   esquema de Aurora pero está **sin usar** (no la leas ni la escribas).
@@ -163,15 +197,22 @@ claim, y solo las de las últimas 72 h con `aurora_incident_id IS NULL`.
 
 - Consulta del exporter CNPG sobre `keep_bridge.aurora_dispatches` (cuenta
   **despachos**, no incidentes), ventana `dispatched_at` de 4 a 28 h:
-  métricas `aurora_rca_coverage_dispatched` y
-  `aurora_rca_coverage_without_rca` (nombre base `aurora_rca_coverage`,
-  `target_databases: [aurora]`, `primary: true`). **La serie exacta se confirma
-  en vmsingle tras el despliegue** (etiquetas del exporter, p. ej.
-  `instance`); este contrato fija los nombres, no la etiqueta.
+  métricas `cnpg_aurora_rca_coverage_dispatched` y
+  `cnpg_aurora_rca_coverage_without_rca` (nombre base de la consulta
+  `aurora_rca_coverage`, `target_databases: [aurora]`, `primary: true`).
+  **v1.1: el nombre medido en vivo manda sobre el nombre base del diseño.** El
+  exporter compone `<collector>_<query>_<column>` con collector fijo `cnpg`
+  (operador 1.29.1, `internal/management/controller/instance_controller.go:1022`;
+  verificado en vivo: las consultas por defecto salen como
+  `cnpg_backends_total`), así que las series reales llevan prefijo `cnpg_`.
+  Las etiquetas (`instance`, etc.) siguen sin fijarse aquí; se confirman en
+  vmsingle tras el despliegue.
 - Alertas vmalert (VMRule en `manifests/rules.yaml`, severidad **`warning`**):
   `AuroraRcaCoverageLow` (proporción `without_rca / clamp_min(dispatched, 1)`
   sobre umbral, `dispatched >= 3`, `for: 30m`) y `AuroraRcaCoverageAbsent`
-  (`absent()` de la serie, 30m). `warning` y no `critical` a propósito: con
+  (`absent()` de la serie con prefijo `cnpg_`, 30m — las expresiones de las
+  dos reglas usan los nombres `cnpg_aurora_rca_coverage_*`). `warning` y no
+  `critical` a propósito: con
   `critical` la regla `critical-safety-net` las convertiría en incidente y
   `aurora-investigate` despacharía «Aurora está rota» a la propia Aurora.
 - Enrutado: matcher «FALLOS SILENCIOSOS DE PROCESAMIENTO» de Alertmanager
