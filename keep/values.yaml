@@ -831,7 +831,15 @@ backend:
                   CREATE TABLE IF NOT EXISTS keep_bridge.aurora_dispatches (
                     fingerprint text PRIMARY KEY,
                     keep_incident_id uuid NOT NULL,
-                    dispatched_at timestamptz NOT NULL DEFAULT now()
+                    dispatched_at timestamptz NOT NULL DEFAULT now(),
+                    -- Enlace Keep->Aurora (INFRA-217 P-A). Sobre la BBDD viva
+                    -- estas dos columnas se añadieron a mano con ALTER (el
+                    -- camino caliente del dispatch no puede pedir lock
+                    -- exclusivo en cada pasada); esto solo hace que una BBDD
+                    -- recreada desde cero nazca bien. IF NOT EXISTS no altera
+                    -- la tabla existente. DDL en docs/keep-aurora-contract.md.
+                    aurora_incident_id uuid,
+                    linked_at timestamptz
                   );
                   WITH candidate AS (
                     SELECT
@@ -915,6 +923,13 @@ backend:
                     - status: firing
                       fingerprint: "{{ steps.claim-dispatch.results.0.0 }}"
                       startsAt: "{{ incident.start_time }}"
+                      # Aurora guarda la generatorURL de cada alerta como
+                      # alert_metadata.alertUrl y la pinta como "View Alert"
+                      # (backlink Aurora->Keep, INFRA-217 P-A). La anotacion
+                      # keep_url de abajo NO la guarda: tasks.py solo conserva
+                      # summary, description y runbook_url. Solo despachos
+                      # nuevos: los antiguos no se rellenan.
+                      generatorURL: "https://keep.e-dani.com/incidents/{{ incident.id }}"
                       labels:
                         alertname: "{{#fn.na}}{{ incident.user_generated_name }}{{/fn.na}}"
                         severity: "{{ incident.severity }}"
@@ -923,6 +938,140 @@ backend:
                         summary: "{{#fn.na}}{{ incident.user_generated_name }}{{/fn.na}}"
                         description: "{{ incident.alerts_count }} alertas correlacionadas por la regla {{ incident.rule_name }}"
                         keep_url: "https://keep.e-dani.com/incidents/{{ incident.id }}"
+
+      # =====================================================================
+      # ENLACE Keep -> Aurora (INFRA-217 P-A, diseño punto 1 de
+      # nota-cto-diseno-keep-aurora.md). El incidente de Keep que ganó el claim
+      # se enriquece con los campos nativos de "External incident" (incident_id,
+      # incident_url, incident_title), que la UI pinta como badge clicable a la
+      # ficha de Aurora. Sin tocar upstream.
+      #
+      # Paso 0 MEDIDO (nota-sre-paso0.md, Keep 0.52.1 b09c98): la clave de la
+      # fila es `alertenrichment.alert_fingerprint` = el uuid del incidente de
+      # Keep CON GUIONES y minúsculas — NUNCA el fingerprint hex de 16 de la
+      # alerta: con el hex la fila se escribe pero el GET del incidente jamás la
+      # encuentra (badge invisible) y además colisiona con el espacio de alertas.
+      # Por eso el `fingerprint` de la action mock recibe results.0.0 (el uuid),
+      # no el hex. Mecanismo verificado en el pod: notify() saca enrich_incident
+      # de los parámetros, MockProvider._notify devuelve los kwargs recibidos y
+      # la primera rama de _enrich es `if "fingerprint" in results`.
+      #
+      # Restricción dura del diseño: el step SOLO LEE. Escribir dentro de un
+      # step es lo que tumbó el sistema de alertas en julio (el workflow de
+      # reporte a Telegram lo documenta en su cabecera): los steps no commitean.
+      # Las dos escrituras son actions: `link-incident` (enrich nativo vía
+      # EnrichmentsBl in-process) y `mark-linked` (postgres, que sí commitea en
+      # _notify).
+      #
+      # Limitación asumida: solo se enlaza el incidente de Keep que ganó el
+      # claim; una alerta recurrente abre otro incidente sin enlace.
+      - id: aurora-link
+        name: Enlace Keep a Aurora (External incident)
+        disabled: false
+        description: >-
+          Cada 2 minutos enlaza UN despacho reclamado con su incidente de Keep:
+          enriquece el incidente de Keep con el badge "External incident" nativo
+          (enlace a la ficha de Aurora) y marca la fila de
+          keep_bridge.aurora_dispatches con el id de Aurora. Solo toca despachos
+          con aurora_incident_id IS NULL de las últimas 72 h; a lo sumo uno por
+          pasada, el backlog se drena solo.
+        triggers:
+          - type: interval
+            value: 120
+        steps:
+          - name: link-datos
+            provider:
+              type: postgres
+              config: "{{ providers.aurora_db }}"
+              with:
+                # SOLO LECTURA. El prólogo de RLS es idéntico al de `rca-datos`:
+                # sin set_config('myapp.current_org_id', ...) el rol `aurora`
+                # ve 0 filas de `incidents` SIN ERROR (RLS) y el enlace no
+                # existe. Patrón FROM (VALUES (1)) LEFT JOIN cand: sale SIEMPRE
+                # una fila, así el `if` de las actions comprueba el vacío sin
+                # depender de que el paso "no devuelva nada".
+                #
+                # Columnas: 0 = keep_incident_id (uuid CON GUIONES: clave del
+                # enrichment), 1 = id de Aurora, 2 = fingerprint hex (clave de
+                # aurora_dispatches), 3 = título del incidente de Aurora para el
+                # badge. El título se desinfecta igual que en rca-datos:
+                # `keep.` -> `Keep.` porque IOHandler.extract_keep_functions
+                # trata el texto ya sustituido como plantilla si ve el literal
+                # `keep.`, y las etiquetas HTML se quitan igual que allá.
+                query: >-
+                  SELECT set_config('myapp.current_org_id',
+                                    (SELECT id::text FROM organizations
+                                      ORDER BY created_at LIMIT 1), false);
+                  WITH cand AS (
+                    SELECT d.keep_incident_id,
+                           i.id AS aurora_id,
+                           d.fingerprint,
+                           regexp_replace(coalesce(i.alert_title,'sin título'),
+                                          '<[^>]*>', '', 'g') AS titulo
+                      FROM keep_bridge.aurora_dispatches d
+                      JOIN incidents i
+                        ON i.alert_metadata->>'fingerprint' = d.fingerprint
+                     WHERE d.aurora_incident_id IS NULL
+                       AND d.dispatched_at > now() - interval '72 hours'
+                     ORDER BY d.dispatched_at DESC
+                     LIMIT 1
+                  )
+                  SELECT coalesce(c.keep_incident_id::text,''),
+                         coalesce(c.aurora_id::text,''),
+                         coalesce(c.fingerprint,''),
+                         regexp_replace(coalesce(c.titulo,''),
+                                        'keep\.', 'Keep.', 'g') AS titulo
+                    FROM (VALUES (1)) AS siempre(x)
+                    LEFT JOIN cand c ON true
+        actions:
+          - name: link-incident
+            if: "'{{ steps.link-datos.results.0.0 }}' != ''"
+            provider:
+              type: mock
+              with:
+                # Clave del enrichment: el uuid del incidente de Keep con
+                # guiones (paso 0). SIN incident_provider: la UI pediría un
+                # icono de proveedor que no existe. El enrich hace merge por
+                # UNIQUE (tenant_id, alert_fingerprint): re-ejecutar es
+                # idempotente.
+                fingerprint: "{{ steps.link-datos.results.0.0 }}"
+                enrich_incident:
+                  - key: incident_id
+                    value: "{{ steps.link-datos.results.0.1 }}"
+                  - key: incident_url
+                    value: "https://aurora.e-dani.com/incidents/{{ steps.link-datos.results.0.1 }}"
+                  - key: incident_title
+                    value: "{{ steps.link-datos.results.0.3 }}"
+          # mark-linked va DESPUÉS de enriquecer y CONDICIONADO a su éxito (N1,
+          # medido 23-09 en el pod keep-backend, keep 0.52.1,
+          # keep/workflowmanager/workflow.py: run_actions itera todas las
+          # actions y run_action CAPTURA la excepción de cada una
+          # (action_ran=False + error registrado) sin cortar la cadena: el
+          # único break exige action_ran=True con continue: false. Es decir,
+          # un link-incident que lanza NO impedía que mark-linked se
+          # ejecutara: la fila quedaba marcada como enlazada sin badge y sin
+          # reintento (WHERE aurora_incident_id IS NULL). Por eso el if exige
+          # además que el enrich haya devuelto: en el camino de éxito
+          # BaseProvider.notify devuelve el kwargs del mock (dict con
+          # `fingerprint`) y set_step_context lo publica; en el de fallo
+          # set_step_context no llega a llamarse y results queda en la lista
+          # vacía que sembró set_step_vars, así que
+          # steps.link-incident.results.fingerprint renderiza '' (medido con
+          # el chevron del pod: el if evalúa False). Sin marcar, la siguiente
+          # pasada reintenta el enlace.
+          # Action y no step: el provider postgres solo hace commit en _notify.
+          - name: mark-linked
+            if: "'{{ steps.link-datos.results.0.0 }}' != '' and '{{ steps.link-incident.results.fingerprint }}' != ''"
+            provider:
+              type: postgres
+              config: "{{ providers.aurora_db }}"
+              with:
+                query: >-
+                  UPDATE keep_bridge.aurora_dispatches
+                     SET aurora_incident_id = '{{ steps.link-datos.results.0.1 }}'::uuid,
+                         linked_at = now()
+                   WHERE fingerprint = '{{ steps.link-datos.results.0.2 }}'
+                     AND aurora_incident_id IS NULL
 
       # Guardián de invariante: hace que una severidad fuera del vocabulario
       # canónico sea CONSULTABLE en vez de invisible. Enriquece y punto — no
