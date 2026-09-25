@@ -179,7 +179,13 @@ spec:
         - bot_token:
             name: alertmanager-telegram-backup
             key: bot_token
-          chat_id: -1003785136626
+          # Unificación (25-09): el backstop escribe en el topic Infra (1248)
+          # de Pocharlies Operations, el mismo destino que los incidentes de
+          # Keep. El bot de este secreto (@synapse_skirmshop_bot) ya es
+          # administrador del grupo. El grupo Synapse Monitor queda sin
+          # productores y se retira.
+          chat_id: -1004409526898
+          message_thread_id: 1248
           send_resolved: true
           parse_mode: HTML
           # Se identifica como vía directa para que al leerlo se sepa que Keep
