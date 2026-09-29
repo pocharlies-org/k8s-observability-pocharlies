@@ -27,7 +27,10 @@ spec:
         - https://minio.e-dani.com/
         - https://minio-s3.e-dani.com/
         - https://teslamate.e-dani.com/
-        - https://vault.e-dani.com/
+        # vault.e-dani.com RETIRADO 28-09-2026: Vault desmantelado tras la
+        # migracion Vault -> 1Password (_ops/vault-to-1password; ns `vault`
+        # vacio verificado 29-09). El probe daba BlackboxProbeDown permanente
+        # desde 10:46Z. No reañadir sin un backend vivo detras.
 ---
 apiVersion: operator.victoriametrics.com/v1beta1
 kind: VMProbe
