@@ -450,7 +450,7 @@ spec:
             (
               time()
               - max by (tenant, workflow) (
-                  synapse_engine_scheduled_workflow_last_success_timestamp_seconds{workflow!~"skirmshop\\.gestoria\\.(banking\\..*|accounting\\.retention)"} > 0
+                  synapse_engine_scheduled_workflow_last_success_timestamp_seconds{workflow!~"skirmshop\\.gestoria\\.(banking\\..*|accounting\\.retention)|skirmshop\\.shopify\\.merchant-policy-weekly"} > 0
                 )
             ) > 10800
             and on ()
@@ -498,6 +498,37 @@ spec:
           annotations:
             summary: "Synapse scheduled workflow {{ $labels.tenant }}/{{ $labels.workflow }} stalled (daily cadence)"
             description: "Scheduled daily workflow {{ $labels.workflow }} (tenant {{ $labels.tenant }}) has not recorded a success in over 36h and the engine has been up longer than that. Check the engine scheduler and the workflow's handler logs."
+        # --- warning: weekly-cadence scheduled workflow -------------------
+        # skirmshop.shopify.merchant-policy-weekly (cron 0 8 * * 1,2, ISO-week
+        # dedupe: Tuesday only recovers an incomplete week, so the gap between
+        # successes is up to 7d). Threshold 8d = 7d cadence + 1d grace; the
+        # engine-uptime guard mirrors the other two rules so a fresh restart
+        # cannot page.
+        - alert: SynapseScheduledWorkflowStalledWeekly
+          expr: |
+            (
+              time()
+              - max by (tenant, workflow) (
+                  synapse_engine_scheduled_workflow_last_success_timestamp_seconds{workflow=~"skirmshop\\.shopify\\.merchant-policy-weekly"} > 0
+                )
+            ) > 691200
+            and on ()
+            (
+              time()
+              - max(
+                  kube_pod_container_state_started{
+                    namespace="synapse", pod=~"synapse-engine-.*", container="engine"
+                  }
+                )
+            ) > 691200
+          for: 1h
+          labels:
+            severity: warning
+            area: reliability
+            component: synapse
+          annotations:
+            summary: "Synapse scheduled workflow {{$labels.tenant }}/{{$labels.workflow }} stalled (weekly cadence)"
+            description: "Scheduled weekly workflow {{$labels.workflow }} (tenant {{$labels.tenant }}) has not recorded a success in over 8d and the engine has been up longer than that. Check the engine scheduler and the workflow handler logs (synapse-adapter-shopify, merchant_policy_audit)."
         # --- warning: transactional outbox --------------------------------
         # Exhausted rows = events that hit max retries and are stuck in the
         # outbox (a poison payload or a permanently-failing publish). Any
