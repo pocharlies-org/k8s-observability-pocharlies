@@ -55,9 +55,19 @@ spec:
             - { name: NVIDIA_DRIVER_CAPABILITIES, value: "utility" }
             - { name: PORT, value: "9108" }
             - { name: DOCKER_SOCKET, value: "/host-run/docker.sock" }
+          # 2026-09-29 (ops/sre): 192Mi era el pico REAL del cgroup, no un techo
+          # holgado -- container_memory_max_usage_bytes marco 192.3 MiB en
+          # nvidia-dgx. Con el limite clavado en el uso normal el exporter se mata
+          # a si mismo: 156/115/49 OOMKills (exit 137) en los 3 nodos GPU. Es
+          # privileged + hostPID y lee /proc, journal y el socket de containerd del
+          # host; ese page cache cuenta contra el limit y se dispara al enumerar
+          # procesos GPU mientras se carga un modelo grande (los 2 OOM de las
+          # 17:58Z coincidieron con el load del head qwen38). Cada muerte deja al
+          # vmagent sin target -> TargetDown + TooManyScrapeErrors + TooManyLogs.
+          # Doble de techo = margen medido, no parche de sintoma.
           resources:
-            requests: { cpu: 10m, memory: 32Mi }
-            limits: { memory: 192Mi }
+            requests: { cpu: 10m, memory: 64Mi }
+            limits: { memory: 384Mi }
           # privileged: nsenter into PID 1 for live host systemd state needs
           # it — caps+seccomp+apparmor unconfined are NOT enough for setns into
           # the host mount ns (standard node-agent reality). Decision 2026-06-11,
@@ -156,9 +166,19 @@ spec:
               valueFrom: { fieldRef: { fieldPath: spec.nodeName } }
             - { name: PORT, value: "9108" }
             - { name: DOCKER_SOCKET, value: "/host-run/docker.sock" }
+          # 2026-09-29 (ops/sre): 192Mi era el pico REAL del cgroup, no un techo
+          # holgado -- container_memory_max_usage_bytes marco 192.3 MiB en
+          # nvidia-dgx. Con el limite clavado en el uso normal el exporter se mata
+          # a si mismo: 156/115/49 OOMKills (exit 137) en los 3 nodos GPU. Es
+          # privileged + hostPID y lee /proc, journal y el socket de containerd del
+          # host; ese page cache cuenta contra el limit y se dispara al enumerar
+          # procesos GPU mientras se carga un modelo grande (los 2 OOM de las
+          # 17:58Z coincidieron con el load del head qwen38). Cada muerte deja al
+          # vmagent sin target -> TargetDown + TooManyScrapeErrors + TooManyLogs.
+          # Doble de techo = margen medido, no parche de sintoma.
           resources:
-            requests: { cpu: 10m, memory: 32Mi }
-            limits: { memory: 192Mi }
+            requests: { cpu: 10m, memory: 64Mi }
+            limits: { memory: 384Mi }
           securityContext:
             privileged: true   # nsenter into host PID 1 (see GPU DS note)
           volumeMounts:
