@@ -123,6 +123,37 @@ vmalert:
 
 alertmanager:
   enabled: true
+  # 29-09-2026 (Dani): las alertas van DIRECTAS al empleado SRE/DevOps de Hermes (perfil sre-devops,
+  # topic 2182 de «github pocharlies-org»), sin poller en medio (ops-watch retirado del x86). Esta es la
+  # config BASE: sus rutas van antes que las de manifests/alertmanager-config.yaml (Keep y el backstop de
+  # Telegram), y con continue: true no les quita nada. El webhook va en la base y no en el
+  # VMAlertmanagerConfig porque el HTTPConfig del CRD no tiene http_headers, y Hermes autentica por
+  # cabecera (X-Gitlab-Token = secreto de la ruta; Alertmanager no sabe firmar HMAC).
+  config:
+    route:
+      receiver: blackhole
+      routes:
+        - receiver: sre-devops
+          continue: true
+          matchers:
+            - severity=~"warning|critical"
+            - alertname!~"Watchdog|InfoInhibitor"
+          group_by: [alertname, namespace]
+          group_wait: 1m
+          group_interval: 10m
+          repeat_interval: 24h
+    receivers:
+      - name: blackhole
+      - name: sre-devops
+        webhook_configs:
+          - url: http://hermes-webhook.hermes.svc.cluster.local:8644/p/sre-devops/webhooks/alertmanager
+            send_resolved: true
+            max_alerts: 20
+            timeout: 30s
+            http_config:
+              http_headers:
+                X-Gitlab-Token:
+                  files: [/etc/vm/secrets/hermes-webhook-token/token]
   spec:
     # Drop the per-config `namespace="monitoring"` entry matcher the
     # operator otherwise injects into the synapse-webhook route. Without
@@ -131,6 +162,10 @@ alertmanager:
     # dropped to the blackhole receiver. With it, the route captures ALL
     # alerts regardless of namespace.
     disableNamespaceMatcher: true
+    # 29-09-2026: el token con que Alertmanager se presenta al webhook de Hermes (perfil sre-devops).
+    # Se monta en /etc/vm/secrets/hermes-webhook-token/token (manifests/alertmanager-secrets.yaml).
+    secrets:
+      - hermes-webhook-token
     # El hostAliases de synapse.e-dani.com (100.109.183.9) se retiró con el
     # cutover a Keep: la ingesta es ahora in-cluster contra keep-backend, así que
     # Alertmanager ya no resuelve ningún nombre externo. Ver
