@@ -805,7 +805,10 @@ backend:
                   fingerprint: "{{ steps.rca-datos.results.0.0 }}"
                   titulo: "{{ steps.rca-datos.results.0.1 }}"
                   severidad: "{{ steps.rca-datos.results.0.2 }}"
-                  rca: "{{ steps.llm-rca.results.response }}"
+                  # El resumen propio de Aurora va siempre detrás: medido el 29-09,
+                  # llm-rca devuelve `response: None` en ~80% de las pasadas de 7
+                  # días, y sin esto el agente recibía el caso sin diagnóstico.
+                  rca: "{{ steps.llm-rca.results.response }}\n\nResumen de Aurora: {{ steps.rca-datos.results.0.3 }}"
                   aurora_url: "https://aurora.e-dani.com/incidents/{{ steps.rca-datos.results.0.5 }}"
                   keep_url: "https://keep.e-dani.com/incidents/{{ steps.rca-datos.results.0.6 }}"
           - name: mark-reported
