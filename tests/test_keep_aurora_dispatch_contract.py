@@ -2,9 +2,10 @@
 
 Two workflows are pinned here, both as Helm values rather than Python:
 
-* ``aurora-investigate`` — the critical-only dispatch lane: the SQL claim must
-  reject non-critical incidents before writing the fingerprint, the webhook
-  action must also require critical severity, and the payload must carry
+* ``aurora-investigate`` — the critical+warning dispatch lane (29-09-2026: the
+  sre-devops agent of Hermes is fed only through Keep -> Aurora): the SQL claim
+  must reject info/low incidents before writing the fingerprint, the webhook
+  action must also require critical or warning severity, and the payload must carry
   ``generatorURL`` (Aurora stores it as ``alert_metadata.alertUrl`` and renders
   it as "View Alert"; the ``keep_url`` annotation is discarded by tasks.py).
 
@@ -63,14 +64,15 @@ class KeepAuroraDispatchContractTests(unittest.TestCase):
         text = VALUES.read_text()
         cls.block = workflow_block(text, "aurora-investigate")
 
-    def test_warning_neither_claims_nor_dispatches(self):
+    def test_info_neither_claims_nor_dispatches(self):
         self.assertRegex(
             self.block,
             r"AS severity\s+-- Defensa antes del claim:[\s\S]*?"
-            r"WHERE '\{\{ incident\.severity \}\}' = 'critical'",
+            r"WHERE '\{\{ incident\.severity \}\}' IN \('critical', 'warning'\)",
         )
         self.assertIn(
-            "if: \"'{{ incident.severity }}' == 'critical' and "
+            "if: \"('{{ incident.severity }}' == 'critical' or "
+            "'{{ incident.severity }}' == 'warning') and "
             "'{{ steps.claim-dispatch.results.0.0 }}' != ''\"",
             self.block,
         )

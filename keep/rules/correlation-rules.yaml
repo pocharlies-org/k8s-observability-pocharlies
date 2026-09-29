@@ -369,6 +369,46 @@ rules:
     incidentNameTemplate: "Hub de alertas degradado"
     groupDescription: Keep o Alertmanager en mal estado.
 
+  # 29-09-2026: ArgoCD Notifications (k8s-gitops-pocharlies, argocd/values.yaml)
+  # POSTea on-sync-failed / on-health-degraded a /alerts/event como alertas
+  # `ArgoCD…` de severidad warning. Sin esta regla quedarían registradas y
+  # calladas: con ella son incidente, Aurora las investiga y el RCA llega al
+  # perfil sre-devops de Hermes (aurora-report-back). Una app = un incidente.
+  - ruleName: argocd-app-degraded
+    celQuery: 'name.startsWith("ArgoCD")'
+    sqlQuery:
+      sql: "((name like :name_1))"
+      params:
+        name_1: ArgoCD%
+    timeframeInSeconds: 1800
+    timeUnit: minutes
+    groupingCriteria: [app]
+    createOn: any
+    resolveOn: all_resolved
+    incidentPrefix: ARGO
+    incidentNameTemplate: "ArgoCD: {{ app }} con sync fallido o Degraded"
+    groupDescription: >-
+      Sync fallido o app Degraded en ArgoCD, por app.
+
+  # Sonda de extremo a extremo de la cadena Alertmanager -> Keep -> Aurora ->
+  # Hermes sre-devops. Solo la dispara quien prueba la cadena a mano (amtool con
+  # alertname=SreDevopsChainProbe, severity=warning); no hay regla de
+  # Prometheus que la emita.
+  - ruleName: sre-chain-probe
+    celQuery: 'name == "SreDevopsChainProbe"'
+    sqlQuery:
+      sql: "((name = :name_1))"
+      params:
+        name_1: SreDevopsChainProbe
+    timeframeInSeconds: 600
+    timeUnit: minutes
+    groupingCriteria: []
+    createOn: any
+    resolveOn: all_resolved
+    incidentPrefix: PROBE
+    incidentNameTemplate: "Sonda de la cadena de alertas"
+    groupDescription: Prueba manual de la cadena de alertas hasta el agente sre-devops.
+
   # Salud del analizador del clúster (k8sgpt). Va junto a monitoring-degraded y
   # keep-hub-degraded porque comparte su naturaleza: no avisa de que algo del
   # clúster esté roto, sino de que la HERRAMIENTA que mira el clúster lo está.

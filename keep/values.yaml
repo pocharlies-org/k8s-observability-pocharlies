@@ -644,7 +644,10 @@ backend:
                                               es.step_index
                                      LIMIT 18) e),
                            ''), 'keep\.', 'Keep.', 'g') AS evidencia,
-                         coalesce(c.id::text,'') AS aurora_id
+                         coalesce(c.id::text,'') AS aurora_id,
+                         coalesce((SELECT d.keep_incident_id::text
+                                     FROM keep_bridge.aurora_dispatches d
+                                    WHERE d.fingerprint = c.fp), '') AS keep_id
                     FROM (VALUES (1)) AS siempre(x)
                     LEFT JOIN cand c ON true
           # El RCA de verdad.
@@ -779,6 +782,32 @@ backend:
 
                   Severidad: {{ steps.rca-datos.results.0.2 }}
                   Análisis en Aurora: https://aurora.e-dani.com/incidents/{{ steps.rca-datos.results.0.5 }}
+          # 29-09-2026 (Dani): el caso ya investigado al empleado SRE/DevOps de
+          # Hermes (perfil sre-devops, topic 2182). Es la ÚNICA entrada de
+          # alertas al agente: Alertmanager y ArgoCD entran a Keep, Keep despacha
+          # a Aurora, y esto le entrega el RCA. Un fingerprint = un aviso: la
+          # misma marca keep_bridge.reported que el mensaje de Telegram.
+          # Provider `hermes_sre` (manifests/keep-secrets.yaml): URL y cabecera
+          # X-Gitlab-Token viven en el secreto, no aquí. Aislada de telegram-rca
+          # (run_action captura la excepción de cada acción por separado).
+          - name: hermes-rca
+            if: "'{{ steps.rca-datos.results.0.0 }}' != ''"
+            on-failure:
+              retry:
+                count: 2
+                interval: 30
+            provider:
+              type: webhook
+              config: "{{ providers.hermes_sre }}"
+              with:
+                body:
+                  event_type: rca
+                  fingerprint: "{{ steps.rca-datos.results.0.0 }}"
+                  titulo: "{{ steps.rca-datos.results.0.1 }}"
+                  severidad: "{{ steps.rca-datos.results.0.2 }}"
+                  rca: "{{ steps.llm-rca.results.response }}"
+                  aurora_url: "https://aurora.e-dani.com/incidents/{{ steps.rca-datos.results.0.5 }}"
+                  keep_url: "https://keep.e-dani.com/incidents/{{ steps.rca-datos.results.0.6 }}"
           - name: mark-reported
             if: "'{{ steps.rca-datos.results.0.0 }}' != ''"
             provider:
@@ -808,7 +837,7 @@ backend:
         # disparar Aurora hasta que un operador lo rearme explícitamente.
         disabled: false
         description: >-
-          Manda sólo incidentes critical nuevos a Aurora, que lanza agentes
+          Manda los incidentes critical y warning nuevos a Aurora, que lanza agentes
           read-only sobre el clúster y produce un RCA, como máximo una vez por
           fingerprint.
         triggers:
@@ -854,11 +883,14 @@ backend:
                       ) AS fingerprint,
                       NULLIF('{{ incident.id }}', '')::uuid AS keep_incident_id,
                       NULLIF('{{ incident.severity }}', '') AS severity
-                    -- Defensa antes del claim: warning/info ni siquiera se
+                    -- Defensa antes del claim: info/low ni siquiera se
                     -- convierten en candidatos, por lo que no dejan una marca
-                    -- duradera que impediría investigarlos si después se eleva
-                    -- a critical.
-                    WHERE '{{ incident.severity }}' = 'critical'
+                    -- duradera que impediría investigarlos si después se eleva.
+                    -- 29-09-2026: warning entra también — la cadena al agente
+                    -- sre-devops de Hermes es Keep -> Aurora -> Hermes
+                    -- (el workflow de vuelta del RCA), y lo que antes le llegaba directo de
+                    -- Alertmanager era warning|critical.
+                    WHERE '{{ incident.severity }}' IN ('critical', 'warning')
                   ), claimed AS (
                     INSERT INTO keep_bridge.aurora_dispatches (
                       fingerprint,
@@ -883,7 +915,7 @@ backend:
             # No hay retry del webhook: si Aurora aceptó la petición pero se
             # perdió la respuesta, reintentar aquí volvería a lanzar sus tareas
             # LLM aunque el incidente de Aurora ya existiera.
-            if: "'{{ incident.severity }}' == 'critical' and '{{ steps.claim-dispatch.results.0.0 }}' != ''"
+            if: "('{{ incident.severity }}' == 'critical' or '{{ incident.severity }}' == 'warning') and '{{ steps.claim-dispatch.results.0.0 }}' != ''"
             provider:
               type: webhook
               config: "{{ providers.aurora }}"
