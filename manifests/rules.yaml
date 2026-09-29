@@ -436,17 +436,21 @@ spec:
         #      threshold, so a fresh restart that has not yet re-run a workflow
         #      cannot page. process_start_time_seconds is NOT exported by these
         #      pods (verified absent in VM), hence the KSM container-start gauge.
-        # Threshold 3h = 3x the SLOWEST current cadence (all 14 scheduled
-        # workflows run hourly-or-faster: */15, */20, */30, and :NN hourly).
-        # CAVEAT: any future scheduled workflow with a cadence > ~2h will
-        # false-positive here and must be excluded with a workflow!~"..."
-        # matcher (or its own longer-threshold rule).
+        # Threshold 3h = 3x the SLOWEST sub-daily cadence (monitoring.* run
+        # */15 and */30). The gestoria banking.* and accounting.retention
+        # workflows are DAILY (cron 03:00-09:15 UTC) and false-positived here
+        # every afternoon (29-09-2026: 10 concurrent stalled alerts while all
+        # of them had completed that same morning) — excluded below and covered
+        # by SynapseScheduledWorkflowStalledDaily.
+        # CAVEAT: any future scheduled workflow with a cadence > ~2h must be
+        # excluded with a workflow!~"..." matcher (or its own longer-threshold
+        # rule).
         - alert: SynapseScheduledWorkflowStalled
           expr: |
             (
               time()
               - max by (tenant, workflow) (
-                  synapse_engine_scheduled_workflow_last_success_timestamp_seconds > 0
+                  synapse_engine_scheduled_workflow_last_success_timestamp_seconds{workflow!~"skirmshop\\.gestoria\\.(banking\\..*|accounting\\.retention)"} > 0
                 )
             ) > 10800
             and on ()
@@ -466,6 +470,34 @@ spec:
           annotations:
             summary: "Synapse scheduled workflow {{ $labels.tenant }}/{{ $labels.workflow }} stalled"
             description: "Scheduled workflow {{ $labels.workflow }} (tenant {{ $labels.tenant }}) has not recorded a success in over 3h, and the engine has been up longer than that (so this is a real stall, not a restart artifact). Check the engine scheduler and the workflow's handler logs. NOTE: assumes sub-3h cadence; a workflow scheduled less often than that must be excluded from this rule."
+        # Daily-cadence counterpart: the gestoria banking.* + accounting.retention
+        # workflows run once a day (03:00-09:15 UTC). 36h = one full day plus
+        # grace, so a missed day alerts but same-morning completions do not.
+        - alert: SynapseScheduledWorkflowStalledDaily
+          expr: |
+            (
+              time()
+              - max by (tenant, workflow) (
+                  synapse_engine_scheduled_workflow_last_success_timestamp_seconds{workflow=~"skirmshop\\.gestoria\\.(banking\\..*|accounting\\.retention)"} > 0
+                )
+            ) > 129600
+            and on ()
+            (
+              time()
+              - max(
+                  kube_pod_container_state_started{
+                    namespace="synapse", pod=~"synapse-engine-.*", container="engine"
+                  }
+                )
+            ) > 129600
+          for: 1h
+          labels:
+            severity: warning
+            area: reliability
+            component: synapse
+          annotations:
+            summary: "Synapse scheduled workflow {{ $labels.tenant }}/{{ $labels.workflow }} stalled (daily cadence)"
+            description: "Scheduled daily workflow {{ $labels.workflow }} (tenant {{ $labels.tenant }}) has not recorded a success in over 36h and the engine has been up longer than that. Check the engine scheduler and the workflow's handler logs."
         # --- warning: transactional outbox --------------------------------
         # Exhausted rows = events that hit max retries and are stuck in the
         # outbox (a poison payload or a permanently-failing publish). Any
