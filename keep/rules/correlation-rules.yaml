@@ -575,12 +575,14 @@ rules:
   #
   # Agrupado por namespace: varios cronjobs del mismo namespace fallando suele ser
   # la misma causa (imagen, secreto, PVC).
+  # BrainIngestConsecutiveFailures entra en el mismo incidente CRON (INFRA-286).
   - ruleName: cron-job-failed
-    celQuery: 'name == "K8sCronJobFailed"'
+    celQuery: 'name == "K8sCronJobFailed" || name == "BrainIngestConsecutiveFailures"'
     sqlQuery:
-      sql: "((name = :name_1))"
+      sql: "((name in (:name_1, :name_2)))"
       params:
         name_1: K8sCronJobFailed
+        name_2: BrainIngestConsecutiveFailures
     timeframeInSeconds: 3600
     timeUnit: minutes
     groupingCriteria: [namespace]

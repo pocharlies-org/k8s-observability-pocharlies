@@ -691,7 +691,7 @@ spec:
             domain: crons
           annotations:
             summary: "CronJob {{ $labels.namespace }}/{{ $labels.owner_name }} failed"
-            description: "Job {{ $labels.job_name }} owned by CronJob {{ $labels.namespace }}/{{ $labels.owner_name }} has failed. The cron-alert-analyzer will post a root-cause analysis to the Telegram 'Crons' topic."
+            description: "Job {{ $labels.job_name }} owned by CronJob {{ $labels.namespace }}/{{ $labels.owner_name }} has failed. Keep groups the alert into a CRON incident and notifies the Infra topic (1248) of Pocharlies Operations, with root-cause analysis via Aurora."
     - name: pocharlies.backup-freshness
       rules:
         # Kubernetes es autoritativo sobre si el backup COMPLETO, mismo criterio
@@ -2241,3 +2241,44 @@ spec:
               scrape del endpoint 9187 está caído. Sin esta serie la alerta de
               cobertura no ve nada — es el mismo tipo de ceguera del 28-07
               (PostgresSharedMetricsMissing).
+---
+# Nace de INFRA-114 H3 / INFRA-286. Viaja al topic Infra (1248) de Pocharlies
+# Operations por el enrutado Keep por defecto.
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMRule
+metadata:
+  name: pocharlies-brain-ingest
+  namespace: monitoring
+spec:
+  groups:
+    - name: pocharlies.brain-ingest
+      rules:
+        # Limitación honesta: con failedJobsHistoryLimit=1 y
+        # ttlSecondsAfterFinished=3600 del CronJob solo sobrevive 1 Job fallido
+        # vivo, así que la memoria de rachas la da la ventana
+        # last_over_time[15m]. Fallos separados más de 15 min NO co-ocurren y
+        # no disparan (aprobado por tech-lead en INFRA-286; subir
+        # failedJobsHistoryLimit a 3 es otra PR).
+        # El label del Job es job_name (verificado en series vivas).
+        # NO lleva `unless` de éxito posterior a propósito: el unless de
+        # K8sCronJobFailed es su unless + for:15m con cron de 5 min; aquí la
+        # cadencia de 5 min hace de reloj.
+        - alert: BrainIngestConsecutiveFailures
+          expr: |
+            count(
+              max by (job_name) (
+                last_over_time(kube_job_failed{namespace="whatsapp-mcp", job_name=~"brain-ingest.*", condition="true"}[15m]) == 1
+              )
+            ) >= 2
+          for: 2m
+          labels:
+            severity: warning
+            area: kubernetes
+            domain: crons
+          annotations:
+            summary: "brain-ingest acumula fallos consecutivos ({{ $value }} jobs fallidos en 15 min)"
+            description: >-
+              Two or more distinct brain-ingest Jobs in namespace whatsapp-mcp
+              have had kube_job_failed condition=true within the last 15
+              minutes. A single failure does not fire this alert; consecutive
+              failures of the 5-minute CronJob do.
