@@ -262,7 +262,7 @@ rules:
     createOn: any
     resolveOn: all_resolved
     incidentPrefix: CRIT
-    incidentNameTemplate: "Crítico en {{ namespace }}"
+    incidentNameTemplate: "Crítico en {{ namespace }} · {{ name }}"
     groupDescription: >-
       Cualquier crítica sin regla de dominio propia: UPS, AffiliateApp,
       Conversation*, WeightResolver, LlmResident, DiskRuns, SeriesLimit… Existe

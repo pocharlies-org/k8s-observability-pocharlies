@@ -172,6 +172,7 @@ spec:
             ) == 0
           for: 5m
           labels:
+            namespace: llm   # el expr agrega (sum/min by, absent) y suelta el label namespace de la serie; critical-safety-net de Keep agrupa y nombra por él
             severity: critical
             area: kubernetes
             workload_class: llm-pool
@@ -316,6 +317,7 @@ spec:
             )
           for: 10m
           labels:
+            namespace: llm   # el expr agrega (sum/min by, absent) y suelta el label namespace de la serie; critical-safety-net de Keep agrupa y nombra por él
             severity: critical
             area: llm
             workload_class: llm-pool
@@ -730,6 +732,7 @@ spec:
             })
           for: 15m
           labels:
+            namespace: databases   # el expr agrega (sum/min by, absent) y suelta el label namespace de la serie; critical-safety-net de Keep agrupa y nombra por él
             severity: critical
             area: backup
             domain: crons
@@ -753,6 +756,7 @@ spec:
             })
           for: 15m
           labels:
+            namespace: backup-hub   # el expr agrega (sum/min by, absent) y suelta el label namespace de la serie; critical-safety-net de Keep agrupa y nombra por él
             severity: critical
             area: backup
             domain: crons
@@ -779,6 +783,7 @@ spec:
             })
           for: 15m
           labels:
+            namespace: databases   # el expr agrega (sum/min by, absent) y suelta el label namespace de la serie; critical-safety-net de Keep agrupa y nombra por él
             severity: critical
             area: backup
             domain: crons
@@ -1492,6 +1497,7 @@ spec:
             sum by (namespace) (kube_pod_container_status_ready{namespace="litellm", container="litellm"} == bool 1)
           for: 5m
           labels:
+            namespace: litellm   # el expr agrega (sum/min by, absent) y suelta el label namespace de la serie; critical-safety-net de Keep agrupa y nombra por él
             severity: critical
             area: availability
             topic: crons
