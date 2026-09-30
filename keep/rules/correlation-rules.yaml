@@ -233,6 +233,14 @@ rules:
   # =========================================================================
   # RED DE SEGURIDAD
   # =========================================================================
+  # LitellmNotReady esta excluida de la red (ultimo nombre de la lista) porque SI
+  # tiene regla de dominio: llm-plane — INVARIANTE 1. Mientras vivio en las dos,
+  # cada alerta de litellm montaba ADEMAS un meta-incidente inatribuible: su expr
+  # agrega (min by / sum by) y suelta el label namespace, asi que el
+  # groupingCriteria [namespace] de la red caia en N/A y salia «Critico en N/A»
+  # sin servicio ni payload propio — CRIT-7501/7507/7509/7528/7536/7539 eran todos
+  # el mismo LitellmNotReady duplicando su «Plano LLM degradado» de llm-plane.
+  # La cobertura la sigue dando llm-plane (ver verify-notification-coverage.py).
   - ruleName: critical-safety-net
     celQuery: >-
       (severity == "critical" || labels.severity == "page") && !(
@@ -250,7 +258,7 @@ rules:
                  "KubeStatefulSetReplicasMismatch", "KubernetesStatefulSetUnavailable",
                  "KubeletInstanceUnreachable", "TargetDown", "BlackboxProbeDown",
                  "ScrapePoolHasNoTargets", "TooManyScrapeErrors", "AlertingRulesError",
-                 "TooManyLogs"]
+                 "TooManyLogs", "LitellmNotReady"]
       )
     sqlQuery:
       sql: "((severity = :severity_1))"
