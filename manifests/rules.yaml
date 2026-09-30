@@ -1476,15 +1476,28 @@ spec:
             summary: "Shared datastore unreachable via Service"
             description: "TCP connect to {{ $labels.instance }} has failed for 3 minutes. Consumers (litellm, synapse, skirmbooks…) are cut off even if pod metrics still look green (stale-kubelet pattern, incident 2026-07-20)."
         - alert: LitellmNotReady
-          expr: min by (pod) (kube_pod_container_status_ready{namespace="litellm", container="litellm"}) == 0
+          # 30-09 (CRIT-7536): la expr vieja era min by (pod) ... == 0, o sea ardía si
+          # CUALQUIER pod litellm —incluidos los del ReplicaSet viejo en terminación
+          # durante un rollout con maxUnavailable=0— llevaba 5m sin ready. El 29-09 a las
+          # 22:45Z un rollout normal (RS 774fb9ccb4→5fcb86dfcf) disparó este critical con
+          # el Deployment 2/2 Available en todo momento: falso positivo que además subió
+          # al meta-incidente CRIT-7536. Ahora se compara la capacidad REAL del plano
+          # (contenedores litellm ready) contra los replicas deseados: solo arde si litellm
+          # pierde réplicas por debajo de spec, que es lo que de verdad deja sin pasarela a
+          # los agentes. Verificado contra vmsingle: no arde en la ventana del rollout
+          # (ready 2-4 vs spec 2), sí arde en el corte real del 29-09 08:55Z (ready 0).
+          expr: |
+            kube_deployment_spec_replicas{namespace="litellm", deployment="litellm"}
+              > on(namespace)
+            sum by (namespace) (kube_pod_container_status_ready{namespace="litellm", container="litellm"} == bool 1)
           for: 5m
           labels:
             severity: critical
             area: availability
             topic: crons
           annotations:
-            summary: "litellm out of Service endpoints"
-            description: "Container litellm in {{ $labels.pod }} has been NotReady for 5 minutes — every local-model agent (OpenClaw litellm overrides, skirmshop tools) gets connection refused. Was 9h silent on 2026-07-20."
+            summary: "litellm por debajo de sus replicas deseados"
+            description: "El plano litellm lleva 5 minutos con menos contenedores ready que replicas declarados ({{ $value }} deseados sin cubrir) — cada agente de modelos locales (OpenClaw litellm overrides, skirmshop tools) pierde pasarela. Rollouts con maxUnavailable=0 ya NO disparan esto: la métrica es capacidad, no estado de un pod suelto. Was 9h silent on 2026-07-20."
         - alert: SharedDatastoreCoLocated
           expr: |
             count by (node, app) (
