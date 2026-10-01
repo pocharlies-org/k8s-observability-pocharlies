@@ -44,6 +44,16 @@ class BrainIngestAlertTest(unittest.TestCase):
     def test_expr_has_no_success_unless(self):
         self.assertNotIn("unless", expr_of(self.block))
 
+    def test_regex_anchored_to_cronjob_numeric_suffix(self):
+        # SC-1438: solo Jobs con sufijo numérico (los que genera el CronJob);
+        # los Jobs de prueba tipo brain-ingest-t287-fail1 no deben casar.
+        # El regex debe aparecer anclado en las dos consultas: expr y la
+        # range query de la anotación summary.
+        self.assertEqual(
+            self.block.count('job_name=~"brain-(ingest|windows)-[0-9]+"'), 2
+        )
+        self.assertNotIn("(-.+)?", self.block)
+
     def test_stale_cron_alert_analyzer_annotation_gone(self):
         cron = alert_block(self.text, "K8sCronJobFailed")
         self.assertNotIn("cron-alert-analyzer will post", cron)

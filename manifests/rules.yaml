@@ -2261,11 +2261,18 @@ spec:
         # failedJobsHistoryLimit a 3 es otra PR).
         # El label del Job es job_name (verificado en series vivas).
         # INFRA-376: el selector cubre brain-windows-* (CronJob vigente tras
-        # INFRA-364), brain-ingest-* (históricos en ventana y Jobs de prueba
-        # brain-ingest-t287-*); el regex va anclado por PromQL y el sufijo
-        # exige "-" para no casar p. ej. brain-windowsfoo. La expr agrega con
-        # count by (namespace) y pierde job_name, así que la anotación lo
-        # recupera con query en la plantilla (una sola alerta, no una por Job).
+        # INFRA-364) y brain-ingest-*; el regex va anclado por PromQL y el
+        # sufijo exige "-" para no casar p. ej. brain-windowsfoo. La expr
+        # agrega con count by (namespace) y pierde job_name, así que la
+        # anotación lo recupera con query en la plantilla (una sola alerta,
+        # no una por Job).
+        # SC-1438: el sufijo se ancla a dígitos (`-[0-9]+`, nombre que
+        # genera el CronJob: <cronjob>-<timestamp>) para que los Jobs de
+        # prueba sin owner CronJob (brain-ingest-t287*-fail*, label
+        # purpose=t287-test*) no disparen la alerta a propósito (ruido
+        # critical CRON-7615/7617/7623). El CronJob real de la cadencia de
+        # 5 min es whatsapp-voice-transcribe (sano, Complete 1/1); sus Jobs
+        # no casan este regex — cubrirlos es decisión aparte, no ruido.
         # INFRA-377: se conserva `namespace` en la alerta para que la
         # correlación de Keep (cron-job-failed, groupingCriteria [namespace])
         # titule el incidente con la fuente y no "N/A". Test:
@@ -2277,7 +2284,7 @@ spec:
           expr: |
             count by (namespace) (
               max by (namespace, job_name) (
-                last_over_time(kube_job_failed{namespace="whatsapp-mcp", job_name=~"brain-(ingest|windows)(-.+)?", condition="true"}[15m]) == 1
+                last_over_time(kube_job_failed{namespace="whatsapp-mcp", job_name=~"brain-(ingest|windows)-[0-9]+", condition="true"}[15m]) == 1
               )
             ) >= 2
           for: 2m
@@ -2289,7 +2296,7 @@ spec:
             summary: >-
               brain-ingest/brain-windows acumula fallos consecutivos
               ({{ $value }} jobs fallidos en 15 min:
-              {{ range query `group by (job_name) (last_over_time(kube_job_failed{namespace="whatsapp-mcp", job_name=~"brain-(ingest|windows)(-.+)?", condition="true"}[15m]) == 1)` | sortByLabel "job_name" }}{{ .Labels.job_name }} {{ end }})
+              {{ range query `group by (job_name) (last_over_time(kube_job_failed{namespace="whatsapp-mcp", job_name=~"brain-(ingest|windows)-[0-9]+", condition="true"}[15m]) == 1)` | sortByLabel "job_name" }}{{ .Labels.job_name }} {{ end }})
             description: >-
               Two or more distinct brain-ingest / brain-windows Jobs in
               namespace whatsapp-mcp have had kube_job_failed condition=true
