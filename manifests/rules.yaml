@@ -2260,6 +2260,13 @@ spec:
         # no disparan (aprobado por tech-lead en INFRA-286; subir
         # failedJobsHistoryLimit a 3 es otra PR).
         # El label del Job es job_name (verificado en series vivas).
+        # INFRA-376: el selector cubre brain-windows-* (CronJob vigente tras
+        # INFRA-364), brain-ingest-* (históricos en ventana y Jobs de prueba
+        # brain-ingest-t287-*); el regex va anclado por PromQL y el sufijo
+        # exige "-" para no casar p. ej. brain-windowsfoo. La expr agrega con
+        # count() y pierde job_name, así que la anotación lo recupera con
+        # query en la plantilla (una sola alerta, no una por Job). Test:
+        # tests/test_infra376_brain_ingest_promtool.py + tests/promtool/.
         # NO lleva `unless` de éxito posterior a propósito: el unless de
         # K8sCronJobFailed es su unless + for:15m con cron de 5 min; aquí la
         # cadencia de 5 min hace de reloj.
@@ -2267,7 +2274,7 @@ spec:
           expr: |
             count(
               max by (job_name) (
-                last_over_time(kube_job_failed{namespace="whatsapp-mcp", job_name=~"brain-ingest.*", condition="true"}[15m]) == 1
+                last_over_time(kube_job_failed{namespace="whatsapp-mcp", job_name=~"brain-(ingest|windows)(-.+)?", condition="true"}[15m]) == 1
               )
             ) >= 2
           for: 2m
@@ -2276,9 +2283,13 @@ spec:
             area: kubernetes
             domain: crons
           annotations:
-            summary: "brain-ingest acumula fallos consecutivos ({{ $value }} jobs fallidos en 15 min)"
+            summary: >-
+              brain-ingest/brain-windows acumula fallos consecutivos
+              ({{ $value }} jobs fallidos en 15 min:
+              {{ range query `group by (job_name) (last_over_time(kube_job_failed{namespace="whatsapp-mcp", job_name=~"brain-(ingest|windows)(-.+)?", condition="true"}[15m]) == 1)` | sortByLabel "job_name" }}{{ .Labels.job_name }} {{ end }})
             description: >-
-              Two or more distinct brain-ingest Jobs in namespace whatsapp-mcp
-              have had kube_job_failed condition=true within the last 15
-              minutes. A single failure does not fire this alert; consecutive
-              failures of the 5-minute CronJob do.
+              Two or more distinct brain-ingest / brain-windows Jobs in
+              namespace whatsapp-mcp have had kube_job_failed condition=true
+              within the last 15 minutes (names in the summary). A single
+              failure does not fire this alert; consecutive failures of the
+              5-minute CronJob do.
