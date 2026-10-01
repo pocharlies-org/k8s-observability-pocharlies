@@ -15,7 +15,7 @@ tests:
       - eval_time: 10m
         alertname: BrainIngestConsecutiveFailures
         exp_alerts:
-          - exp_labels: {severity: warning, area: kubernetes, domain: crons}
+          - exp_labels: {severity: warning, area: kubernetes, domain: crons, namespace: whatsapp-mcp}
             exp_annotations:
               summary: "brain-ingest/brain-windows acumula fallos consecutivos (2 jobs fallidos en 15 min: brain-windows-2958000-x brain-windows-2958005-y )"
               description: "Two or more distinct brain-ingest / brain-windows Jobs in namespace whatsapp-mcp have had kube_job_failed condition=true within the last 15 minutes (names in the summary). A single failure does not fire this alert; consecutive failures of the 5-minute CronJob do."
@@ -30,7 +30,7 @@ tests:
       - eval_time: 10m
         alertname: BrainIngestConsecutiveFailures
         exp_alerts:
-          - exp_labels: {severity: warning, area: kubernetes, domain: crons}
+          - exp_labels: {severity: warning, area: kubernetes, domain: crons, namespace: whatsapp-mcp}
             exp_annotations:
               summary: "brain-ingest/brain-windows acumula fallos consecutivos (2 jobs fallidos en 15 min: brain-ingest-t287-fail1 brain-ingest-t287-fail2 )"
               description: "Two or more distinct brain-ingest / brain-windows Jobs in namespace whatsapp-mcp have had kube_job_failed condition=true within the last 15 minutes (names in the summary). A single failure does not fire this alert; consecutive failures of the 5-minute CronJob do."
@@ -53,6 +53,32 @@ tests:
       - series: 'kube_job_failed{namespace="whatsapp-mcp", job_name="otro-job-a", condition="true"}'
         values: '1x12'
       - series: 'kube_job_failed{namespace="whatsapp-mcp", job_name="otro-job-b", condition="true"}'
+        values: '1x12'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: BrainIngestConsecutiveFailures
+        exp_alerts: []
+  - interval: 1m
+    name: brain-ingest-t287b fail1+fail2 dispara con namespace whatsapp-mcp
+    input_series:
+      - series: 'kube_job_failed{namespace="whatsapp-mcp", job_name="brain-ingest-t287b-fail1", condition="true"}'
+        values: '1x12'
+      - series: 'kube_job_failed{namespace="whatsapp-mcp", job_name="brain-ingest-t287b-fail2", condition="true"}'
+        values: '1x12'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: BrainIngestConsecutiveFailures
+        exp_alerts:
+          - exp_labels: {severity: warning, area: kubernetes, domain: crons, namespace: whatsapp-mcp}
+            exp_annotations:
+              summary: "brain-ingest/brain-windows acumula fallos consecutivos (2 jobs fallidos en 15 min: brain-ingest-t287b-fail1 brain-ingest-t287b-fail2 )"
+              description: "Two or more distinct brain-ingest / brain-windows Jobs in namespace whatsapp-mcp have had kube_job_failed condition=true within the last 15 minutes (names in the summary). A single failure does not fire this alert; consecutive failures of the 5-minute CronJob do."
+  - interval: 1m
+    name: un fallido en cada namespace NO dispara (agrega por namespace)
+    input_series:
+      - series: 'kube_job_failed{namespace="whatsapp-mcp", job_name="brain-ingest-t287b-fail1", condition="true"}'
+        values: '1x12'
+      - series: 'kube_job_failed{namespace="otro-ns", job_name="brain-ingest-t287b-fail2", condition="true"}'
         values: '1x12'
     alert_rule_test:
       - eval_time: 10m
