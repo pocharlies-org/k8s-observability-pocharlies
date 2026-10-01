@@ -2264,16 +2264,19 @@ spec:
         # INFRA-364), brain-ingest-* (históricos en ventana y Jobs de prueba
         # brain-ingest-t287-*); el regex va anclado por PromQL y el sufijo
         # exige "-" para no casar p. ej. brain-windowsfoo. La expr agrega con
-        # count() y pierde job_name, así que la anotación lo recupera con
-        # query en la plantilla (una sola alerta, no una por Job). Test:
+        # count by (namespace) y pierde job_name, así que la anotación lo
+        # recupera con query en la plantilla (una sola alerta, no una por Job).
+        # INFRA-377: se conserva `namespace` en la alerta para que la
+        # correlación de Keep (cron-job-failed, groupingCriteria [namespace])
+        # titule el incidente con la fuente y no "N/A". Test:
         # tests/test_infra376_brain_ingest_promtool.py + tests/promtool/.
         # NO lleva `unless` de éxito posterior a propósito: el unless de
         # K8sCronJobFailed es su unless + for:15m con cron de 5 min; aquí la
         # cadencia de 5 min hace de reloj.
         - alert: BrainIngestConsecutiveFailures
           expr: |
-            count(
-              max by (job_name) (
+            count by (namespace) (
+              max by (namespace, job_name) (
                 last_over_time(kube_job_failed{namespace="whatsapp-mcp", job_name=~"brain-(ingest|windows)(-.+)?", condition="true"}[15m]) == 1
               )
             ) >= 2
