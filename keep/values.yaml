@@ -782,35 +782,16 @@ backend:
 
                   Severidad: {{ steps.rca-datos.results.0.2 }}
                   Análisis en Aurora: https://aurora.e-dani.com/incidents/{{ steps.rca-datos.results.0.5 }}
-          # 29-09-2026 (Dani): el caso ya investigado al empleado SRE/DevOps de
-          # Hermes (perfil sre-devops, topic 2182). Es la ÚNICA entrada de
-          # alertas al agente: Alertmanager y ArgoCD entran a Keep, Keep despacha
-          # a Aurora, y esto le entrega el RCA. Un fingerprint = un aviso: la
-          # misma marca keep_bridge.reported que el mensaje de Telegram.
-          # Provider `hermes_sre` (manifests/keep-secrets.yaml): URL y cabecera
-          # X-Gitlab-Token viven en el secreto, no aquí. Aislada de telegram-rca
-          # (run_action captura la excepción de cada acción por separado).
-          - name: hermes-rca
-            if: "'{{ steps.rca-datos.results.0.0 }}' != ''"
-            on-failure:
-              retry:
-                count: 2
-                interval: 30
-            provider:
-              type: webhook
-              config: "{{ providers.hermes_sre }}"
-              with:
-                body:
-                  event_type: rca
-                  fingerprint: "{{ steps.rca-datos.results.0.0 }}"
-                  titulo: "{{ steps.rca-datos.results.0.1 }}"
-                  severidad: "{{ steps.rca-datos.results.0.2 }}"
-                  # El resumen propio de Aurora va siempre detrás: medido el 29-09,
-                  # llm-rca devuelve `response: None` en ~80% de las pasadas de 7
-                  # días, y sin esto el agente recibía el caso sin diagnóstico.
-                  rca: "{{ steps.llm-rca.results.response }}\n\nResumen de Aurora: {{ steps.rca-datos.results.0.3 }}"
-                  aurora_url: "https://aurora.e-dani.com/incidents/{{ steps.rca-datos.results.0.5 }}"
-                  keep_url: "https://keep.e-dani.com/incidents/{{ steps.rca-datos.results.0.6 }}"
+          # 01-10-2026 (SC-1422/SC-1432): el POST del RCA al webhook del perfil
+          # sre-devops queda FUERA: cada POST abría una sesión suelta sin clave en
+          # el perfil (criterio C1: 0 sesiones sin ticket). El camino ahora: la
+          # misma alerta de Alertmanager la ve `ops-watch` (x86) como hallazgo, le
+          # abre/busca su Request de IT (etiqueta `it-request`), y el supervisor da
+          # el único turno al bot en `epica-<request>` — con el diagnóstico de
+          # Aurora a un clic (la Request enlaza el incidente). La acción
+          # `telegram-rca` de arriba sigue avisando al topic de ops, y el RCA
+          # queda guardado en Aurora/Keep. La ruta `rca` del chart sigue viva
+          # como fallback sin clave (provider `hermes_sre` conservado).
           - name: mark-reported
             if: "'{{ steps.rca-datos.results.0.0 }}' != ''"
             provider:
