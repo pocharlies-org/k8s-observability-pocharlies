@@ -1,15 +1,17 @@
 # INFRA-376: casos de BrainIngestConsecutiveFailures (promtool test rules).
 # `rules` la genera tests/test_infra376_brain_ingest_promtool.py desde la VMRule.
+# SC-1438: el regex se ancla a sufijo numérico (Jobs que genera el CronJob),
+# así que los Jobs de prueba brain-ingest-t287*-fail* NO deben disparar.
 rule_files:
   - brain-ingest.rules.yaml
 evaluation_interval: 1m
 tests:
   - interval: 1m
-    name: brain-windows x2 dispara y nombra ambos Jobs
+    name: brain-windows x2 (sufijo numérico) dispara y nombra ambos Jobs
     input_series:
-      - series: 'kube_job_failed{namespace="whatsapp-mcp", job_name="brain-windows-2958000-x", condition="true"}'
+      - series: 'kube_job_failed{namespace="whatsapp-mcp", job_name="brain-windows-2958000", condition="true"}'
         values: '1x12'
-      - series: 'kube_job_failed{namespace="whatsapp-mcp", job_name="brain-windows-2958005-y", condition="true"}'
+      - series: 'kube_job_failed{namespace="whatsapp-mcp", job_name="brain-windows-2958005", condition="true"}'
         values: '1x12'
     alert_rule_test:
       - eval_time: 10m
@@ -17,31 +19,72 @@ tests:
         exp_alerts:
           - exp_labels: {severity: warning, area: kubernetes, domain: crons, namespace: whatsapp-mcp}
             exp_annotations:
-              summary: "brain-ingest/brain-windows acumula fallos consecutivos (2 jobs fallidos en 15 min: brain-windows-2958000-x brain-windows-2958005-y )"
+              summary: "brain-ingest/brain-windows acumula fallos consecutivos (2 jobs fallidos en 15 min: brain-windows-2958000 brain-windows-2958005 )"
               description: "Two or more distinct brain-ingest / brain-windows Jobs in namespace whatsapp-mcp have had kube_job_failed condition=true within the last 15 minutes (names in the summary). A single failure does not fire this alert; consecutive failures of the 5-minute CronJob do."
   - interval: 1m
-    name: brain-ingest-t287 fail1+fail2 dispara
+    name: SC-1438 brain-ingest-29847000 + 29847005 (Jobs reales del CronJob) SI dispara
+    input_series:
+      - series: 'kube_job_failed{namespace="whatsapp-mcp", job_name="brain-ingest-29847000", condition="true"}'
+        values: '1x12'
+      - series: 'kube_job_failed{namespace="whatsapp-mcp", job_name="brain-ingest-29847005", condition="true"}'
+        values: '1x12'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: BrainIngestConsecutiveFailures
+        exp_alerts:
+          - exp_labels: {severity: warning, area: kubernetes, domain: crons, namespace: whatsapp-mcp}
+            exp_annotations:
+              summary: "brain-ingest/brain-windows acumula fallos consecutivos (2 jobs fallidos en 15 min: brain-ingest-29847000 brain-ingest-29847005 )"
+              description: "Two or more distinct brain-ingest / brain-windows Jobs in namespace whatsapp-mcp have had kube_job_failed condition=true within the last 15 minutes (names in the summary). A single failure does not fire this alert; consecutive failures of the 5-minute CronJob do."
+  - interval: 1m
+    name: SC-1438 Jobs de prueba t287-fail1 + t287c-fail2 NO disparan
+    input_series:
+      - series: 'kube_job_failed{namespace="whatsapp-mcp", job_name="brain-ingest-t287-fail1", condition="true"}'
+        values: '1x12'
+      - series: 'kube_job_failed{namespace="whatsapp-mcp", job_name="brain-ingest-t287c-fail2", condition="true"}'
+        values: '1x12'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: BrainIngestConsecutiveFailures
+        exp_alerts: []
+  - interval: 1m
+    name: SC-1438 la tanda completa t287/t287b/t287c fail1+fail2 NO dispara
     input_series:
       - series: 'kube_job_failed{namespace="whatsapp-mcp", job_name="brain-ingest-t287-fail1", condition="true"}'
         values: '1x12'
       - series: 'kube_job_failed{namespace="whatsapp-mcp", job_name="brain-ingest-t287-fail2", condition="true"}'
         values: '1x12'
+      - series: 'kube_job_failed{namespace="whatsapp-mcp", job_name="brain-ingest-t287b-fail1", condition="true"}'
+        values: '1x12'
+      - series: 'kube_job_failed{namespace="whatsapp-mcp", job_name="brain-ingest-t287b-fail2", condition="true"}'
+        values: '1x12'
+      - series: 'kube_job_failed{namespace="whatsapp-mcp", job_name="brain-ingest-t287c-fail1", condition="true"}'
+        values: '1x12'
+      - series: 'kube_job_failed{namespace="whatsapp-mcp", job_name="brain-ingest-t287c-fail2", condition="true"}'
+        values: '1x12'
     alert_rule_test:
       - eval_time: 10m
         alertname: BrainIngestConsecutiveFailures
-        exp_alerts:
-          - exp_labels: {severity: warning, area: kubernetes, domain: crons, namespace: whatsapp-mcp}
-            exp_annotations:
-              summary: "brain-ingest/brain-windows acumula fallos consecutivos (2 jobs fallidos en 15 min: brain-ingest-t287-fail1 brain-ingest-t287-fail2 )"
-              description: "Two or more distinct brain-ingest / brain-windows Jobs in namespace whatsapp-mcp have had kube_job_failed condition=true within the last 15 minutes (names in the summary). A single failure does not fire this alert; consecutive failures of the 5-minute CronJob do."
+        exp_alerts: []
   - interval: 1m
-    name: un Complete (skip) + 1 fallido NO dispara
+    name: SC-1438 un Job de prueba + uno real fallando NO disparan (solo 1 cuenta)
     input_series:
       - series: 'kube_job_failed{namespace="whatsapp-mcp", job_name="brain-ingest-t287-fail1", condition="true"}'
         values: '1x12'
-      - series: 'kube_job_failed{namespace="whatsapp-mcp", job_name="brain-ingest-t287-skip", condition="true"}'
+      - series: 'kube_job_failed{namespace="whatsapp-mcp", job_name="brain-ingest-29847000", condition="true"}'
+        values: '1x12'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: BrainIngestConsecutiveFailures
+        exp_alerts: []
+  - interval: 1m
+    name: un Complete (skip) + 1 fallido NO dispara
+    input_series:
+      - series: 'kube_job_failed{namespace="whatsapp-mcp", job_name="brain-ingest-29847000", condition="true"}'
+        values: '1x12'
+      - series: 'kube_job_failed{namespace="whatsapp-mcp", job_name="brain-ingest-29847005", condition="true"}'
         values: '0x12'
-      - series: 'kube_job_complete{namespace="whatsapp-mcp", job_name="brain-ingest-t287-skip", condition="true"}'
+      - series: 'kube_job_complete{namespace="whatsapp-mcp", job_name="brain-ingest-29847005", condition="true"}'
         values: '1x12'
     alert_rule_test:
       - eval_time: 10m
@@ -59,26 +102,11 @@ tests:
         alertname: BrainIngestConsecutiveFailures
         exp_alerts: []
   - interval: 1m
-    name: brain-ingest-t287b fail1+fail2 dispara con namespace whatsapp-mcp
-    input_series:
-      - series: 'kube_job_failed{namespace="whatsapp-mcp", job_name="brain-ingest-t287b-fail1", condition="true"}'
-        values: '1x12'
-      - series: 'kube_job_failed{namespace="whatsapp-mcp", job_name="brain-ingest-t287b-fail2", condition="true"}'
-        values: '1x12'
-    alert_rule_test:
-      - eval_time: 10m
-        alertname: BrainIngestConsecutiveFailures
-        exp_alerts:
-          - exp_labels: {severity: warning, area: kubernetes, domain: crons, namespace: whatsapp-mcp}
-            exp_annotations:
-              summary: "brain-ingest/brain-windows acumula fallos consecutivos (2 jobs fallidos en 15 min: brain-ingest-t287b-fail1 brain-ingest-t287b-fail2 )"
-              description: "Two or more distinct brain-ingest / brain-windows Jobs in namespace whatsapp-mcp have had kube_job_failed condition=true within the last 15 minutes (names in the summary). A single failure does not fire this alert; consecutive failures of the 5-minute CronJob do."
-  - interval: 1m
     name: un fallido en cada namespace NO dispara (agrega por namespace)
     input_series:
-      - series: 'kube_job_failed{namespace="whatsapp-mcp", job_name="brain-ingest-t287b-fail1", condition="true"}'
+      - series: 'kube_job_failed{namespace="whatsapp-mcp", job_name="brain-ingest-29847000", condition="true"}'
         values: '1x12'
-      - series: 'kube_job_failed{namespace="otro-ns", job_name="brain-ingest-t287b-fail2", condition="true"}'
+      - series: 'kube_job_failed{namespace="otro-ns", job_name="brain-ingest-29847005", condition="true"}'
         values: '1x12'
     alert_rule_test:
       - eval_time: 10m
