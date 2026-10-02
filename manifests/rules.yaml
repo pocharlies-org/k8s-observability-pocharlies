@@ -303,6 +303,19 @@ spec:
         #     cae al blackhole. Un pool lento degrada el RAG del brain, es page.
         #   - area/workload_class/component: la taxonomia del fichero; Keep
         #     enruta por severity=critical a la lane de Aurora.
+        #   - supresion por ingesta masiva (SC-1608, 02-10): el embedder
+        #     comparte pool con la ingesta por lotes del brain (reindex/audit,
+        #     128-512 textos por peticion, 5-10 s legitimos). Con ~0.3 rps el
+        #     p99 de 15m es ~la 3a peticion mas lenta: la ingesta lo superaba
+        #     el 22% del tiempo (19 episodios en 2.7 dias) sin degradacion
+        #     real (media 0.53 s, GPU 0-9%, sin restarts). Se anula el gate
+        #     mientras texts/peticion >= 5 en el embedder (baseline 1.0-1.5,
+        #     en ingesta 10-26) y >= 60 en el reranker (su normalidad son
+        #     lotes de ~25 docs: 4-11, nunca 60). Medido en vmsingle: con la
+        #     supresion, los episodios del 02-10 (15:30-17:15) no disparan y
+        #     en quietud la expresion sigue emitiendo ambas series (un pool
+        #     realmente lento, con peticiones interactivas lentas y
+        #     texts/peticion ~1, dispara igual que antes).
         - alert: BgePoolLatencyAboveGate
           expr: |
             histogram_quantile(0.99, sum by (le, service) (
@@ -315,6 +328,17 @@ spec:
             and on(service) (
               sum by (service) (rate(tei_request_duration_seconds_count{namespace="llm",service=~"bge-m3-embedding|bge-reranker"}[15m])) > 0.003
             )
+            unless on(service) (
+              (
+                sum by (service) (rate(tei_texts_total{namespace="llm",service=~"bge-m3-embedding|bge-reranker"}[15m]))
+                /
+                sum by (service) (rate(tei_requests_total{namespace="llm",service=~"bge-m3-embedding|bge-reranker"}[15m]))
+              ) > on(service) (
+                label_replace(vector(5), "service", "bge-m3-embedding", "", "")
+                or
+                label_replace(vector(60), "service", "bge-reranker", "", "")
+              )
+            )
           for: 10m
           labels:
             namespace: llm   # el expr agrega (sum/min by, absent) y suelta el label namespace de la serie; critical-safety-net de Keep agrupa y nombra por él
@@ -326,8 +350,9 @@ spec:
             summary: "Pool BGE {{ $labels.service }}: p99 por encima del gate"
             description: >-
               El p99 de {{ $labels.service }} es {{ $value | humanizeDuration }}
-              sostenido 10 minutos (gate: 2 s embedder, 3 s reranker). Comprueba
-              el residente real detras del Service:
+              sostenido 10 minutos (gate: 2 s embedder, 3 s reranker; anulado
+              durante ingesta masiva: >=5 textos/peticion embedder, >=60
+              reranker). Comprueba el residente real detras del Service:
               `kubectl get endpointslices -n llm | grep bge` y luego los pods
               (CPU del reranker en x86, `kubectl top pod -n llm | grep bge`).
               El incidente del 14-08 (vectores truncados a 512) se parecio a
