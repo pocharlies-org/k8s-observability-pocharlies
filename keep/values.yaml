@@ -814,16 +814,18 @@ backend:
       # ruidoso y localizado, no un silencio.
       - id: aurora-investigate
         name: Investigación en Aurora
-        # 2026-08-10: reactivado sólo después de añadir una reclamación atómica
-        # y duradera por fingerprint real de alerta. `incident.id` NO sirve para
-        # deduplicar: Keep puede abrir más de un incidente para la misma alerta.
-        # La tabla hace el puente at-most-once: un fingerprint no vuelve a
-        # disparar Aurora hasta que un operador lo rearme explícitamente.
+        # 2026-08-10: reactivado con una reclamación atómica y duradera.
+        # 2026-10-02 (INFRA-406, contrato v1.3): la clave del despacho es el
+        # INCIDENTE de Keep (`keep_incident_id`), no la huella de la alerta:
+        # una causa, una investigación por incidente. Keep solo abre un
+        # incidente nuevo cuando el anterior de esa regla estaba resuelto, así
+        # que `events: [created]` ya es el rearme. Un cooldown de 6 h por
+        # huella de alerta acota el coste si una alerta flapea.
         disabled: false
         description: >-
           Manda los incidentes critical y warning nuevos a Aurora, que lanza agentes
-          read-only sobre el clúster y produce un RCA, como máximo una vez por
-          fingerprint.
+          read-only sobre el clúster y produce un RCA, una vez por incidente de
+          Keep (y como mucho una vez cada 6 h por huella de alerta).
         triggers:
           - type: incident
             events: [created]
@@ -835,27 +837,43 @@ backend:
               with:
                 # El provider Postgres de Keep no hace commit en los steps. El
                 # COMMIT explícito es intencionado: gana una sola ejecución aun
-                # si dos workers reciben a la vez el mismo incidente. La GUC de
-                # sesión sobrevive al COMMIT y devuelve el fingerprint sólo al
-                # ganador. No usar un nombre que empiece por `keep.`: IOHandler
-                # lo interpretaría erróneamente como una función de plantilla.
+                # si dos workers reciben a la vez el mismo incidente. Las GUC de
+                # sesión sobreviven al COMMIT y devuelven el token y el enlace
+                # al despacho anterior sólo al ganador. No usar un nombre que
+                # empiece por `keep.`: IOHandler lo interpretaría
+                # erróneamente como una función de plantilla.
+                #
+                # v1.3 (INFRA-406): PK = keep_incident_id. `fingerprint` es el
+                # TOKEN que se manda a Aurora (substr(md5(incidente),1,16)):
+                # Aurora hace upsert por crc32(fingerprint), así que con la
+                # huella de la alerta un segundo despacho caería sobre el mismo
+                # incidente de Aurora y no sería una investigación nueva.
+                # `alert_fingerprint` es la huella hex de alerts.0 (antes era
+                # `fingerprint`); `previous_keep_incident_id` enlaza con el
+                # despacho anterior de esa huella. Los lectores (rca-datos,
+                # link-datos, mark-linked, aurora_rca_coverage()) siguen
+                # cruzando por `fingerprint`.
                 query: |
                   CREATE SCHEMA IF NOT EXISTS keep_bridge;
                   CREATE TABLE IF NOT EXISTS keep_bridge.aurora_dispatches (
-                    fingerprint text PRIMARY KEY,
-                    keep_incident_id uuid NOT NULL,
+                    keep_incident_id uuid PRIMARY KEY,
+                    fingerprint text NOT NULL UNIQUE,
+                    alert_fingerprint text,
+                    previous_keep_incident_id uuid,
                     dispatched_at timestamptz NOT NULL DEFAULT now(),
-                    -- Enlace Keep->Aurora (INFRA-217 P-A). Sobre la BBDD viva
-                    -- estas dos columnas se añadieron a mano con ALTER (el
-                    -- camino caliente del dispatch no puede pedir lock
-                    -- exclusivo en cada pasada); esto solo hace que una BBDD
-                    -- recreada desde cero nazca bien. IF NOT EXISTS no altera
-                    -- la tabla existente. DDL en docs/keep-aurora-contract.md.
+                    -- Enlace Keep->Aurora (INFRA-217 P-A).
                     aurora_incident_id uuid,
                     linked_at timestamptz
                   );
+                  -- Sobre la BBDD viva el DDL va a mano (expand/contract en
+                  -- docs/keep-aurora-contract.md §2): esto solo hace que una
+                  -- BBDD recreada desde cero nazca bien. IF NOT EXISTS no
+                  -- altera la tabla existente.
+                  CREATE INDEX IF NOT EXISTS aurora_dispatches_alertfp_idx
+                    ON keep_bridge.aurora_dispatches (alert_fingerprint, dispatched_at DESC);
                   WITH candidate AS (
                     SELECT
+                      NULLIF('{{ incident.id }}', '')::uuid AS keep_incident_id,
                       NULLIF(
                         regexp_replace(
                           '{{#fn.default}}{{ incident.alerts.0.fingerprint }}{{/fn.default}}',
@@ -864,8 +882,7 @@ backend:
                           'g'
                         ),
                         ''
-                      ) AS fingerprint,
-                      NULLIF('{{ incident.id }}', '')::uuid AS keep_incident_id,
+                      ) AS alert_fingerprint,
                       NULLIF('{{ incident.severity }}', '') AS severity
                     -- Defensa antes del claim: info/low ni siquiera se
                     -- convierten en candidatos, por lo que no dejan una marca
@@ -877,22 +894,51 @@ backend:
                     WHERE '{{ incident.severity }}' IN ('critical', 'warning')
                   ), claimed AS (
                     INSERT INTO keep_bridge.aurora_dispatches (
+                      keep_incident_id,
                       fingerprint,
-                      keep_incident_id
+                      alert_fingerprint,
+                      previous_keep_incident_id
                     )
-                    SELECT fingerprint, keep_incident_id
-                    FROM candidate
-                    WHERE fingerprint IS NOT NULL
-                    ON CONFLICT (fingerprint) DO NOTHING
-                    RETURNING fingerprint
+                    SELECT
+                      c.keep_incident_id,
+                      substr(md5(c.keep_incident_id::text), 1, 16),
+                      c.alert_fingerprint,
+                      (SELECT p.keep_incident_id
+                         FROM keep_bridge.aurora_dispatches p
+                        WHERE p.alert_fingerprint = c.alert_fingerprint
+                        ORDER BY p.dispatched_at DESC
+                        LIMIT 1)
+                    FROM candidate c
+                    WHERE c.keep_incident_id IS NOT NULL
+                      -- Cooldown anti-flapping: una huella de alerta no se
+                      -- reinvestiga hasta 6 h después del último despacho. El
+                      -- incidente suprimido no deja fila.
+                      AND NOT EXISTS (
+                        SELECT 1
+                          FROM keep_bridge.aurora_dispatches d
+                         WHERE d.alert_fingerprint = c.alert_fingerprint
+                           AND d.dispatched_at > now() - interval '6 hours'
+                      )
+                    ON CONFLICT (keep_incident_id) DO NOTHING
+                    RETURNING fingerprint, previous_keep_incident_id
                   )
-                  SELECT set_config(
-                    'aurora.claimed',
-                    COALESCE((SELECT fingerprint FROM claimed), ''),
-                    false
-                  );
+                  SELECT
+                    set_config(
+                      'aurora.claimed',
+                      COALESCE((SELECT fingerprint FROM claimed), ''),
+                      false
+                    ),
+                    set_config(
+                      'aurora.prev',
+                      COALESCE(
+                        (SELECT 'https://keep.e-dani.com/incidents/' || previous_keep_incident_id::text
+                           FROM claimed WHERE previous_keep_incident_id IS NOT NULL),
+                        ''
+                      ),
+                      false
+                    );
                   COMMIT;
-                  SELECT current_setting('aurora.claimed', true);
+                  SELECT current_setting('aurora.claimed', true), current_setting('aurora.prev', true);
         actions:
           - name: dispatch-rca
             # Un resultado vacío significa que otra ejecución ya lo reclamó.
@@ -914,6 +960,9 @@ backend:
                   commonAnnotations:
                     summary: "{{#fn.na}}{{ incident.user_generated_name }}{{/fn.na}}"
                     keep_url: "https://keep.e-dani.com/incidents/{{ incident.id }}"
+                    # Despacho anterior de la misma huella de alerta (vacío si
+                    # es el primero). results.0.1 del claim ya es la URL.
+                    rearmed_from: "{{ steps.claim-dispatch.results.0.1 }}"
                   # SIN este array Aurora guarda la alerta y NO abre incidente:
                   # tasks.py:227 hace `if not payload.get("alerts"): return` — un
                   # descarte deliberado, porque las notificaciones de prueba de
@@ -954,6 +1003,7 @@ backend:
                         summary: "{{#fn.na}}{{ incident.user_generated_name }}{{/fn.na}}"
                         description: "{{ incident.alerts_count }} alertas correlacionadas por la regla {{ incident.rule_name }}"
                         keep_url: "https://keep.e-dani.com/incidents/{{ incident.id }}"
+                        rearmed_from: "{{ steps.claim-dispatch.results.0.1 }}"
 
       # =====================================================================
       # ENLACE Keep -> Aurora (INFRA-217 P-A, diseño punto 1 de
@@ -979,8 +1029,10 @@ backend:
       # EnrichmentsBl in-process) y `mark-linked` (postgres, que sí commitea en
       # _notify).
       #
-      # Limitación asumida: solo se enlaza el incidente de Keep que ganó el
-      # claim; una alerta recurrente abre otro incidente sin enlace.
+      # Desde v1.3 cada incidente de Keep despachado tiene su propia fila y su
+      # propio incidente de Aurora (token = substr(md5(incidente),1,16)), así
+      # que una alerta recurrente rearmada también se enlaza. Un incidente
+      # suprimido por el cooldown de 6 h no deja fila y no se enlaza.
       - id: aurora-link
         name: Enlace Keep a Aurora (External incident)
         disabled: false

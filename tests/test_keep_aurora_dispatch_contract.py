@@ -3,8 +3,12 @@
 Two workflows are pinned here, both as Helm values rather than Python:
 
 * ``aurora-investigate`` — the critical+warning dispatch lane (29-09-2026: the
-  sre-devops agent of Hermes is fed only through Keep -> Aurora): the SQL claim
-  must reject info/low incidents before writing the fingerprint, the webhook
+  sre-devops agent of Hermes is fed only through Keep -> Aurora), one dispatch
+  per Keep incident (contract v1.3, INFRA-406: PK ``keep_incident_id``,
+  ``fingerprint`` = token ``substr(md5(incident),1,16)``, 6 h cooldown per
+  ``alert_fingerprint``; behaviour is exercised in
+  ``test_keep_aurora_claim_behavior.py``): the SQL claim
+  must reject info/low incidents before writing the claim, the webhook
   action must also require critical or warning severity, and the payload must carry
   ``generatorURL`` (Aurora stores it as ``alert_metadata.alertUrl`` and renders
   it as "View Alert"; the ``keep_url`` annotation is discarded by tasks.py).
@@ -77,13 +81,51 @@ class KeepAuroraDispatchContractTests(unittest.TestCase):
             self.block,
         )
 
-    def test_critical_claims_and_dispatches_when_fingerprint_is_new(self):
+    def test_claim_is_keyed_on_the_keep_incident(self):
         self.assertIn(
             "NULLIF('{{ incident.severity }}', '') AS severity",
             self.block,
         )
-        self.assertIn("ON CONFLICT (fingerprint) DO NOTHING", self.block)
+        self.assertIn("ON CONFLICT (keep_incident_id) DO NOTHING", self.block)
+        self.assertNotIn("ON CONFLICT (fingerprint)", self.block)
         self.assertIn("- name: dispatch-rca", self.block)
+
+    def test_table_ddl_has_incident_pk_and_unique_token(self):
+        self.assertRegex(
+            self.block,
+            r"CREATE TABLE IF NOT EXISTS keep_bridge\.aurora_dispatches \(\s+"
+            r"keep_incident_id uuid PRIMARY KEY,\s+"
+            r"fingerprint text NOT NULL UNIQUE,\s+"
+            r"alert_fingerprint text,\s+"
+            r"previous_keep_incident_id uuid,",
+        )
+
+    def test_token_sent_to_aurora_is_derived_from_the_incident(self):
+        # Aurora upserts by crc32(fingerprint): the alert fingerprint would
+        # land a second dispatch on the same Aurora incident.
+        self.assertIn("substr(md5(c.keep_incident_id::text), 1, 16)", self.block)
+
+    def test_cooldown_is_six_hours_per_alert_fingerprint(self):
+        self.assertEqual(self.block.count("interval '6 hours'"), 1)
+        self.assertRegex(
+            self.block,
+            r"d\.alert_fingerprint = c\.alert_fingerprint\s+"
+            r"AND d\.dispatched_at > now\(\) - interval '6 hours'",
+        )
+
+    def test_rearm_is_published_as_an_annotation(self):
+        self.assertIn("previous_keep_incident_id", self.block)
+        self.assertGreaterEqual(self.block.count("rearmed_from:"), 1)
+        self.assertIn(
+            'rearmed_from: "{{ steps.claim-dispatch.results.0.1 }}"', self.block
+        )
+
+    def test_dispatch_lane_is_critical_and_warning(self):
+        self.assertNotIn("= 'critical'\n", self.block)
+        self.assertIn(
+            "WHERE '{{ incident.severity }}' IN ('critical', 'warning')",
+            self.block,
+        )
 
     def test_report_back_workflow_is_not_part_of_dispatch_contract(self):
         self.assertNotIn("aurora-report-back", self.block)
@@ -95,6 +137,26 @@ class KeepAuroraDispatchContractTests(unittest.TestCase):
             'generatorURL: "https://keep.e-dani.com/incidents/{{ incident.id }}"',
             self.block,
         )
+
+
+class KeepAuroraReadersKeepCrossingByFingerprintTests(unittest.TestCase):
+    """rca-datos, link-datos and mark-linked still join on ``fingerprint``
+    (the token Aurora stores), so v1.3 does not touch them."""
+
+    @classmethod
+    def setUpClass(cls):
+        text = VALUES.read_text()
+        cls.link = workflow_block(text, "aurora-link")
+        cls.report = workflow_block(text, "aurora-report-back")
+
+    def test_link_datos_and_mark_linked_cross_by_fingerprint(self):
+        self.assertIn("ON i.alert_metadata->>'fingerprint' = d.fingerprint", self.link)
+        self.assertIn("WHERE fingerprint = '{{ steps.link-datos.results.0.2 }}'", self.link)
+
+    def test_rca_datos_crosses_by_fingerprint(self):
+        self.assertRegex(self.report, r"alert_metadata->>'fingerprint'")
+        self.assertIn("rca-datos", self.report)
+        self.assertNotIn("d.alert_fingerprint", self.link)
 
 
 class KeepAuroraLinkContractTests(unittest.TestCase):

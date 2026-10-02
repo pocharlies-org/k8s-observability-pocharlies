@@ -1,16 +1,16 @@
 # Contrato Keep ↔ Aurora
 
-> Estado: **v1.2** (INFRA-217, 2026-09-23; revisión del architect: la
-> cobertura del RCA se lee con la función SECURITY DEFINER
-> `keep_bridge.aurora_rca_coverage()` y se retira el GRANT + policy sobre
-> `public.incidents` que aprobaba v1.1 — ver §2 y §5. v1.1 (2026-09-23,
-> corregido post-qa tras la medición en vivo de P-B) fijó el prefijo `cnpg_`
-> de las series del exporter — ver §7. Escrito desde
-> `nota-cto-diseno-keep-aurora.md` (punto 4) + su lista F4. Este fichero es la
-> referencia del enlace cruzado Keep↔Aurora: qué se guarda en cada sitio, con
-> qué clave, quién escribe qué y qué superficie NO se puede cambiar sin
-> versionar. Los anclajes son nombres de workflow/step/columna, no números de
-> línea (el fichero vive sesiones en paralelo).
+> Estado: **v1.3** (INFRA-406 / INFRA-394, 2026-10-02): el despacho a Aurora
+> pasa de «una vez por huella de alerta» a **una vez por incidente de Keep**
+> (clave `keep_incident_id`, rearme = Keep, cooldown de 6 h por huella) y se
+> corrige la lane (§6: critical **y warning**). Hereda de v1.2 (INFRA-217,
+> 2026-09-23) la cobertura del RCA por la función SECURITY DEFINER
+> `keep_bridge.aurora_rca_coverage()` y del prefijo `cnpg_` de las series
+> (§7). Este fichero es la referencia del enlace cruzado Keep↔Aurora: qué se
+> guarda en cada sitio, con qué clave, quién escribe qué y qué superficie NO se
+> puede cambiar sin versionar. Los anclajes son nombres de
+> workflow/step/columna, no números de línea (el fichero vive sesiones en
+> paralelo).
 
 ## 0. Resumen del enlace
 
@@ -22,19 +22,43 @@
 Ninguna de las dos direcciones escribe en tablas del otro sistema más allá del
 esquema `keep_bridge` de la BBDD `aurora` (ver §5 dueños).
 
-## 1. La clave de correlación: `fingerprint`
+## 1. La clave de correlación: `keep_incident_id`
 
-- Es el fingerprint de la **primera alerta del incidente** (`alerts.0`),
-  limpiado a hexadecimal (solo `[0-9A-Fa-f]`) por el step `claim-dispatch` del
-  workflow `aurora-investigate`. Keep lo manda así; Aurora lo guarda tal cual
-  en `alert_metadata->>'fingerprint'` (fork `tasks.py`, sha e35121ae, upsert
-  por `crc32(fp)`). La relación es **1:1**.
-- **A lo sumo un despacho por fingerprint**: `keep_bridge.aurora_dispatches`
-  tiene `fingerprint text PRIMARY KEY` y el claim es `ON CONFLICT DO NOTHING`.
-  **Sin rearme**: un fingerprint ya despachado no vuelve a Aurora hasta que un
-  operador borre la fila a mano. Consecuencia conocida: si Keep abre un
-  segundo incidente para la misma alerta recurrente, ese segundo incidente no
-  se despacha ni se enlaza (limitación dictada en el diseño, §6).
+- **Una fila por incidente de Keep**: `keep_bridge.aurora_dispatches` tiene
+  `keep_incident_id uuid PRIMARY KEY` y el claim es `ON CONFLICT
+  (keep_incident_id) DO NOTHING`. La misma ejecución repetida o recibida por
+  dos workers gana una sola vez.
+- **`fingerprint` = token enviado a Aurora**: `substr(md5(keep_incident_id::text),
+  1, 16)` (16 hex, `UNIQUE NOT NULL`). Es lo que Aurora guarda en
+  `alert_metadata->>'fingerprint'` (fork `tasks.py`, upsert por `crc32(fp)`) y
+  por lo que cruzan `rca-datos`, `link-datos`, `mark-linked` y
+  `aurora_rca_coverage()`. Se deriva del incidente, no de la alerta, para que
+  cada incidente de Keep tenga su propio incidente de Aurora: con la huella de
+  la alerta, un segundo despacho caería sobre el mismo incidente de Aurora
+  (upsert) y no sería una investigación nueva. La relación es **1:1** con el
+  incidente de Keep. Las filas anteriores a v1.3 conservan su `fingerprint`
+  (la huella de alerta de entonces) y `alert_fingerprint = fingerprint`.
+- **`alert_fingerprint`** = huella hex de `alerts.0` (limpiada a
+  `[0-9A-Fa-f]`), lo que antes era `fingerprint`. Sirve solo para el cooldown y
+  para `previous_keep_incident_id`. `NULL` si el incidente no trae alertas con
+  huella: **ya no se descartan** (v1.2 exigía `fingerprint IS NOT NULL`); se
+  despachan con token de incidente y sin cooldown.
+- **Rearme = Keep.** `aurora-investigate` dispara con `events: [created]`, y
+  Keep abre un incidente nuevo solo cuando el anterior de esa regla/agrupación
+  estaba resuelto. Una alerta recurrente tras resolverse es, por tanto, un
+  incidente nuevo → un despacho nuevo, sin consultar el estado de Keep desde la
+  BBDD `aurora`. Supuesto medido: un incidente `resolved` no recoge alertas
+  nuevas (si las recogiera no habría incidente nuevo y no habría rearme).
+- **Cooldown anti-flapping: 6 h** por `alert_fingerprint`
+  (`interval '6 hours'` sobre `dispatched_at`). Un incidente nuevo con la
+  misma huella dentro de la ventana **no deja fila** y no se despacha; es un
+  límite de coste (cada despacho lanza agentes LLM), no una regla funcional.
+  La Request de IT del incidente suprimido se cubre por la causa
+  (`keep-causa`), no por Aurora.
+- **`previous_keep_incident_id`** = último despacho anterior con la misma
+  `alert_fingerprint` (`NULL` si es el primero). Viaja a Aurora como anotación
+  `rearmed_from: https://keep.e-dani.com/incidents/<prev>` (vacía si no hay),
+  vía la GUC `aurora.prev` del claim (`results.0.1`).
 - **Trampa desactivada (paso 0 medido, INFRA-231)**: el fingerprint de la
   ALERTA (16 hex) y la clave del enrichment de INCIDENTES son cosas distintas.
   En `alertenrichment`, para incidentes la columna `alert_fingerprint` guarda
@@ -70,28 +94,104 @@ CREATE TABLE IF NOT EXISTS keep_bridge.reported (
 
 ```sql
 CREATE TABLE IF NOT EXISTS keep_bridge.aurora_dispatches (
-  fingerprint text PRIMARY KEY,
-  keep_incident_id uuid NOT NULL,
+  keep_incident_id uuid PRIMARY KEY,
+  fingerprint text NOT NULL UNIQUE,   -- token enviado a Aurora (§1)
+  alert_fingerprint text,             -- huella hex de alerts.0
+  previous_keep_incident_id uuid,     -- despacho anterior de esa huella
   dispatched_at timestamptz NOT NULL DEFAULT now(),
-  aurora_incident_id uuid,          -- nuevo (P-A): enlace Keep->Aurora
-  linked_at timestamptz             -- nuevo (P-A): cuándo se escribió el badge
+  aurora_incident_id uuid,            -- enlace Keep->Aurora (P-A)
+  linked_at timestamptz               -- cuándo se escribió el badge
 );
+CREATE INDEX IF NOT EXISTS aurora_dispatches_alertfp_idx
+  ON keep_bridge.aurora_dispatches (alert_fingerprint, dispatched_at DESC);
 ```
 
-El ALTER para una BBDD viva ya aplicada (2026-09-23, primario CNPG
-`postgres-shared-3`, verificado por `information_schema.columns`):
-
-```sql
-ALTER TABLE keep_bridge.aurora_dispatches
-  ADD COLUMN IF NOT EXISTS aurora_incident_id uuid,
-  ADD COLUMN IF NOT EXISTS linked_at timestamptz;
-```
-
-- `dispatched_at`: momento del claim; la ventana de enlace (`aurora-link`) y la
-  ventana de cobertura (métricas, §7) se miden sobre él.
+- `dispatched_at`: momento del claim; el cooldown, la ventana de enlace
+  (`aurora-link`) y la ventana de cobertura (§7) se miden sobre él.
 - `aurora_incident_id`/`linked_at`: los escribe **solo** la action
   `mark-linked` del workflow `aurora-link` (`WHERE fingerprint = … AND
   aurora_incident_id IS NULL` → idempotente, un enlace por despacho).
+
+#### Migración v1.2 → v1.3 (expand → deploy → contract)
+
+Sin tabla nueva ni dual-write. Cada paso es compatible con el workflow viejo y
+con el nuevo. El DDL lo ejecuta **devops** contra el primario CNPG de
+`postgres-shared` como `postgres` (localizar el primario por la etiqueta
+`role=primary`, no suponer un número); los bloques marcados
+`-- migracion:*` los extrae `tests/test_keep_aurora_claim_behavior.py` y los
+prueba contra un Postgres desechable con filas v1.2 vivas.
+
+0. **Pre-chequeo** — debe dar 0 filas; si no, parar y no borrar nada:
+
+```sql
+-- migracion:precheck
+SELECT keep_incident_id, count(*) FROM keep_bridge.aurora_dispatches
+ GROUP BY 1 HAVING count(*) > 1;
+```
+
+1. **Expand** (en línea, antes del merge; aditivo, no se deshace):
+
+```sql
+-- migracion:expand
+SET lock_timeout = '5s';
+ALTER TABLE keep_bridge.aurora_dispatches
+  ADD COLUMN IF NOT EXISTS alert_fingerprint text,
+  ADD COLUMN IF NOT EXISTS previous_keep_incident_id uuid;
+UPDATE keep_bridge.aurora_dispatches SET alert_fingerprint = fingerprint
+ WHERE alert_fingerprint IS NULL;
+CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS aurora_dispatches_incident_uq
+  ON keep_bridge.aurora_dispatches (keep_incident_id);
+CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS aurora_dispatches_fp_uq
+  ON keep_bridge.aurora_dispatches (fingerprint);
+CREATE INDEX CONCURRENTLY IF NOT EXISTS aurora_dispatches_alertfp_idx
+  ON keep_bridge.aurora_dispatches (alert_fingerprint, dispatched_at DESC);
+```
+
+2. **Deploy**: merge del PR (ArgoCD `keep`); comprobar que Keep cargó el
+   workflow nuevo y re-ejecutar el `UPDATE … alert_fingerprint` del paso 1
+   (cubre filas que el workflow viejo insertó en la ventana).
+3. **Prueba viva**: `SreDevopsChainProbe` (warning) → una fila con
+   `fingerprint = substr(md5(keep_incident_id::text),1,16)`,
+   `alert_fingerprint` poblado y `previous_keep_incident_id` NULL; repetida
+   dentro de 6 h → sin fila nueva.
+4. **Contract** (solo tras 3 verde):
+
+```sql
+-- migracion:contract
+BEGIN;
+SET LOCAL lock_timeout = '5s';
+ALTER TABLE keep_bridge.aurora_dispatches DROP CONSTRAINT aurora_dispatches_pkey;
+ALTER TABLE keep_bridge.aurora_dispatches
+  ADD CONSTRAINT aurora_dispatches_pkey PRIMARY KEY USING INDEX aurora_dispatches_incident_uq;
+ALTER TABLE keep_bridge.aurora_dispatches
+  ADD CONSTRAINT aurora_dispatches_fingerprint_key UNIQUE USING INDEX aurora_dispatches_fp_uq;
+COMMIT;
+```
+
+   Comprobación (C3-A): `SELECT pg_get_indexdef(indexrelid) FROM pg_index
+   WHERE indrelid = 'keep_bridge.aurora_dispatches'::regclass AND indisprimary;`
+   contiene `keep_incident_id`, y `SELECT * FROM
+   keep_bridge.aurora_rca_coverage();` no da error.
+
+**Rollback.** Paso 2: revertir el PR (el workflow viejo hace `ON CONFLICT
+(fingerprint)`, que resuelve contra el PK o el UNIQUE; las filas con token son
+inocuas). Paso 4 (antes de revertir el PR):
+
+```sql
+-- migracion:rollback-contract
+BEGIN;
+SET LOCAL lock_timeout = '5s';
+ALTER TABLE keep_bridge.aurora_dispatches DROP CONSTRAINT aurora_dispatches_pkey;
+ALTER TABLE keep_bridge.aurora_dispatches DROP CONSTRAINT aurora_dispatches_fingerprint_key;
+ALTER TABLE keep_bridge.aurora_dispatches ADD PRIMARY KEY (fingerprint);
+CREATE UNIQUE INDEX aurora_dispatches_incident_uq
+  ON keep_bridge.aurora_dispatches (keep_incident_id);
+COMMIT;
+```
+
+Si el despliegue falla a medias nunca queda «sin investigar» (el claim viejo
+funciona hasta el contract); lo peor es una reinvestigación, acotada por el
+cooldown.
 
 ### Cobertura del RCA: la función `keep_bridge.aurora_rca_coverage()` (v1.2)
 
@@ -206,17 +306,20 @@ series no cambian de nombre.
   `incident_thoughts` y `execution_steps`; la tabla `rca_findings` existe en el
   esquema de Aurora pero está **sin usar** (no la leas ni la escribas).
 
-## 6. La lane de despacho: solo `critical`
+## 6. La lane de despacho: `critical` y `warning`
 
-El dispatch a Aurora (`aurora-investigate`) está doblemente acotado a severidad
-`critical` (defensas independientes, pinadas por `tests/`):
+El dispatch a Aurora (`aurora-investigate`) está doblemente acotado a
+severidad `critical` o `warning` (desde el 29-09-2026: el agente sre-devops de
+Hermes se alimenta solo por Keep → Aurora; v1.2 decía «solo critical», lo que
+era falso desde esa fecha). Defensas independientes, pinadas por `tests/`:
 
-1. SQL: `WHERE '{{ incident.severity }}' = 'critical'` **antes** del claim,
-   para que un warning/info no deje ni marca en `aurora_dispatches` (si después
-   se eleva a critical, sí puede despacharse).
-2. Action: `if: "'{{ incident.severity }}' == 'critical' and '{{ steps.
-   claim-dispatch.results.0.0 }}' != ''"` — el resultado vacío del claim
-   significa «otra ejecución ya lo reclamó».
+1. SQL: `WHERE '{{ incident.severity }}' IN ('critical', 'warning')` **antes**
+   del claim, para que un info/low no deje ni marca en `aurora_dispatches` (si
+   después se eleva, sí puede despacharse).
+2. Action: `if: "('{{ incident.severity }}' == 'critical' or '{{
+   incident.severity }}' == 'warning') and '{{ steps.claim-dispatch.results.0.0
+   }}' != ''"` — el resultado vacío del claim significa «otra ejecución ya lo
+   reclamó» o «suprimido por el cooldown».
 
 `aurora-link` hereda esta lane por transitividad: solo enlaza filas que dejó el
 claim, y solo las de las últimas 72 h con `aurora_incident_id IS NULL`.
@@ -256,8 +359,10 @@ claim, y solo las de las últimas 72 h con `aurora_incident_id IS NULL`.
 - **T2.** La deduplicación entre Keep y el Alertmanager directo va por el
   fingerprint de Alertmanager. Que coincida con el de Keep es una hipótesis que
   esa épica tiene que medir.
-- **T3.** Rearmar las alertas recurrentes es un cambio de contrato versionado
-  (tabla o columna nueva), nunca reinterpretar la PK.
+- **T3.** Rearmar las alertas recurrentes **ya está resuelto en v1.3** (§1:
+  clave `keep_incident_id`, rearme = Keep, cooldown de 6 h). Cualquier cambio
+  posterior de la PK o del cooldown es de nuevo un cambio de contrato
+  versionado.
 - **T4.** «RCA listo» hoy solo se sabe consultando la BBDD. Un evento sería una
   entrada nueva `.v1` en `CONTRACTS.yaml` de synapse.
 - **T5.** El RCA que escribe report-back no se guarda en ningún sitio: solo va

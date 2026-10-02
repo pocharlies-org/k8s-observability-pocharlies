@@ -16,6 +16,21 @@ concurrency:
 jobs:
   k8sgpt-explainer-tests:
     runs-on: arc-k8s
+    # INFRA-406: Postgres desechable para el test de comportamiento del claim
+    # de Aurora (tests/test_keep_aurora_claim_behavior.py). Falla si falta (CI=true).
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      AURORA_TEST_PG_DSN: postgresql://postgres:test@localhost:5432/postgres
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -23,7 +38,7 @@ jobs:
           python-version: "3.13"
       - name: Install promtool (INFRA-376 rule test)
         run: |
-          pip install pyyaml
+          pip install pyyaml "psycopg[binary]"
           curl -fsSL https://github.com/prometheus/prometheus/releases/download/v2.55.1/prometheus-2.55.1.linux-amd64.tar.gz \
             | tar -xz --strip-components=1 -C "$RUNNER_TEMP" prometheus-2.55.1.linux-amd64/promtool
           echo "PROMTOOL=$RUNNER_TEMP/promtool" >> "$GITHUB_ENV"

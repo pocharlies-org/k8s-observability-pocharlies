@@ -27,7 +27,7 @@ multi-source: chart upstream + `values` de este repo, salvo indicación):
   Aurora, K8sGPT), Synapse/OpenClaw (webhook de VMAlertmanager), 1Password/ExternalSecrets (`*-secrets.yaml`), Kyverno (excepciones).
 - **Dependen de él** — dashboard de control-nexus (`PROMETHEUS_URL` → `vmsingle-vm-victoria-metrics-k8s-stack.monitoring.svc:8428`),
   Grafana (`grafana.e-dani.com`), todos los repos que publican `VMServiceScrape/VMRule`; contrato **Keep↔Aurora**
-  (`docs/keep-aurora-contract.md` v1.2, función SECURITY DEFINER `keep_bridge.aurora_rca_coverage()`).
+  (`docs/keep-aurora-contract.md` v1.3: despacho a Aurora por `keep_incident_id`; función SECURITY DEFINER `keep_bridge.aurora_rca_coverage()`).
 - **Tronco**: `main`.
 
 ## 3. Stack
@@ -46,6 +46,7 @@ multi-source: chart upstream + `values` de este repo, salvo indicación):
 |---|---|---|---|
 | Reglas de enrutado de alertas | matriz | `docs/alert-routing-matrix.md`, `keep/rules/` | toda alerta del estate |
 | Contrato Keep↔Aurora | `docs/keep-aurora-contract.md` | ídem | Keep, Aurora |
+| Claim de despacho a Aurora (una vez por incidente de Keep, cooldown 6 h) | step `claim-dispatch` del workflow `aurora-investigate` | `keep/values.yaml` | Keep → Aurora; lectores `rca-datos`, `link-datos`, `mark-linked`, `aurora_rca_coverage()` (cruzan por `fingerprint`) |
 | Dashboards | `manifests/dashboards.yaml`, `grafana-company-dashboard.yaml`, `grafana-keep.yaml` | ídem | Grafana |
 
 ## 5. Cómo se construye aquí
@@ -58,13 +59,17 @@ Un componente = `<comp>/values.yaml` + `apps/<comp>.yaml` (registrado en `k8s-gi
 
 ```sh
 python3 -m unittest discover -s k8sgpt-explainer/tests -p 'test_*.py'    # 7 tests del explicador
+AURORA_TEST_PG_DSN=postgresql://… python3 -m pytest tests/ -q             # claim de Aurora contra Postgres desechable (INFRA-406)
 promtool test rules …                                                    # test de regla INFRA-376 (ver ci.yml)
 ```
-CI ejecuta además contratos de idempotencia, presupuesto y despacho de alertas. Cobertura global **pendiente de medir**.
+CI ejecuta además contratos de idempotencia, presupuesto y despacho de alertas, y el test de comportamiento del claim de
+Aurora (`tests/test_keep_aurora_claim_behavior.py`: rearme, cooldown 6 h, migración expand/contract con `aurora_rca_coverage()`
+igual). Necesita Postgres: sin `AURORA_TEST_PG_DSN` se salta en local y **falla si `CI=true`**. Cobertura global **pendiente de medir**.
 
 ## 7. CI/CD y despliegue
 
-- `ci.yml` (`arc-k8s`): instala promtool, ejecuta contratos de idempotencia/presupuesto/dispatch, y `reusable-ci.yml@main`
+- `ci.yml` (`arc-k8s`): service container `postgres:16` + `psycopg[binary]` (elegido frente a `postgresql` por apt: sin sudo ni
+  instalación de paquetes en el runner; **no medido en `arc-k8s` hasta el primer run del PR de INFRA-406**), instala promtool, ejecuta contratos de idempotencia/presupuesto/dispatch, y `reusable-ci.yml@main`
   (kustomize). `pr-review.yml`.
 - Despliegue: merge a `main` → 9 apps ArgoCD. **Validación en producción**: `up` de los targets en VictoriaMetrics, una alerta de
   prueba que llegue a Keep y a Synapse, Loki devolviendo logs recientes de `sauvage`. Synced ≠ funcionando. Pendiente de ejecutar.
@@ -73,8 +78,10 @@ CI ejecuta además contratos de idempotencia, presupuesto y despacho de alertas.
 
 - `aurora-kubectl-agent` apunta a un **SHA del repo upstream**, no a un chart publicado: subirlo exige revisar el diff upstream.
 - README desfasado (k3s v1.32.5; describe el «estado objetivo» como tarea).
+- `2026-10-02` · Keep↔Aurora v1.3 (INFRA-406): una investigación por incidente de Keep (PK `keep_incident_id`, `fingerprint` = token
+  `substr(md5(incidente),1,16)`, cooldown 6 h por `alert_fingerprint`); la migración es expand → deploy → contract y la ejecuta devops.
 - `2026-09-23` · Keep↔Aurora v1.2 (INFRA-217): se retira el GRANT/policy sobre `public.incidents` de v1.1 por la función
   `aurora_rca_coverage()` (revisión del architect).
 - K8sGPT excluyó `ReplicaSet/Service/Job` porque concentraban ~2.746 hallazgos y disparaban bucles LLM.
 
-Última verificación contra el código: 2026-10-01 · 1948eb6 (origin/main)
+Última verificación contra el código: 2026-10-02 · 662a313 (origin/main) + INFRA-406
