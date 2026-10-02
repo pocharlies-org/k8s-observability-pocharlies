@@ -868,9 +868,10 @@ backend:
                   -- Sobre la BBDD viva el DDL va a mano (expand/contract en
                   -- docs/keep-aurora-contract.md §2): esto solo hace que una
                   -- BBDD recreada desde cero nazca bien. IF NOT EXISTS no
-                  -- altera la tabla existente.
-                  CREATE INDEX IF NOT EXISTS aurora_dispatches_alertfp_idx
-                    ON keep_bridge.aurora_dispatches (alert_fingerprint, dispatched_at DESC);
+                  -- altera la tabla existente. Los índices (incluido
+                  -- aurora_dispatches_alertfp_idx) se crean a mano: un CREATE
+                  -- INDEX en el camino caliente toma lock SHARE y puede dar
+                  -- deadlock con el INSERT del claim y con mark-linked.
                   WITH candidate AS (
                     SELECT
                       NULLIF('{{ incident.id }}', '')::uuid AS keep_incident_id,

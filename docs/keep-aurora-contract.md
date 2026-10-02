@@ -47,8 +47,10 @@ esquema `keep_bridge` de la BBDD `aurora` (ver §5 dueños).
   Keep abre un incidente nuevo solo cuando el anterior de esa regla/agrupación
   estaba resuelto. Una alerta recurrente tras resolverse es, por tanto, un
   incidente nuevo → un despacho nuevo, sin consultar el estado de Keep desde la
-  BBDD `aurora`. Supuesto medido: un incidente `resolved` no recoge alertas
-  nuevas (si las recogiera no habría incidente nuevo y no habría rearme).
+  BBDD `aurora`. **Hipótesis pendiente de medir (INFRA-394, devops)**: que un
+  incidente `resolved` no recoge alertas nuevas (si las recogiera no habría
+  incidente nuevo, ni `created`, ni rearme). Si fuera falsa no hay rearme y
+  hay que revisar este contrato.
 - **Cooldown anti-flapping: 6 h** por `alert_fingerprint`
   (`interval '6 hours'` sobre `dispatched_at`). Un incidente nuevo con la
   misma huella dentro de la ventana **no deja fila** y no se despacha; es un

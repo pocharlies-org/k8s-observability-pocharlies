@@ -5,6 +5,11 @@ Rol: developer · Fecha: 2026-10-02T03:10Z · Sesión: 50026508-ce25-4006-9891-d
 PR: https://github.com/pocharlies-org/k8s-observability-pocharlies/pull/65 (rama `infra-394-p3-aurora-incidente`) · CI run 36949384009.
 **NO mergear hasta que devops haya hecho el paso 1.**
 
+## Rework tras nota-architect-pr65.md (CAMBIOS)
+1. `claim-dispatch` ya no contiene `CREATE INDEX` (lock SHARE en el camino caliente, riesgo de deadlock con el INSERT y `mark-linked`); el comentario dice que los índices se crean a mano. `aurora_dispatches_alertfp_idx` sigue en `-- migracion:expand` y en el DDL de §2. Test nuevo `test_no_step_of_the_workflow_runs_ddl_beyond_create_table`: ningún step de `aurora-investigate` contiene CREATE INDEX / ALTER / DROP; solo el único `CREATE TABLE IF NOT EXISTS` documentado.
+2. Contrato §1: «Supuesto medido» → «Hipótesis pendiente de medir (INFRA-394, devops)», con «si fuera falsa no hay rearme y hay que revisar este contrato». Revisadas el resto de afirmaciones de medido del doc: son de INFRA-231/v1.1 (medidas en su día), sin cambios.
+Verificación: `AURORA_TEST_PG_DSN=… pytest tests/ -q` → 27 passed, 1 skipped.
+
 ## Qué se hizo
 - `keep/values.yaml`: `claim-dispatch` reescrito en sitio (PK `keep_incident_id`, `fingerprint` = `substr(md5(keep_incident_id::text),1,16)`, `alert_fingerprint`, `previous_keep_incident_id`, cooldown `interval '6 hours'`, `ON CONFLICT (keep_incident_id)`; los incidentes sin huella ya se despachan). `dispatch-rca` publica `rearmed_from`. `rca-datos`/`link-datos`/`mark-linked` intactos (cruzan por `fingerprint`).
 - `docs/keep-aurora-contract.md` → v1.3 reescrito (§1, §2 con migración y rollback, §6 corregido: critical+warning, §8 T3).

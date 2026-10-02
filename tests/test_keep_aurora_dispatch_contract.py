@@ -113,6 +113,22 @@ class KeepAuroraDispatchContractTests(unittest.TestCase):
             r"AND d\.dispatched_at > now\(\) - interval '6 hours'",
         )
 
+    def test_no_step_of_the_workflow_runs_ddl_beyond_create_table(self):
+        # CREATE INDEX takes a SHARE lock on the hot path and can deadlock with
+        # the claim INSERT and mark-linked: indexes are created by hand
+        # (contract §2). The only DDL allowed in a step is the documented
+        # CREATE SCHEMA / CREATE TABLE IF NOT EXISTS.
+        steps = steps_section(self.block)
+        sql = "\n".join(
+            line for line in steps.splitlines()
+            if not line.lstrip().startswith(("#", "--"))
+        )
+        self.assertNotRegex(sql, r"(?i)\bCREATE\s+(UNIQUE\s+)?INDEX\b")
+        self.assertNotRegex(sql, r"(?i)\bALTER\s+(TABLE|INDEX|SCHEMA)\b")
+        self.assertNotRegex(sql, r"(?i)\bDROP\b")
+        self.assertEqual(len(re.findall(r"(?i)\bCREATE\s+TABLE\b", sql)), 1)
+        self.assertIn("CREATE TABLE IF NOT EXISTS keep_bridge.aurora_dispatches", sql)
+
     def test_rearm_is_published_as_an_annotation(self):
         self.assertIn("previous_keep_incident_id", self.block)
         self.assertGreaterEqual(self.block.count("rearmed_from:"), 1)
