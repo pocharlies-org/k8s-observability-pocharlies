@@ -2303,3 +2303,57 @@ spec:
               within the last 15 minutes (names in the summary). A single
               failure does not fire this alert; consecutive failures of the
               5-minute CronJob do.
+        # INFRA-364: el tope BRAIN_WINDOWS_MAX_DELETES_PER_CHAT (50) del CronJob
+        # brain-windows rechazó un borrado masivo de ventanas de un chat. El tope
+        # evita el daño (incidente del 02-10-2026: ~26k ventanas borradas antes de
+        # que existiera) pero ese chat no se reintenta solo: hay que leer el log
+        # de la pasada («refusing mass delete») y mirar el chat. La métrica la
+        # importa la propia pasada en vmsingle (contrato
+        # metric.brain-windows.refused-deletes.v1 de k8s-socialmedia-pocharlies);
+        # vale 0 en las pasadas sin rechazo. Sin `for:` a propósito: un solo
+        # rechazo ya pide una persona. `namespace` va fijo para que Keep titule
+        # el incidente (INFRA-377).
+        - alert: BrainWindowsMassDeleteRefused
+          expr: |
+            max by (account) (max_over_time(brain_windows_refused_deletes[1h])) > 0
+          labels:
+            severity: warning
+            area: kubernetes
+            domain: crons
+            namespace: whatsapp-mcp
+          annotations:
+            summary: >-
+              brain-windows rechazó un borrado masivo en la cuenta
+              {{ $labels.account }} ({{ $value }} ventanas en una pasada)
+            description: >-
+              The brain-windows CronJob (namespace whatsapp-mcp) refused to delete
+              more than BRAIN_WINDOWS_MAX_DELETES_PER_CHAT windows of one chat in a
+              single pass and kept them all. Find the chat in the pass log
+              ("refusing mass delete") and check why its rebuilt range lost so
+              many windows before allowing deletes again.
+        # INFRA-364: hombre muerto de lo anterior. Si la importación de métricas
+        # de brain-windows deja de llegar (egress, NetworkPolicy, vmsingle), la
+        # alerta de borrados rechazados queda muda sin que nadie lo note. Solo
+        # mira una serie que ya existió en las últimas 6 h: no salta antes del
+        # primer despliegue de la métrica (sin `absent`) y calla si lleva más de
+        # 6 h sin llegar nada (límite asumido; para entonces ya habrá avisado
+        # durante ~4,5 h). La pasada corre cada 30 min: 90 min sin fin de pasada
+        # son ≥ 3 pasadas perdidas.
+        - alert: BrainWindowsPassStale
+          expr: |
+            time() - max(max_over_time(brain_windows_pass_finished_timestamp_seconds{job="brain_windows"}[6h])) > 5400
+          for: 10m
+          labels:
+            severity: warning
+            area: kubernetes
+            domain: crons
+            namespace: whatsapp-mcp
+          annotations:
+            summary: >-
+              brain-windows lleva {{ $value | humanizeDuration }} sin terminar una
+              pasada (o sin poder publicar sus métricas)
+            description: >-
+              No brain-windows pass has reported brain_windows_pass_finished_timestamp_seconds
+              for over 90 minutes (CronJob every 30 min in namespace whatsapp-mcp). Either the
+              passes are failing or their metrics push to vmsingle stopped; in both cases
+              BrainWindowsMassDeleteRefused cannot be trusted until it is fixed.

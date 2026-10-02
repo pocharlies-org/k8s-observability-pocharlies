@@ -112,3 +112,52 @@ tests:
       - eval_time: 10m
         alertname: BrainIngestConsecutiveFailures
         exp_alerts: []
+  - interval: 5m
+    name: INFRA-364 BrainWindowsMassDeleteRefused dispara con un rechazo en la ultima hora
+    input_series:
+      - series: 'brain_windows_refused_deletes{account="personal"}'
+        values: '0 0 60 0 0'
+      - series: 'brain_windows_refused_deletes{account="professional"}'
+        values: '0 0 0 0 0'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: BrainWindowsMassDeleteRefused
+        exp_alerts:
+          - exp_labels: {severity: warning, area: kubernetes, domain: crons, namespace: whatsapp-mcp, account: personal}
+            exp_annotations:
+              summary: "brain-windows rechazó un borrado masivo en la cuenta personal (60 ventanas en una pasada)"
+              description: "The brain-windows CronJob (namespace whatsapp-mcp) refused to delete more than BRAIN_WINDOWS_MAX_DELETES_PER_CHAT windows of one chat in a single pass and kept them all. Find the chat in the pass log (\"refusing mass delete\") and check why its rebuilt range lost so many windows before allowing deletes again."
+  - interval: 5m
+    name: INFRA-364 BrainWindowsMassDeleteRefused calla con pasadas sin rechazo
+    input_series:
+      - series: 'brain_windows_refused_deletes{account="personal"}'
+        values: '0 0 0 0 0'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: BrainWindowsMassDeleteRefused
+        exp_alerts: []
+  - interval: 10m
+    name: INFRA-364 BrainWindowsPassStale dispara si la ultima pasada tiene mas de 90 min
+    input_series:
+      # una pasada a t=0 (valor 0 s) y luego nada: a t=120m lleva 7200 s
+      - series: 'brain_windows_pass_finished_timestamp_seconds{job="brain_windows"}'
+        values: '0 _x12'
+    alert_rule_test:
+      - eval_time: 120m
+        alertname: BrainWindowsPassStale
+        exp_alerts:
+          - exp_labels: {severity: warning, area: kubernetes, domain: crons, namespace: whatsapp-mcp}
+            exp_annotations:
+              summary: "brain-windows lleva 2h 0m 0s sin terminar una pasada (o sin poder publicar sus métricas)"
+              description: "No brain-windows pass has reported brain_windows_pass_finished_timestamp_seconds for over 90 minutes (CronJob every 30 min in namespace whatsapp-mcp). Either the passes are failing or their metrics push to vmsingle stopped; in both cases BrainWindowsMassDeleteRefused cannot be trusted until it is fixed."
+  - interval: 10m
+    name: INFRA-364 BrainWindowsPassStale calla con pasadas al dia y sin serie
+    input_series:
+      # el valor sigue al reloj (pasada recien terminada en cada muestra)
+      - series: 'brain_windows_pass_finished_timestamp_seconds{job="brain_windows"}'
+        values: '0+600x12'
+    alert_rule_test:
+      - eval_time: 120m
+        alertname: BrainWindowsPassStale
+        exp_alerts: []
+
