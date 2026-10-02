@@ -65,6 +65,29 @@ Normalización que aplica la mapping rule de Keep:
 `page → critical` es un cambio de comportamiento deliberado: hoy esas alertas no
 despiertan a nadie pese a llamarse `page`.
 
+## Fuera del árbol: empujadas directo a Keep (mantiene a mano)
+
+Estas familias **no son VMRules**: no pasan por Alertmanager, así que el
+generador (`scripts/alert_routing.py matrix`) no las conoce y no las pisa al
+regenerar la matriz. Entran por `POST /alerts/event` con la key de rol
+`webhook`, y su cobertura la dan las reglas de correlación de
+`keep/rules/correlation-rules.yaml` (pinned por
+`tests/test_infra405_correlation_rules.py`).
+
+| alerta | emisor | severidad | clave de causa | regla → prefijo | desde |
+|---|---|---|---|---|---|
+| `ArgoCD…` (on-sync-failed / on-health-degraded) | ArgoCD Notifications (`k8s-gitops-pocharlies/argocd/values.yaml`) | `warning` | `app` | `argocd-app-degraded` → ARGO | 29-09-2026 |
+| `X86UnitFailed` | ops-watch `empujar_a_keep` (`x86-host-runtime-pocharlies`, fuente `unidades`) | `warning` | `unit` | `x86-unit-failed` → X86U | INFRA-405 |
+| `TrunkCIFailed` | ops-watch (fuente `ci`) | `warning` | `repo` | `trunk-ci-failed` → CI | INFRA-405 |
+| `UpdateWatchFailed` | ops-watch (fuente `updates`) | `warning` | `fail_reason` (`<via>:<firma>`) | `update-watch-failed` → UPD | INFRA-405 |
+
+Las cuatro son `warning` a propósito: `critical-safety-net` sólo captura
+critical/page, así que no solapan con ella ni figuran en su lista de exclusión
+(INVARIANTE 1), y el carril de Aurora acepta warning
+(`docs/keep-aurora-contract.md` §6). El `resolved` lo emite el emisor (ArgoCD
+hoy no lo emite — riesgo conocido, medido por INFRA-408; ops-watch sí, desde
+INFRA-404).
+
 ## Matriz completa
 
 `firing` = instancias activas en el momento de generar. Agrupado por subsistema.

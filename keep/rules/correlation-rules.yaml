@@ -398,6 +398,104 @@ rules:
     groupDescription: >-
       Sync fallido o app Degraded en ArgoCD, por app.
 
+  # =========================================================================
+  # X86 — host fuera del clúster, empujado por ops-watch (INFRA-405 / P2)
+  # =========================================================================
+  # Mismo canal de ingesta directo que ArgoCD (POST /alerts/event, sin pasar
+  # por Alertmanager ni por ninguna VMRule): el sensor vive en el x86 porque
+  # necesita el host (`systemctl --user`, `gh`, attempts.jsonl). Las emite
+  # `empujar_a_keep()` en libexec/ops-watch.py (x86-host-runtime-pocharlies),
+  # con severidad `warning` y las claves de causa en la raíz y en `labels`,
+  # como el formato ArgoCD.
+  #
+  # Severidad warning a propósito: `critical-safety-net` sólo captura
+  # critical/page, así que no solapa ni hay que excluirlas de su lista
+  # (INVARIANTE 1 respetada: no excluimos lo que no duplicamos), y el carril
+  # de Aurora acepta warning (docs/keep-aurora-contract.md §6).
+  #
+  # El `incidentNameTemplate` es parte de la clave de causa de P4
+  # (`keep-causa:<rule_name>:<sha1(nombre)>` en ops-watch): tiene que ser
+  # estable y sin números volátiles — sólo la etiqueta de agrupación. Un
+  # nombre que cambiase entre dos alertas de la misma causa abriría dos
+  # Requests.
+  #
+  # Agrupadas SIEMPRE por su clave de causa y no vacías: con `on: [created]`
+  # una alerta nueva que llegase a un incidente ya abierto entraría muda (la
+  # píldora envenenada del encabezado). Una etiqueta de agrupación por
+  # incidente hace que cada causa nueva abra el suyo.
+
+  # Unit de systemd (usuario o sistema) en failed. `unit` es el nombre de la
+  # unit (`hermes-gateway.service`); `scope` (usuario|sistema) viaja en la
+  # alerta pero NO agrupa: la misma unit en el mismo scope es la misma causa
+  # pase lo que pase. Una causa de host común (varias units de un mismo
+  # servicio caído) da varios incidentes X86U y varias Requests; P4 las
+  # colapsa por nombre si coinciden. Aceptado por el plan del architect.
+  - ruleName: x86-unit-failed
+    celQuery: 'name == "X86UnitFailed"'
+    sqlQuery:
+      sql: "((name = :name_1))"
+      params:
+        name_1: X86UnitFailed
+    timeframeInSeconds: 1800
+    timeUnit: minutes
+    groupingCriteria: [unit]
+    createOn: any
+    resolveOn: all_resolved
+    incidentPrefix: X86U
+    incidentNameTemplate: "x86: {{ unit }} fallida"
+    groupDescription: >-
+      Units de systemd del x86 en failed, por unit. El sensor es ops-watch
+      (fuente `unidades`); el `resolved` lo emite la pasada que deja de verla.
+
+  # CI del tronco en rojo (fuente `ci` de ops-watch, via `gh`). Agrupa por
+  # `repo`: un workflow más del mismo repo en rojo es la misma causa (el
+  # trunk de ese repo), y `workflow`/`branch`/`run_url` viajan en la alerta
+  # para el RCA sin ensuciar la clave.
+  - ruleName: trunk-ci-failed
+    celQuery: 'name == "TrunkCIFailed"'
+    sqlQuery:
+      sql: "((name = :name_1))"
+      params:
+        name_1: TrunkCIFailed
+    timeframeInSeconds: 1800
+    timeUnit: minutes
+    groupingCriteria: [repo]
+    createOn: any
+    resolveOn: all_resolved
+    incidentPrefix: CI
+    incidentNameTemplate: "CI en rojo: {{ repo }}"
+    groupDescription: >-
+      Workflows del trunk en rojo, por repo. El sensor es ops-watch (fuente
+      `ci`); run_url va en la alerta para saltar directo al log.
+
+  # Actualizaciones automáticas fallidas (fuente `updates` de ops-watch:
+  # Renovate, updatetool…). Agrupa por `fail_reason` — `<via>:<firma>`
+  # normalizada por `_firma_causa` en ops-watch, nunca el texto crudo (las
+  # versiones y números van en `description`) — porque la causa NO es el
+  # sistema que la sufre: Renovate sin token roto = N sistemas = UN
+  # incidente, no N. Por eso `system` no agrupa (es la diferencia con
+  # x86-unit-failed). `unknown:<system>` cuando no hay motivo, para no
+  # agrupar causas desconocidas entre sistemas. Timeframe 3600: la ronda de
+  # updates es diaria y un reintento dentro de la hora es la misma causa.
+  - ruleName: update-watch-failed
+    celQuery: 'name == "UpdateWatchFailed"'
+    sqlQuery:
+      sql: "((name = :name_1))"
+      params:
+        name_1: UpdateWatchFailed
+    timeframeInSeconds: 3600
+    timeUnit: minutes
+    groupingCriteria: [fail_reason]
+    createOn: any
+    resolveOn: all_resolved
+    incidentPrefix: UPD
+    incidentNameTemplate: "Actualización fallida: {{ fail_reason }}"
+    groupDescription: >-
+      Actualizaciones automáticas fallidas, agrupadas por causa normalizada
+      (`fail_reason`), no por sistema: una dependencia común (token, red)
+      rompe N sistemas a la vez y es UN incidente. El sensor es ops-watch
+      (fuente `updates`).
+
   # Sonda de extremo a extremo de la cadena Alertmanager -> Keep -> Aurora ->
   # Hermes sre-devops. Solo la dispara quien prueba la cadena a mano (amtool con
   # alertname=SreDevopsChainProbe, severity=warning); no hay regla de
