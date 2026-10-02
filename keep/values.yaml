@@ -1183,6 +1183,19 @@ backend:
       value: https://keep-api.e-dani.com
     - name: PORT
       value: "8080"
+    # --- SC-1600: el timeout de gunicorn mata los webhooks de Alertmanager ---
+    # Medido el 02-10-2026 (HUB-7755): cada 15 min, durante la pasada del
+    # stale-reaper, los 4 workers dejan de latir 30 s y gunicorn los mata con
+    # SIGABRT (`WORKER TIMEOUT` a las 16:17, 17:33, 17:34, 18:03). Los POST
+    # /alerts/event/prometheus en vuelo mueren con ese corte exacto
+    # (`401 in 30.03s`, `202 in 15-16 s` en la ráfaga) → Alertmanager registra
+    # context deadline exceeded → keep-hub-degraded. Con timeout 30 el worker
+    # no sobrevive a la ráfaga; con 120 la atraviesa sin que Alertmanager
+    # pierda ningún envío (su propio timeout, 30 s, lo cubre el pool arreglado
+    # abajo). GUNICORN_CMD_ARGS es la forma nativa de pasarlo sin redefinir el
+    # command de la imagen (el entrypoint lanza también server_jobs_bg.py).
+    - name: GUNICORN_CMD_ARGS
+      value: "--timeout 120"
     # Los secretos de providers se guardan como Secrets de k8s en este namespace
     # (el chart crea Role + RoleBinding). Evita depender de Vault en runtime.
     - name: SECRET_MANAGER_TYPE
@@ -1252,10 +1265,18 @@ backend:
     # pre-ping es obligatorio para (2): sin él, la primera reutilización de una
     # conexión que el servidor ya cortó explota en la aplicación en vez de
     # reponerse de forma transparente. Cuesta un SELECT 1 por checkout.
+    #
+    # SC-1600 (02-10-2026): con 2+3, la ráfaga del stale-reaper agota el pool
+    # de cada worker y el check del API-key de Alertmanager espera los 30 s
+    # exactos del `pool_timeout` de SQLAlchemy y devuelve 401 (`POST
+    # /alerts/event/prometheus 401 in 30.03s`). 3+5 mantiene el techo por
+    # debajo del que motivó el recorte de julio (5 procesos × 8 = 40/pod, con
+    # 1 réplica) y deja margen para que el webhook nunca espere por una
+    # conexión.
     - name: DATABASE_POOL_SIZE
-      value: "2"
-    - name: DATABASE_MAX_OVERFLOW
       value: "3"
+    - name: DATABASE_MAX_OVERFLOW
+      value: "5"
     - name: KEEP_DB_PRE_PING_ENABLED
       value: "true"
 

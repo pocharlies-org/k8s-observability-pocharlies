@@ -203,6 +203,15 @@ spec:
                       key: API_KEY_PROVISIONER
                 - name: ALERTMANAGER_URL
                   value: http://vmalertmanager-vm-victoria-metrics-k8s-stack.monitoring.svc.cluster.local:9093
+                # SC-1600 (02-10-2026): con PAUSE=0.5 la pasada de cada 15 min
+                # seguía produciendo la ráfaga que mata los webhooks de
+                # Alertmanager (WORKER TIMEOUT de gunicorn + pool de DB
+                # agotado, medido a las :02/:17/:32/:47 de cada hora, justo
+                # tras la salida del job). 2 s reparte la misma reconciliación
+                # en ~4× más tiempo: el steady-state son 1-2 eventos y ni se
+                # nota; el barrido tras backlog es más lento a propósito.
+                - name: PAUSE_SECONDS
+                  value: "2"
               resources:
                 requests:
                   cpu: 10m
