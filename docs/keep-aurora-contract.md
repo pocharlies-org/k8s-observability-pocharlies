@@ -278,6 +278,16 @@ series no cambian de nombre.
   es estrictamente solo lectura y las dos escrituras del enlace son actions.
   `claim-dispatch` es la excepción documentada: step con `COMMIT` explícito
   para ganar la carrera entre workers.
+- **Ninguna cadena con el literal `keep.` dentro del SQL de un step** (ni
+  literales ni comentarios `--`): el iohandler de Keep 0.52.1
+  (`iohandler.py:118`) escanea la consulta ya renderizada, toma `keep.…` por una
+  llamada de plantilla y el run entero acaba en `SyntaxError`. Fallo real tras
+  v1.3 (INFRA-406): la URL `https://keep.e-dani.com/incidents/` del
+  `set_config('aurora.prev', …)` tumbó 20 ejecuciones de `aurora-investigate`.
+  El claim compone la URL troceada (`'https://' || 'keep' ||
+  '.e-dani.com/incidents/'`) y `rearmed_from` se publica igual. Los mensajes y
+  cuerpos de webhook no son SQL y pueden llevar la URL entera. Pinchado por
+  `tests/test_keep_aurora_dispatch_contract.py`.
 - **Sanitizado `keep.` → `Keep.`**: IOHandler busca el literal `keep.` en el
   texto ya sustituido y lo trata como llamada de plantilla. Cualquier texto que
   pueda contenerlo (títulos, evidencia) se desinfecta con

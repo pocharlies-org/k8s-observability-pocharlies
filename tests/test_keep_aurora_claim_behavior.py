@@ -147,7 +147,7 @@ class ClaimBehaviourTests(unittest.TestCase):
         self.conn.execute("UPDATE keep_bridge.aurora_dispatches SET dispatched_at = now() - interval '7 hours'")
         token_c, prev_c = self.claim(c, fp)  # 3. >6h: new row linked to the previous one
         self.assertNotEqual(token_c, "")
-        self.assertEqual(prev_c, f"https://keep.e-dani.com/incidents/{a}")
+        self.assertEqual(prev_c, f"https://keep.e-dani.com/incidents/{a}")  # URL unchanged
         self.assertEqual(self.dispatches()[-1][3], a)
 
         self.assertEqual(self.claim(c, fp), ("", ""))  # 4. same keep_incident_id again

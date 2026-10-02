@@ -853,6 +853,14 @@ backend:
                 # despacho anterior de esa huella. Los lectores (rca-datos,
                 # link-datos, mark-linked, aurora_rca_coverage()) siguen
                 # cruzando por `fingerprint`.
+                #
+                # REGLA (INFRA-406, fallo en producción tras #65): el SQL de un
+                # step NO puede contener el literal `keep.` (ni en cadenas ni en
+                # comentarios `--`). El iohandler de Keep 0.52.1 (iohandler.py:118)
+                # lo escanea sobre la consulta ya renderizada, lo toma por una
+                # llamada de plantilla y revienta con SyntaxError. Por eso la URL
+                # de `aurora.prev` se compone troceada ('https://' || <host> ||
+                # <dominio>) y el literal nunca aparece. Pinchado por test.
                 query: |
                   CREATE SCHEMA IF NOT EXISTS keep_bridge;
                   CREATE TABLE IF NOT EXISTS keep_bridge.aurora_dispatches (
@@ -932,7 +940,7 @@ backend:
                     set_config(
                       'aurora.prev',
                       COALESCE(
-                        (SELECT 'https://keep.e-dani.com/incidents/' || previous_keep_incident_id::text
+                        (SELECT 'https://' || 'keep' || '.e-dani.com/incidents/' || previous_keep_incident_id::text
                            FROM claimed WHERE previous_keep_incident_id IS NOT NULL),
                         ''
                       ),
