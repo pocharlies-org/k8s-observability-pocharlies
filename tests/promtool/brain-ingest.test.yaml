@@ -112,3 +112,28 @@ tests:
       - eval_time: 10m
         alertname: BrainIngestConsecutiveFailures
         exp_alerts: []
+  - interval: 5m
+    name: INFRA-364 BrainWindowsMassDeleteRefused dispara con un rechazo en la ultima hora
+    input_series:
+      - series: 'brain_windows_refused_deletes{account="personal"}'
+        values: '0 0 60 0 0'
+      - series: 'brain_windows_refused_deletes{account="professional"}'
+        values: '0 0 0 0 0'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: BrainWindowsMassDeleteRefused
+        exp_alerts:
+          - exp_labels: {severity: warning, area: kubernetes, domain: crons, namespace: whatsapp-mcp, account: personal}
+            exp_annotations:
+              summary: "brain-windows rechazó un borrado masivo en la cuenta personal (60 ventanas en una pasada)"
+              description: "The brain-windows CronJob (namespace whatsapp-mcp) refused to delete more than BRAIN_WINDOWS_MAX_DELETES_PER_CHAT windows of one chat in a single pass and kept them all. Find the chat in the pass log (\"refusing mass delete\") and check why its rebuilt range lost so many windows before allowing deletes again."
+  - interval: 5m
+    name: INFRA-364 BrainWindowsMassDeleteRefused calla con pasadas sin rechazo
+    input_series:
+      - series: 'brain_windows_refused_deletes{account="personal"}'
+        values: '0 0 0 0 0'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: BrainWindowsMassDeleteRefused
+        exp_alerts: []
+

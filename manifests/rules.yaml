@@ -2303,3 +2303,31 @@ spec:
               within the last 15 minutes (names in the summary). A single
               failure does not fire this alert; consecutive failures of the
               5-minute CronJob do.
+        # INFRA-364: el tope BRAIN_WINDOWS_MAX_DELETES_PER_CHAT (50) del CronJob
+        # brain-windows rechazó un borrado masivo de ventanas de un chat. El tope
+        # evita el daño (incidente del 02-10-2026: ~26k ventanas borradas antes de
+        # que existiera) pero ese chat no se reintenta solo: hay que leer el log
+        # de la pasada («refusing mass delete») y mirar el chat. La métrica la
+        # importa la propia pasada en vmsingle (contrato
+        # metric.brain-windows.refused-deletes.v1 de k8s-socialmedia-pocharlies);
+        # vale 0 en las pasadas sin rechazo. Sin `for:` a propósito: un solo
+        # rechazo ya pide una persona. `namespace` va fijo para que Keep titule
+        # el incidente (INFRA-377).
+        - alert: BrainWindowsMassDeleteRefused
+          expr: |
+            max by (account) (max_over_time(brain_windows_refused_deletes[1h])) > 0
+          labels:
+            severity: warning
+            area: kubernetes
+            domain: crons
+            namespace: whatsapp-mcp
+          annotations:
+            summary: >-
+              brain-windows rechazó un borrado masivo en la cuenta
+              {{ $labels.account }} ({{ $value }} ventanas en una pasada)
+            description: >-
+              The brain-windows CronJob (namespace whatsapp-mcp) refused to delete
+              more than BRAIN_WINDOWS_MAX_DELETES_PER_CHAT windows of one chat in a
+              single pass and kept them all. Find the chat in the pass log
+              ("refusing mass delete") and check why its rebuilt range lost so
+              many windows before allowing deletes again.
