@@ -175,6 +175,53 @@ class KeepAuroraReadersKeepCrossingByFingerprintTests(unittest.TestCase):
         self.assertNotIn("d.alert_fingerprint", self.link)
 
 
+class KeepIohandlerLiteralTests(unittest.TestCase):
+    """Keep 0.52.1 iohandler.py:118 scans the rendered SQL of every step for the
+    literal ``keep.`` and parses it as a template function call: a URL such as
+    https://keep.e-dani.com/ inside a ``query:`` raises SyntaxError and the whole
+    workflow run errors (INFRA-406, production, after PR #65). Messages and
+    webhook bodies are not SQL and are not affected."""
+
+    def test_no_sql_query_of_any_workflow_contains_the_keep_dot_literal(self):
+        import yaml
+
+        values = yaml.safe_load(VALUES.read_text())
+
+        def workflows(node):
+            if isinstance(node, dict):
+                if isinstance(node.get("workflows"), list):
+                    return node["workflows"]
+                for v in node.values():
+                    found = workflows(v)
+                    if found:
+                        return found
+            elif isinstance(node, list):
+                for v in node:
+                    found = workflows(v)
+                    if found:
+                        return found
+            return None
+
+        checked = 0
+        for wf in workflows(values):
+            for step in (wf.get("steps") or []) + (wf.get("actions") or []):
+                query = ((step.get("provider") or {}).get("with") or {}).get("query")
+                if isinstance(query, str):
+                    checked += 1
+                    self.assertNotIn(
+                        "keep.", query,
+                        f"{wf['id']}/{step['name']}: literal 'keep.' inside SQL",
+                    )
+        self.assertGreater(checked, 0)
+
+    def test_rearm_url_is_still_built_by_the_claim(self):
+        block = workflow_block(VALUES.read_text(), "aurora-investigate")
+        self.assertIn("'https://' || 'keep' || '.e-dani.com/incidents/'", block)
+        self.assertIn(
+            'rearmed_from: "{{ steps.claim-dispatch.results.0.1 }}"', block
+        )
+
+
 class KeepAuroraLinkContractTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
