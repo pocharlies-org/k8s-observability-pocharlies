@@ -312,6 +312,17 @@ def cmd_matrix(_args) -> None:
             w(f"| `{r['name']}` | `{r['sev']}` | {d} | {r['firing'] or ''} |")
         w("")
 
+    # Esta matriz se genera desde las VMRules del clúster: las alertas que no
+    # nacen de ahí (ArgoCD Notifications, familias x86 de ops-watch) no pueden
+    # aparecer. Se listan a mano en su fichero, enlazado aquí para que quien
+    # lea la matriz sepa que el árbol no es el mapa completo.
+    w("---")
+    w("")
+    w("Fuera de esta matriz quedan las alertas que no son VMRules y se empujan")
+    w("directo a Keep por `POST /alerts/event` (ArgoCD Notifications, familias x86")
+    w("de ops-watch): se mantienen a mano en")
+    w("[alert-routing-pushed-families.md](alert-routing-pushed-families.md).")
+
     target = REPO / "docs" / "alert-routing-matrix.md"
     target.parent.mkdir(exist_ok=True)
     target.write_text("\n".join(out) + "\n")
