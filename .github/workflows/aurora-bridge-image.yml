@@ -44,23 +44,33 @@ jobs:
             --platform linux/arm64 --append tcp://buildkitd-arm64.buildkit.svc.cluster.local:1234
           docker buildx inspect --bootstrap
 
-      - name: Build & push
+      - name: Build (push solo en main)
+        # En pull_request SOLO se valida el build, sin publicar: el paquete GHCR
+        # aurora-server/aurora-frontend está vinculado al repo `aurora` y el
+        # GITHUB_TOKEN de este repo no tiene write_package (Request IT enlazada
+        # a INFRA-326). En main (push o dispatch) se publica el tag.
         run: |
-          docker buildx build \
-            --platform linux/amd64,linux/arm64 \
-            --tag ghcr.io/pocharlies-org/aurora-server:sha-e35121a-p688 \
-            --push images/aurora/bridge
+          ARGS=(--platform linux/amd64,linux/arm64
+                --tag ghcr.io/pocharlies-org/aurora-server:sha-e35121a-p688)
+          if [ "${GITHUB_REF}" = "refs/heads/main" ]; then
+            ARGS+=(--push)
+          else
+            ARGS+=(--output "type=oci,dest=${RUNNER_TEMP:-/tmp}/bridge.oci")
+          fi
+          docker buildx build "${ARGS[@]}" images/aurora/bridge
 
       - name: Espejo del tag frontend (mismo digest, sin rebuild)
         # El chart compone `aurora-frontend:{image.tag}` del MISMO tag global
         # (templates/frontend-deployment.yaml:36, sin override por componente):
         # sin este espejo el frontend entraría en ImagePullBackOff con el tag -p688.
+        if: github.ref == 'refs/heads/main'
         run: |
           docker buildx imagetools create \
             -t ghcr.io/pocharlies-org/aurora-frontend:sha-e35121a-p688 \
             ghcr.io/pocharlies-org/aurora-frontend:sha-e35121aeb7d80293d2e4ce462fe2bc05d9adb469
 
       - name: Verificar manifiesto y digest
+        if: github.ref == 'refs/heads/main'
         run: |
           docker buildx imagetools inspect ghcr.io/pocharlies-org/aurora-server:sha-e35121a-p688 \
             | tee /tmp/inspect.txt

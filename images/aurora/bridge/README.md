@@ -54,6 +54,11 @@ el chart compone `aurora-frontend:{image.tag}` del mismo tag global
 (`templates/frontend-deployment.yaml`, sin override por componente) y sin ese espejo el
 frontend entraría en ImagePullBackOff. La retirada borra ambos tags `-p688`.
 
+En `pull_request` el workflow **no publica** (construye a un OCI tar y nada más):
+los paquetes GHCR `aurora-server`/`aurora-frontend` están vinculados al repo
+`aurora` y el `GITHUB_TOKEN` de este repo no tiene `write_package` sobre ellos
+(Request IT enlazada a INFRA-326). La publicación ocurre solo en `main`.
+
 ## PLAN DE RETIRADA (obligatorio, no es un «temporal» para siempre)
 
 1. **Disparador**: cuando [Arvo-AI/aurora#688](https://github.com/Arvo-AI/aurora/pull/688)
