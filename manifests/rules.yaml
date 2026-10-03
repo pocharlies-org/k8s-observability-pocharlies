@@ -469,6 +469,9 @@ spec:
         # every afternoon (29-09-2026: 10 concurrent stalled alerts while all
         # of them had completed that same morning) — excluded below and covered
         # by SynapseScheduledWorkflowStalledDaily.
+        # accounting.processor_fees is MONTHLY (cron 30 10 2 * *) and fired here every
+        # month after 3h (03-10-2026, DEBT-7738): excluded, covered by
+        # SynapseScheduledWorkflowRunStalledMonthly.
         # CAVEAT: any future scheduled workflow with a cadence > ~2h must be
         # excluded with a workflow!~"..." matcher (or its own longer-threshold
         # rule).
@@ -477,7 +480,7 @@ spec:
             (
               time()
               - max by (tenant, workflow) (
-                  synapse_engine_scheduled_workflow_last_success_timestamp_seconds{workflow!~"skirmshop\\.gestoria\\.(banking\\..*|accounting\\.retention)|skirmshop\\.shopify\\.merchant-policy-weekly"} > 0
+                  synapse_engine_scheduled_workflow_last_success_timestamp_seconds{workflow!~"skirmshop\\.gestoria\\.(banking\\..*|accounting\\.(retention|processor_fees))|skirmshop\\.shopify\\.merchant-policy-weekly"} > 0
                 )
             ) > 10800
             and on ()
@@ -556,6 +559,37 @@ spec:
           annotations:
             summary: "Synapse scheduled workflow {{$labels.tenant }}/{{$labels.workflow }} stalled (weekly cadence)"
             description: "Scheduled weekly workflow {{$labels.workflow }} (tenant {{$labels.tenant }}) has not recorded a success in over 8d and the engine has been up longer than that. Check the engine scheduler and the workflow handler logs (synapse-adapter-shopify, merchant_policy_audit)."
+        # --- warning: monthly-cadence scheduled workflow -----------------
+        # skirmshop.gestoria.accounting.processor_fees (cron 30 10 2 * *). A
+        # "no success in N" rule cannot work for a monthly cadence: the gauge is
+        # in-process and resets on restart, and the engine never stays up 32d,
+        # so the uptime guard of the daily/weekly rules would silence it forever.
+        # Instead: the run STARTED (last_start, same process) and has not
+        # succeeded within 3h of that start. Both gauges are set by the same
+        # engine process, so no uptime guard is needed. `unless`, not `>`: the
+        # success gauge only exists after the first success since process start,
+        # so a run that starts and fails after a restart has NO success series
+        # and must still fire. A run that never starts at all is not covered.
+        # promtool cases: tests/promtool/synapse-scheduled-monthly.test.yaml.
+        - alert: SynapseScheduledWorkflowRunStalledMonthly
+          expr: |
+            (
+              time() - max by (tenant, workflow) (synapse_engine_scheduled_workflow_last_start_timestamp_seconds{workflow=~"skirmshop\\.gestoria\\.accounting\\.processor_fees"} > 0)
+            ) > 10800
+            unless on (tenant, workflow)
+            (
+              max by (tenant, workflow) (synapse_engine_scheduled_workflow_last_success_timestamp_seconds{workflow=~"skirmshop\\.gestoria\\.accounting\\.processor_fees"})
+              >= on (tenant, workflow)
+              max by (tenant, workflow) (synapse_engine_scheduled_workflow_last_start_timestamp_seconds{workflow=~"skirmshop\\.gestoria\\.accounting\\.processor_fees"})
+            )
+          for: 15m
+          labels:
+            severity: warning
+            area: reliability
+            component: synapse
+          annotations:
+            summary: "Synapse monthly workflow {{ $labels.tenant }}/{{ $labels.workflow }} started and did not succeed"
+            description: "Monthly scheduled workflow {{ $labels.workflow }} (tenant {{ $labels.tenant }}) started more than 3h ago and has not recorded a success since that start. Check the engine scheduler and the workflow's handler logs."
         # --- warning: transactional outbox --------------------------------
         # Exhausted rows = events that hit max retries and are stuck in the
         # outbox (a poison payload or a permanently-failing publish). Any
