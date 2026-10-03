@@ -3,6 +3,9 @@
 Decision (owner, 2026-10-03, INFRA-325): the LLM roles of Aurora and the LLM
 steps of Keep name ``qwen38-flash-next`` directly — the single resident of the
 ``llm-tp`` compute profile — instead of routing through the ``tooling`` alias.
+Exception (INFRA-326): the safety judge names the same resident with
+reasoning off (``qwen38-off``); the judge itself stays enabled and
+fail-closed.
 The resident fallback lives in the LiteLLM config (k8s-litellm-pocharlies),
 not in these values, and the key allowlists live only in LiteLLM's DB
 (INFRA-431). These tests pin the YAML text itself, same pattern as
@@ -28,18 +31,24 @@ AURORA_VALUES = REPO / "aurora" / "values.yaml"
 KEEP_VALUES = REPO / "keep" / "values.yaml"
 
 EXPECTED_AURORA_MODEL = "bedrock/qwen38-flash-next"
+# INFRA-326: the safety judge names the SAME resident with reasoning off
+# (`qwen38-off`). The judge is a classifier emitting a structured verdict;
+# with reasoning on it decoded 600-700 chars before the tool call and blew
+# the fail-closed timeout budget under load (279/329 blocks over 7 days).
+# The judge stays enabled and fail-closed — only its reasoning is off.
+EXPECTED_GUARDRAIL_MODEL = "bedrock/qwen38-off"
 AURORA_MODEL_KEYS = (
     "MAIN_MODEL",
     "SUMMARIZATION_MODEL",
     "ENRICHMENT_MODEL",
     "RCA_MODEL",
-    "GUARDRAILS_LLM_MODEL",
 )
+ALL_MODEL_KEYS = AURORA_MODEL_KEYS + ("GUARDRAILS_LLM_MODEL",)
 
 
 class AuroraModelsContract(unittest.TestCase):
-    def test_five_roles_name_the_resident(self):
-        """The five *_MODEL of aurora/values.yaml are bedrock/qwen38-flash-next."""
+    def test_agent_roles_name_the_resident(self):
+        """The four agent *_MODEL of aurora/values.yaml are bedrock/qwen38-flash-next."""
         text = AURORA_VALUES.read_text(encoding="utf-8")
         for key in AURORA_MODEL_KEYS:
             match = re.search(
@@ -54,10 +63,51 @@ class AuroraModelsContract(unittest.TestCase):
                 f"{key} must name the resident directly (INFRA-325)",
             )
 
+    def test_guardrail_judge_names_the_resident_without_reasoning(self):
+        """GUARDRAILS_LLM_MODEL is the same resident, reasoning off (INFRA-326)."""
+        text = AURORA_VALUES.read_text(encoding="utf-8")
+        match = re.search(
+            r"^  GUARDRAILS_LLM_MODEL:\s*(\S+)", text, re.MULTILINE
+        )
+        self.assertIsNotNone(
+            match, "GUARDRAILS_LLM_MODEL missing from aurora/values.yaml"
+        )
+        self.assertEqual(
+            match.group(1),
+            EXPECTED_GUARDRAIL_MODEL,
+            "the judge must name the resident without reasoning (INFRA-326)",
+        )
+
+    def test_guardrails_stay_enabled_and_fail_closed(self):
+        """INFRA-326 tunes the judge's model, never its existence: guardrails
+        and the SigmaHQ layer stay on, and the timeout budget is set."""
+        text = AURORA_VALUES.read_text(encoding="utf-8")
+        for key, expected in (
+            ("GUARDRAILS_ENABLED", '"true"'),
+            ("GUARDRAILS_SIGMA_ENABLED", '"true"'),
+        ):
+            match = re.search(r"^  " + key + r":\s*(\S+)", text, re.MULTILINE)
+            self.assertIsNotNone(match, f"{key} missing from aurora/values.yaml")
+            self.assertEqual(
+                match.group(1), expected, f"{key} must stay on (INFRA-326)"
+            )
+        match = re.search(
+            r"^  GUARDRAILS_LLM_TIMEOUT_SECONDS:\s*(\S+)", text, re.MULTILINE
+        )
+        self.assertIsNotNone(
+            match,
+            "GUARDRAILS_LLM_TIMEOUT_SECONDS missing from aurora/values.yaml",
+        )
+        self.assertGreaterEqual(
+            float(match.group(1).strip('"')),
+            30,
+            "the judge budget must clear the measured 13-22 s judge calls",
+        )
+
     def test_no_residual_tooling_alias_in_model_fields(self):
         """No *_MODEL field still points at the retired `tooling` alias."""
         text = AURORA_VALUES.read_text(encoding="utf-8")
-        for key in AURORA_MODEL_KEYS:
+        for key in ALL_MODEL_KEYS:
             match = re.search(
                 r"^  " + key + r":\s*(\S+)", text, re.MULTILINE
             )

@@ -187,14 +187,29 @@ config:
   RCA_OPTIMIZE_COSTS: "false"
 
   # ------------------------------------------------------------------------
-  # Guardarraíles: activos, con el juez en el mismo modelo que los demás roles.
-  # OJO: el juez LLM falla CERRADO. Si el modelo local no devuelve la estructura
-  # esperada, bloquea investigaciones legítimas. Si eso pasa, dejar
-  # GUARDRAILS_SIGMA_ENABLED (reglas SigmaHQ, sin LLM) y apagar el juez.
+  # Guardarraíles: activos. El juez LLM corre en el MISMO residente que los
+  # demás roles pero SIN pensar (`qwen38-off`, OWU-50): el juez es un clasifi-
+  # cador que emite un veredicto estructurado, y con `qwen38-flash-next` gene-
+  # raba 600-700 caracteres de razonamiento ANTES de la llamada a la tool —
+  # 20-22 s medidos (2026-10-03), por encima del timeout de 10 s que Aurora
+  # tenía fijo en código (`command_safety.py:_TIMEOUT_SECONDS`) → «Safety check
+  # unavailable (timeout); failing closed» en 279 de 329 llamadas a
+  # on_prem_kubectl (spec INFRA-326). Sin razonar: 5-13 s. El fallo cerrado
+  # NO se toca: el juez sigue evaluable en cada comando y sigue bloqueando
+  # ante error o timeout; sólo se le quita el razonamiento al juez (decisión
+  # INFRA-326, vista por security en la entrega). Las capas SigmaHQ y de
+  # política, intactas.
+  #
+  # GUARDRAILS_LLM_TIMEOUT_SECONDS: sin efecto en la imagen actual (sha-e35121a
+  # tiene el 10 s hardcodeado); se lo traga el chart sin más y empieza a valer
+  # el día que la imagen incluya el PR aguas arriba Arvo-AI/aurora#688 (timeout
+  # configurable, default 10). Se deja puesto aquí para que el bump de imagen
+  # aplique el holgado de una sola vez, sin otro PR.
   # ------------------------------------------------------------------------
   GUARDRAILS_ENABLED: "true"
   GUARDRAILS_SIGMA_ENABLED: "true"
-  GUARDRAILS_LLM_MODEL: bedrock/qwen38-flash-next
+  GUARDRAILS_LLM_MODEL: bedrock/qwen38-off
+  GUARDRAILS_LLM_TIMEOUT_SECONDS: "30"
 
   # --- Aislamiento de los comandos de los agentes: DESACTIVADO ---
   #

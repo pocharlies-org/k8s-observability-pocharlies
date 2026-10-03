@@ -92,5 +92,10 @@ igual). Necesita Postgres: sin `AURORA_TEST_PG_DSN` se salta en local y **falla 
   DENTRO de `max_tokens` (en `llm-rca`, ~360–1070 tokens) y LitellmProvider no reenvía `reasoning_effort` — con 500,
   el 61 % de las pasadas con RCA pendiente devolvían `response: null`. `max_tokens: 1500` lo cubre; el techo real es
   el `timeout=60` fijo del provider (~15–45 tok/s del residente). Fixture de prompts reales: `scripts/infra324_llm_fixture.py`.
+- `2026-10-03` · El juez de guardarraíles de Aurora pide el mismo residente **sin razonar** (`GUARDRAILS_LLM_MODEL:
+  bedrock/qwen38-off`) y su presupuesto de espera pasa a `GUARDRAILS_LLM_TIMEOUT_SECONDS` (30; operativo desde que la
+  imagen incluya Arvo-AI/aurora#688 — hoy el 10 s está hardcodeado y el juez caducaba y fallaba cerrado en el 279/329 de
+  los `on_prem_kubectl`, INFRA-326). El juez sigue activo y fail-closed; sólo cambia su modelo y su espera. La key
+  `aurora-rca` ganó `qwen38-off` en su allowlist (BBDD de LiteLLM, `/key/update` con lista completa).
 
-Última verificación contra el código: 2026-10-03 · 05611ef (origin/main)
+Última verificación contra el código: 2026-10-03 · 246600e (origin/main)
