@@ -6,7 +6,7 @@
 
 ## 1. Clientes y versiones
 
-Sin clientes propios; despliega **9 Applications** del mismo repo (tronco **`main`**, `origin/main` = 1948eb6; todas
+Sin clientes propios; despliega **9 Applications** del mismo repo (tronco **`main`**, `origin/main` = 5742c27; todas
 multi-source: chart upstream + `values` de este repo, salvo indicación):
 
 | Application | fuente | versión |
@@ -48,6 +48,7 @@ multi-source: chart upstream + `values` de este repo, salvo indicación):
 | Contrato Keep↔Aurora | `docs/keep-aurora-contract.md` | ídem | Keep, Aurora |
 | Claim de despacho a Aurora (una vez por incidente de Keep, cooldown 6 h) | step `claim-dispatch` del workflow `aurora-investigate` | `keep/values.yaml` | Keep → Aurora; lectores `rca-datos`, `link-datos`, `mark-linked`, `aurora_rca_coverage()` (cruzan por `fingerprint`) |
 | Dashboards | `manifests/dashboards.yaml`, `grafana-company-dashboard.yaml`, `grafana-keep.yaml` | ídem | Grafana |
+| Modelo LLM de Aurora y Keep | nombre directo `qwen38-flash-next` (residente único del perfil `llm-tp`; fallback y allowlist en LiteLLM) | `aurora/values.yaml`, `keep/values.yaml` | Aurora, Keep |
 
 ## 5. Cómo se construye aquí
 
@@ -83,5 +84,9 @@ igual). Necesita Postgres: sin `AURORA_TEST_PG_DSN` se salta en local y **falla 
 - `2026-09-23` · Keep↔Aurora v1.2 (INFRA-217): se retira el GRANT/policy sobre `public.incidents` de v1.1 por la función
   `aurora_rca_coverage()` (revisión del architect).
 - K8sGPT excluyó `ReplicaSet/Service/Job` porque concentraban ~2.746 hallazgos y disparaban bucles LLM.
+- `2026-10-03` · Aurora y Keep piden `qwen38-flash-next` por nombre (residente único `llm-tp`); allowlist de keys solo en
+  BBDD de LiteLLM (`keep-hub`, `aurorasvc-llm` — virtual key alias `aurora-rca`). Revierte la de 15-08 de un solo alias
+  `tooling` (INFRA-324/325/327; test `tests/test_infra324_llm_models_contract.py`). No se migran `k8sgpt-explainer` ni
+  el selector del chat de Aurora (`aurora-frontend-models-policy.yaml`): siguen en `tooling`.
 
-Última verificación contra el código: 2026-10-02 · 662a313 (origin/main) + INFRA-406
+Última verificación contra el código: 2026-10-03 · 5742c27 (origin/main)
