@@ -88,5 +88,9 @@ igual). Necesita Postgres: sin `AURORA_TEST_PG_DSN` se salta en local y **falla 
   BBDD de LiteLLM (`keep-hub`, `aurorasvc-llm` — virtual key alias `aurora-rca`). Revierte la de 15-08 de un solo alias
   `tooling` (INFRA-324/325/327; test `tests/test_infra324_llm_models_contract.py`). No se migran `k8sgpt-explainer` ni
   el selector del chat de Aurora (`aurora-frontend-models-policy.yaml`): siguen en `tooling`.
+- Trampa de los steps LLM de Keep (INFRA-327, medido 2026-10-03): el tier `low` de THINKING_TIERS gasta razonamiento
+  DENTRO de `max_tokens` (en `llm-rca`, ~360–1070 tokens) y LitellmProvider no reenvía `reasoning_effort` — con 500,
+  el 61 % de las pasadas con RCA pendiente devolvían `response: null`. `max_tokens: 1500` lo cubre; el techo real es
+  el `timeout=60` fijo del provider (~15–45 tok/s del residente). Fixture de prompts reales: `scripts/infra324_llm_fixture.py`.
 
-Última verificación contra el código: 2026-10-03 · 5742c27 (origin/main)
+Última verificación contra el código: 2026-10-03 · 05611ef (origin/main)

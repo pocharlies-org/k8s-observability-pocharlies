@@ -237,7 +237,8 @@ backend:
 
       # ---------------------------------------------------------------------
       # EL RESUMEN, AISLADO. Este workflow SÍ puede abortar — ése es justamente
-      # el sentido de haberlo separado. Si LiteLLM está caído o rota de alias,
+      # el sentido de haberlo separado. Si LiteLLM está caído o la allowlist de
+      # la key deja de incluir el modelo pedido (INFRA-431),
       # `llm-summary` revienta, esta ejecución queda en `error` y no sale el
       # segundo mensaje; el aviso del incidente ya salió por su cuenta, porque
       # su workflow no tiene steps que puedan tumbarlo. El fallo sigue siendo
@@ -257,9 +258,13 @@ backend:
       # nada que parsear y el 400 no puede ocurrir. Telegram autoenlaza la URL
       # igualmente.
       #
-      # `model: tooling`: es el alias estable de capacidad y LiteLLM lo apunta
-      # al backend local que esté listo. Keep no queda acoplado al nombre del
-      # modelo residente ni a un alias de enrutado automático.
+      # `model: qwen38-flash-next` (INFRA-327): nombre directo del residente
+      # único del perfil llm-tp. La indirección por alias (`tooling`) se retiró
+      # porque solo queda un perfil: el nivel de pensamiento lo fija LiteLLM
+      # (THINKING_TIERS: low) y el fallback (alibaba-q38-flash) vive en el
+      # router de LiteLLM, no aquí. Que la key `keep-hub` pueda pedir este
+      # modelo es la allowlist de la BBDD de LiteLLM (INFRA-431), no un
+      # mecanismo en Keep.
       # ---------------------------------------------------------------------
       - id: incident-summary
         name: Telegram — resumen LLM del incidente
@@ -286,9 +291,12 @@ backend:
               type: litellm
               config: "{{ providers.llm }}"
               with:
-                model: tooling
+                model: qwen38-flash-next
                 temperature: 0.1
-                max_tokens: 400
+                # 1500, no 400 (INFRA-327): el tier low de THINKING_TIERS
+                # gasta razonamiento DENTRO de este presupuesto — medido en
+                # `llm-rca` (workflow aurora-report-back, abajo), mismo motor.
+                max_tokens: 1500
                 prompt: |
                   Eres un SRE veterano. En 2-3 frases y en español, di qué está
                   pasando y qué mirar primero. No inventes causas: si los datos
@@ -681,17 +689,33 @@ backend:
               type: litellm
               config: "{{ providers.llm }}"
               with:
-                # `tooling` se midió el 2026-08-13 con el payload exacto de
-                # este step (12.066 B de evidencia real, temperature 0.1 y
-                # max_tokens 500): terminó en 11-16 s con 259-367 tokens de RCA.
-                # Es el alias de capacidad sin razonamiento forzado, así que el
-                # presupuesto se dedica a `content` y cabe en el timeout de 60 s
-                # que Keep fija en su provider. De este modo también sigue al
-                # backend local listo cuando LiteLLM cambia el modelo residente.
-                # Con este perfil `content` no sale vacío.
-                model: tooling
+                # `qwen38-flash-next` por nombre (INFRA-327, decisión del
+                # owner 2026-10-03): es el residente único del perfil llm-tp;
+                # el fallback (alibaba-q38-flash) lo aplica el router de
+                # LiteLLM y la allowlist de la key `keep-hub` es solo BBDD de
+                # LiteLLM (INFRA-431). El nivel de pensamiento lo fija
+                # THINKING_TIERS (low) — no se pide aquí.
+                #
+                # `max_tokens: 1500`, y ya no 500. Medido el 2026-10-03 sobre
+                # `workflowexecution` (30 días, solo pasadas con RCA pendiente):
+                # 97 de 160 (61%) terminaban `success` con `response: null`.
+                # Causa: el tier low de THINKING_TIERS gasta razonamiento
+                # DENTRO de max_tokens y en este paso va de ~360 a ~1070
+                # tokens; con 500, cuando el razonamiento los cubre,
+                # `content` sale null y LitellmProvider lo propaga tal cual
+                # (litellm_provider.py, `message["content"]`). El provider no
+                # reenvía `reasoning_effort` (su payload fija model/messages/
+                # max_tokens/temperature), así que la única palanca del step
+                # es subir el presupuesto: con 1500 (razonamiento medido hasta
+                # 1071 + ~350 de RCA) las 10 llamadas del fixture con prompts
+                # reales terminaron `stop` con `content` no vacío
+                # (scripts/infra324_llm_fixture.py). Riesgo asumido y medido:
+                # el provider fija timeout=60 s y el residente va a ~15-45
+                # tok/s según carga — la cola larga puede dar `Read timed out`
+                # en lugar de `None`; el conteo de 48 h (INFRA-432) lo cierra.
+                model: qwen38-flash-next
                 temperature: 0.1
-                max_tokens: 500
+                max_tokens: 1500
                 prompt: |
                   Eres un SRE veterano. Abajo tienes una alerta de un clúster
                   Kubernetes y la salida REAL de los comandos que un agente
@@ -1217,10 +1241,14 @@ backend:
     - name: OPENAI_BASE_URL
       value: http://litellm.litellm.svc.cluster.local:4000/v1
     - name: OPENAI_MODEL_NAME
-      # 15-08: `router` -> `tooling`. `router` solo existe con DeepSeek arriba;
-      # en el perfil creative no esta registrado y Keep pedia un modelo que no
-      # existe. `tooling` lo sirve el residente de los dos perfiles.
-      value: tooling
+      # INFRA-327 (2026-10-03): `tooling` -> `qwen38-flash-next`, el nombre
+      # directo del residente único del perfil llm-tp — la misma verdad que
+      # los `model:` de los steps LLM y que los cinco roles de
+      # aurora/values.yaml; como los steps no pueden referenciar esta variable
+      # (el provider solo acepta literales), la unicidad la fija el test
+      # tests/test_infra324_llm_models_contract.py, no un comentario. La
+      # allowlist de la key `keep-hub` es solo BBDD de LiteLLM (INFRA-431).
+      value: qwen38-flash-next
 
     # --- Identidad: headers del oauth2-proxy compartido ---
     # OJO: si el header de roles llega vacío, Keep devuelve 401 en TODA petición
@@ -1455,10 +1483,14 @@ frontend:
     - name: OPENAI_BASE_URL
       value: http://litellm.litellm.svc.cluster.local:4000/v1
     - name: OPENAI_MODEL_NAME
-      # 15-08: `router` -> `tooling`. `router` solo existe con DeepSeek arriba;
-      # en el perfil creative no esta registrado y Keep pedia un modelo que no
-      # existe. `tooling` lo sirve el residente de los dos perfiles.
-      value: tooling
+      # INFRA-327 (2026-10-03): `tooling` -> `qwen38-flash-next`, el nombre
+      # directo del residente único del perfil llm-tp — la misma verdad que
+      # los `model:` de los steps LLM y que los cinco roles de
+      # aurora/values.yaml; como los steps no pueden referenciar esta variable
+      # (el provider solo acepta literales), la unicidad la fija el test
+      # tests/test_infra324_llm_models_contract.py, no un comentario. La
+      # allowlist de la key `keep-hub` es solo BBDD de LiteLLM (INFRA-431).
+      value: qwen38-flash-next
 
   # NEXTAUTH_SECRET: frontend.env sólo admite valores literales (el template no
   # soporta secretKeyRef), así que entra por aquí.
