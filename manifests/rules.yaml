@@ -566,19 +566,22 @@ spec:
         # so the uptime guard of the daily/weekly rules would silence it forever.
         # Instead: the run STARTED (last_start, same process) and has not
         # succeeded within 3h of that start. Both gauges are set by the same
-        # engine process, so no uptime guard is needed. A run that never starts
-        # at all is not covered here.
+        # engine process, so no uptime guard is needed. `unless`, not `>`: the
+        # success gauge only exists after the first success since process start,
+        # so a run that starts and fails after a restart has NO success series
+        # and must still fire. A run that never starts at all is not covered.
+        # promtool cases: tests/promtool/synapse-scheduled-monthly.test.yaml.
         - alert: SynapseScheduledWorkflowRunStalledMonthly
           expr: |
             (
-              max by (tenant, workflow) (synapse_engine_scheduled_workflow_last_start_timestamp_seconds{workflow=~"skirmshop\\.gestoria\\.accounting\\.processor_fees"})
-              > on (tenant, workflow)
-              max by (tenant, workflow) (synapse_engine_scheduled_workflow_last_success_timestamp_seconds{workflow=~"skirmshop\\.gestoria\\.accounting\\.processor_fees"})
-            )
-            and on (tenant, workflow)
-            (
               time() - max by (tenant, workflow) (synapse_engine_scheduled_workflow_last_start_timestamp_seconds{workflow=~"skirmshop\\.gestoria\\.accounting\\.processor_fees"} > 0)
             ) > 10800
+            unless on (tenant, workflow)
+            (
+              max by (tenant, workflow) (synapse_engine_scheduled_workflow_last_success_timestamp_seconds{workflow=~"skirmshop\\.gestoria\\.accounting\\.processor_fees"})
+              >= on (tenant, workflow)
+              max by (tenant, workflow) (synapse_engine_scheduled_workflow_last_start_timestamp_seconds{workflow=~"skirmshop\\.gestoria\\.accounting\\.processor_fees"})
+            )
           for: 15m
           labels:
             severity: warning

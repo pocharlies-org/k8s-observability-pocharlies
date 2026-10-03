@@ -1,0 +1,64 @@
+# Casos de SynapseScheduledWorkflowRunStalledMonthly y de la exclusión de processor_fees en
+# SynapseScheduledWorkflowStalled (promtool test rules). `rules` la genera
+# tests/test_synapse_scheduled_monthly_promtool.py desde la VMRule pocharlies-synapse-core.
+# Gauges en segundos epoch; time() en promtool cuenta desde 0.
+rule_files:
+  - synapse-scheduled.rules.yaml
+evaluation_interval: 1m
+tests:
+  - interval: 1m
+    name: arrancó y no hay serie de éxito (reinicio del engine) -> dispara
+    input_series:
+      - series: 'synapse_engine_scheduled_workflow_last_start_timestamp_seconds{tenant="skirmshop", workflow="skirmshop.gestoria.accounting.processor_fees"}'
+        values: '60x300'
+    alert_rule_test:
+      - eval_time: 4h
+        alertname: SynapseScheduledWorkflowRunStalledMonthly
+        exp_alerts:
+          - exp_labels: {severity: warning, area: reliability, component: synapse, tenant: skirmshop, workflow: skirmshop.gestoria.accounting.processor_fees}
+            exp_annotations:
+              summary: "Synapse monthly workflow skirmshop/skirmshop.gestoria.accounting.processor_fees started and did not succeed"
+              description: "Monthly scheduled workflow skirmshop.gestoria.accounting.processor_fees (tenant skirmshop) started more than 3h ago and has not recorded a success since that start. Check the engine scheduler and the workflow's handler logs."
+  - interval: 1m
+    name: arrancó y el éxito es anterior al arranque -> dispara pasadas 3 h + for
+    input_series:
+      - series: 'synapse_engine_scheduled_workflow_last_start_timestamp_seconds{tenant="skirmshop", workflow="skirmshop.gestoria.accounting.processor_fees"}'
+        values: '7200x400'
+      - series: 'synapse_engine_scheduled_workflow_last_success_timestamp_seconds{tenant="skirmshop", workflow="skirmshop.gestoria.accounting.processor_fees"}'
+        values: '60x400'
+    alert_rule_test:
+      - eval_time: 4h
+        alertname: SynapseScheduledWorkflowRunStalledMonthly
+        exp_alerts: []
+      - eval_time: 5h30m
+        alertname: SynapseScheduledWorkflowRunStalledMonthly
+        exp_alerts:
+          - exp_labels: {severity: warning, area: reliability, component: synapse, tenant: skirmshop, workflow: skirmshop.gestoria.accounting.processor_fees}
+            exp_annotations:
+              summary: "Synapse monthly workflow skirmshop/skirmshop.gestoria.accounting.processor_fees started and did not succeed"
+              description: "Monthly scheduled workflow skirmshop.gestoria.accounting.processor_fees (tenant skirmshop) started more than 3h ago and has not recorded a success since that start. Check the engine scheduler and the workflow's handler logs."
+  - interval: 1m
+    name: el run terminó bien (éxito >= arranque) -> no dispara aunque pase el mes
+    input_series:
+      - series: 'synapse_engine_scheduled_workflow_last_start_timestamp_seconds{tenant="skirmshop", workflow="skirmshop.gestoria.accounting.processor_fees"}'
+        values: '60x400'
+      - series: 'synapse_engine_scheduled_workflow_last_success_timestamp_seconds{tenant="skirmshop", workflow="skirmshop.gestoria.accounting.processor_fees"}'
+        values: '120x400'
+      - series: 'kube_pod_container_state_started{namespace="synapse", pod="synapse-engine-0", container="engine"}'
+        values: '1x400'
+    alert_rule_test:
+      - eval_time: 6h
+        alertname: SynapseScheduledWorkflowRunStalledMonthly
+        exp_alerts: []
+      - eval_time: 6h
+        alertname: SynapseScheduledWorkflowStalled
+        exp_alerts: []
+  - interval: 1m
+    name: otro workflow que solo arrancó -> la regla mensual no lo mira
+    input_series:
+      - series: 'synapse_engine_scheduled_workflow_last_start_timestamp_seconds{tenant="skirmshop", workflow="skirmshop.gestoria.monitoring.dlq_sweep"}'
+        values: '60x300'
+    alert_rule_test:
+      - eval_time: 4h
+        alertname: SynapseScheduledWorkflowRunStalledMonthly
+        exp_alerts: []
