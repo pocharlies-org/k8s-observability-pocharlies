@@ -95,8 +95,6 @@ despiertan a nadie pese a llamarse `page`.
 
 | alertname | sev | destino hoy | firing |
 |---|---|---|---:|
-| `Dgx2GpuMemoryCutoff` | `critical` | keep |  |
-| `Dgx2GpuMemoryWarning` | `warning` | keep |  |
 
 ### ImageStudio (4)
 

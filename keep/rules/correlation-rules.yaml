@@ -138,9 +138,8 @@ rules:
   - ruleName: llm-plane
     incidentPrefix: LLM
     celQuery: |
-      name in ["LitellmNotReady", "Dgx2GpuMemoryWarning",
-               "GpuArbiterStateObservationUnavailable"]
-    sqlQuery: {"sql": "((name in (:name_1, :name_2, :name_3)))", "params": {"name_1": "LitellmNotReady", "name_2": "Dgx2GpuMemoryWarning", "name_3": "GpuArbiterStateObservationUnavailable"}}
+      name in ["LitellmNotReady", "GpuArbiterStateObservationUnavailable"]
+    sqlQuery: {"sql": "((name in (:name_1, :name_2)))", "params": {"name_1": "LitellmNotReady", "name_2": "GpuArbiterStateObservationUnavailable"}}
     groupingCriteria: []
     createOn: any
     resolveOn: all_resolved
