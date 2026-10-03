@@ -55,7 +55,9 @@ jobs:
           if [ "${GITHUB_REF}" = "refs/heads/main" ]; then
             ARGS+=(--push)
           else
-            ARGS+=(--output "type=oci,dest=${RUNNER_TEMP:-/tmp}/bridge.oci")
+            # type=oci no soporta builder multi-nodo (run 37130204700); cacheonly
+            # valida el build multi-arch sin exportar ni publicar.
+            ARGS+=(--output type=cacheonly)
           fi
           docker buildx build "${ARGS[@]}" images/aurora/bridge
 

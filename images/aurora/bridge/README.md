@@ -54,7 +54,8 @@ el chart compone `aurora-frontend:{image.tag}` del mismo tag global
 (`templates/frontend-deployment.yaml`, sin override por componente) y sin ese espejo el
 frontend entraría en ImagePullBackOff. La retirada borra ambos tags `-p688`.
 
-En `pull_request` el workflow **no publica** (construye a un OCI tar y nada más):
+En `pull_request` el workflow **no publica** (`--output type=cacheonly`: valida el
+build multi-arch sin exportar — `type=oci` no soporta builder multi-nodo):
 los paquetes GHCR `aurora-server`/`aurora-frontend` están vinculados al repo
 `aurora` y el `GITHUB_TOKEN` de este repo no tiene `write_package` sobre ellos
 (Request IT enlazada a INFRA-326). La publicación ocurre solo en `main`.
