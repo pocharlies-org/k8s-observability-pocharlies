@@ -38,15 +38,26 @@ fullnameOverride: aurora
 # ghcr.io/arvo-ai/aurora-{server,frontend}, multi-arch amd64+arm64. No hay que
 # construir nada.
 #
-# El tag va pineado a la versión del chart, no a `latest`: un `latest` móvil
-# haría que dos syncs del mismo commit desplegasen binarios distintos, y en un
-# sistema que investiga incidentes eso es justo lo que no quieres.
+# El tag va pineado, no a `latest`: un `latest` móvil haría que dos syncs del
+# mismo commit desplegasen binarios distintos, y en un sistema que investiga
+# incidentes eso es justo lo que no quieres.
 #
-# Al subir la versión del chart en apps/aurora.yaml, subir también este tag.
+# OJO con qué es esta imagen (INFRA-326, 2026-10-03): NO es la prebuilt de
+# Arvo — es un PUENTE DOCUMENTADO que construimos nosotros (workflow
+# `aurora · bridge image`): `sha-e35121a` (build manual del 20-08 del commit
+# upstream e35121a + los 3 commits del tool-output aún no mergeados aguas
+# arriba) + el parche de Arvo-AI/aurora#688 (timeout del juez de guardarraíles
+# configurable; sin él `GUARDRAILS_LLM_TIMEOUT_SECONDS` de abajo es inerte y el
+# juez caduca a 10 s hardcodeados). Base, parche, hashes y PLAN DE RETIRADA:
+# images/aurora/bridge/README.md. Al fusionarse #688 aguas arriba: retirar el
+# puente, sudar a la imagen upstream y decidir ahí los knobs TOOL_OUTPUT_*.
+#
+# Al subir la versión del chart en apps/aurora.yaml, revisar el puente (puede
+# que el bump limpio ya esté disponible).
 # ---------------------------------------------------------------------------
 image:
   registry: ghcr.io/pocharlies-org
-  tag: "sha-e35121aeb7d80293d2e4ce462fe2bc05d9adb469"
+  tag: "sha-e35121a-p688"
 
 # ---------------------------------------------------------------------------
 # Infra compartida en vez de la del chart. Ahorra ~4GB y evita duplicar bases de
