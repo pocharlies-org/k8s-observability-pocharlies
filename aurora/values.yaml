@@ -118,13 +118,9 @@ config:
   NEXT_PUBLIC_WEBSOCKET_URL: wss://aurora.e-dani.com/ws
 
   # ------------------------------------------------------------------------
-  # LLM: todo local en el DGX vía LiteLLM
-  #
-  # `direct` + un id explícito `bedrock/<alias>` es la vía documentada para el
-  # gateway mode. Verificado en bedrock_provider.py:106: con BEDROCK_BASE_URL
-  # presente construye un ChatOpenAI contra esa URL y pasa el sufijo del id tal
-  # cual, así que `bedrock/tooling` llega a LiteLLM como el alias `tooling`.
-  # `openai` NO sirve: openai_provider.py sólo lee OPENAI_API_KEY, sin base_url.
+  # LLM: todo local vía LiteLLM. El mecanismo (`direct` + `bedrock/<nombre>`)
+  # y el modelo que piden los cinco roles se documentan una sola vez, junto a
+  # MAIN_MODEL más abajo.
   # ------------------------------------------------------------------------
   # --- Búsqueda ---
   #
@@ -149,77 +145,26 @@ config:
 
   LLM_PROVIDER_MODE: direct
   BEDROCK_BASE_URL: http://litellm.litellm.svc.cluster.local:4000/v1
-  # UN SOLO ALIAS PARA TODO: `tooling`.
+  # LOS CINCO ROLES PIDEN `qwen38-flash-next` POR NOMBRE: es el LLM residente
+  # único del perfil de cómputo `llm-tp` (decisión del owner, 2026-10-03,
+  # INFRA-325). Revierte la de 15-08 de unificar todo en el alias `tooling`:
+  # habiendo un solo residente, la indirección del alias solo ocultaba qué
+  # modelo razonaba y se cobró errores `tooling_resident_not_ready` cuando el
+  # residente rotaba. El fallback para cuando el residente no está se declara
+  # en la config de LiteLLM (k8s-litellm-pocharlies), NO aquí: Aurora no tiene
+  # un `with_fallbacks` en todo su árbol y su `max_retries` reintenta contra el
+  # MISMO modelo. El nivel de pensamiento tampoco se pide aquí: lo fija
+  # `THINKING_TIERS` de LiteLLM (`qwen38-flash-next: low`).
   #
-  # Antes esto era `dense` (alias que dejó de existir) y luego `router`. Se
-  # unifica en `tooling` por decisión explícita: un único alias, sin indirección
-  # y sin que el modelo que razona un RCA dependa de lo que decida el smart
-  # router en ese momento.
-  #
-  # NO ANOTES AQUÍ QUÉ MODELO HAY DETRÁS. Ése es el sentido del alias:
-  # `litellm-dgx-backend-sync` repunta `tooling` a lo que esté residente en dgx1,
-  # y sólo cabe un vLLM grande por GPU, así que el modelo rota. Este comentario
-  # llegó a decir «tooling resuelve a Ornith 35B» y envejeció mal: hoy resuelve a
-  # `dgx1-nvidia-qwen36-35b-nvfp4-tooling`. Si necesitas saber quién responde
-  # AHORA, míralo, no lo leas:
-  #     kubectl -n litellm logs deploy/litellm-dgx-backend-sync | grep 'for alias tooling'
-  #
-  # La contrapartida que este bloque documentaba como asumida SE COBRÓ, y por eso
-  # `tooling` degrada. Decía: «con un alias fijo, si `tooling` se
-  # quedara sin backend Aurora daría model-not-found en vez de degradar sola».
-  # Pasó el 2026-08-04 19:11 — dgx1 cambió de modelo residente y Aurora murió a
-  # los 40 s, a mitad de un incidente real, con «no healthy deployments for this
-  # model». Aurora no puede cubrirse a sí misma: no tiene ni un `with_fallbacks`
-  # en todo su árbol, su `max_retries` reintenta contra el MISMO modelo, y bedrock
-  # es su único provider disponible.
-  #
-  # `tooling` = «el residente de tooling, y si no está, algo vivo». Del 2026-08-05
-  # al 2026-08-10 esto fue un alias aparte, `tooling-ha`, con el argumento de que
-  # degradar `tooling` falsearía las mediciones. Se retiró: las mediciones se hacen
-  # contra nombres de MODELO (`ornith-1.0`, `qwen36-35b-nvfp4`, `dense-uncensored`), que
-  # siguen sin degradar, y TODO el que pedía `tooling` quería «vivo» — eran dos
-  # nombres para una intención, y el que no llevaba sufijo era la trampa.
-  #
-  # El fallback lo aplica el hook litellm_strip_params (repo
-  # k8s-litellm-pocharlies) al propio `tooling`, con la cadena tooling -> dense y
-  # verificando el salto. Cubre el modo «alias DESREGISTRADO», que el proxy rechaza
-  # antes de que corra el Router; funciona porque el hook está en pre_call_hook,
-  # antes del gate de nombre de modelo.
-  #
-  # Sigue NO siendo el smart router: `router`/`auto` reclasifican por forma de
-  # petición (con tool -> dense), y eso es justo lo que esta decisión quitó. Aquí
-  # el modelo lo elige Aurora y sólo cambia si el elegido no está.
-  #
-  # La otra mitad de la red vive en la config de LiteLLM
-  # (`router_settings.fallbacks: [{tooling: [dense]}]`, un solo sentido) y cubre el
-  # modo que el hook no ve: alias registrado pero sin deployment sano. Son dos
-  # modos de fallo con dos errores distintos y hacen falta las dos capas.
-  # LOS CINCO ROLES A `tooling`. Hubo un intento (2026-08-05) de mandar los que
-  # CONDUCEN el bucle — MAIN_MODEL y RCA_MODEL — a un alias del Qwen3-Coder, porque
-  # Aurora es LangGraph con 30+ tools y parecía el modelo indicado.
-  #
-  # REVERTIDO EL MISMO DÍA por capacidad: vivía en el SEGUNDO slot time-sliced de
-  # DGX2 y ese slot estaba disputado. Estuvo 1/1 a las 07:47 y a las 08:05:39 el sync
-  # ya lo había desregistrado. Apuntar la config a un modelo que no está la mayor
-  # parte del tiempo es mentir sobre lo que corre: la cadena degradaba a `tooling`
-  # igualmente, así que el efecto real era cero y la config engañosa.
-  #
-  # La medida que se citaba entonces para justificarlo — un test de opencode — está
-  # DESCARTADA por mala (owner, 2026-08-10), así que ya no se cita aquí.
-  #
-  # 2026-08-10: ni los alias -ha ni el propio Qwen3-Coder existen ya; el modelo se
-  # sacó del cluster entero (Deployment, pesos y config). Este bloque documenta un
-  # intento que ya no se puede repetir: si algún día hace falta un modelo de código
-  # para los roles que CONDUCEN el bucle, hay que traer uno nuevo y medirlo bien.
-  # 15-08: `bedrock/tooling` -> `bedrock/tooling` en los cinco. Los nombres
-  # router/auto/litellmrouter/agent/high/max solo existen cuando el residente es
-  # DeepSeek (perfil llm-tp); en creative NO estan registrados y Aurora pedia un
-  # modelo inexistente. `tooling` lo sirve el residente de LOS DOS perfiles.
-  # El nivel de pensamiento ya no se pide por nombre sino con reasoning_effort,
-  # que el 27B declara desde hoy (none/low/medium/high/max, medidos en el motor).
-  MAIN_MODEL: bedrock/tooling
-  SUMMARIZATION_MODEL: bedrock/tooling   # trabajo mecánico al modelo rápido
-  ENRICHMENT_MODEL: bedrock/tooling
+  # `direct` + un id explícito `bedrock/<alias>` es la vía documentada para el
+  # gateway mode: bedrock_provider.py:106, con BEDROCK_BASE_URL presente,
+  # construye un ChatOpenAI contra esa URL y pasa el sufijo del id tal cual,
+  # así que `bedrock/qwen38-flash-next` llega a LiteLLM como
+  # `qwen38-flash-next`. `openai` NO sirve: openai_provider.py sólo lee
+  # OPENAI_API_KEY, sin base_url.
+  MAIN_MODEL: bedrock/qwen38-flash-next
+  SUMMARIZATION_MODEL: bedrock/qwen38-flash-next
+  ENRICHMENT_MODEL: bedrock/qwen38-flash-next
   # Corta cualquier RCA que empiece a repetir herramientas. El valor anterior
   # (240) permitió investigaciones de 30+ llamadas y prompts de hasta 95k.
   AGENT_RECURSION_LIMIT: "12"
@@ -238,18 +183,18 @@ config:
   # `RuntimeError: Provider 'anthropic' is not available for model
   # 'anthropic/claude-opus-4.6'`, y tumbaba el chat del incidente, que es lo que
   # produce el resumen.
-  RCA_MODEL: bedrock/tooling
+  RCA_MODEL: bedrock/qwen38-flash-next
   RCA_OPTIMIZE_COSTS: "false"
 
   # ------------------------------------------------------------------------
-  # Guardarraíles: activos, con el juez en el modelo rápido.
+  # Guardarraíles: activos, con el juez en el mismo modelo que los demás roles.
   # OJO: el juez LLM falla CERRADO. Si el modelo local no devuelve la estructura
   # esperada, bloquea investigaciones legítimas. Si eso pasa, dejar
   # GUARDRAILS_SIGMA_ENABLED (reglas SigmaHQ, sin LLM) y apagar el juez.
   # ------------------------------------------------------------------------
   GUARDRAILS_ENABLED: "true"
   GUARDRAILS_SIGMA_ENABLED: "true"
-  GUARDRAILS_LLM_MODEL: bedrock/tooling
+  GUARDRAILS_LLM_MODEL: bedrock/qwen38-flash-next
 
   # --- Aislamiento de los comandos de los agentes: DESACTIVADO ---
   #
