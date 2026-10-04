@@ -28,12 +28,13 @@ data:
           "datasource": {"type": "prometheus", "uid": "VictoriaMetrics"},
           "fieldConfig": {"defaults": {"custom": {"drawStyle": "line", "lineWidth": 2, "fillOpacity": 8, "spanNulls": true}}, "overrides": [
             {"matcher": {"id": "byName", "options": "tope dinámico"}, "properties": [{"id": "custom.lineStyle", "value": {"fill": "dash", "dash": [10, 6]}}]},
-            {"matcher": {"id": "byName", "options": "tope base"}, "properties": [{"id": "custom.lineStyle", "value": {"fill": "dash", "dash": [2, 4]}}]}
+            {"matcher": {"id": "byRegexp", "options": "^capacidad .*"}, "properties": [{"id": "custom.lineStyle", "value": {"fill": "dash", "dash": [2, 4]}}]}
           ]},
           "targets": [
             {"expr": "company_unidades_activas", "legendFormat": "{{tipo}}", "refId": "A"},
             {"expr": "company_tope_dinamico", "legendFormat": "tope dinámico", "refId": "B"},
-            {"expr": "company_max_activas", "legendFormat": "tope base", "refId": "C"}
+            {"expr": "company_capacidad", "legendFormat": "capacidad {{proveedor}}", "refId": "C"},
+            {"expr": "company_capacidad_en_uso", "legendFormat": "en uso {{proveedor}}", "refId": "D"}
           ]
         },
         {
