@@ -42,6 +42,10 @@ resources:
   # (el resolved de AM se pierde si Keep estaba reiniciando y el incident se queda
   # firing para siempre con resolveOn: all_resolved).
   - keep/maintenance/stale-reaper.yaml
+  # SC-1711: el WorkflowScheduler de Keep fuera de los workers gunicorn de la
+  # API (la raíz del keep-hub-degraded de SC-1600). Requiere el SCHEDULER=false
+  # de keep/values.yaml; juntos dejan un solo ejecutor de workflows periódicos.
+  - keep/scheduler.yaml
   - manifests/alertmanager-config.yaml
   - manifests/probes.yaml
   - manifests/rules.yaml

@@ -1207,6 +1207,20 @@ backend:
       value: https://keep-api.e-dani.com
     - name: PORT
       value: "8080"
+    # --- SC-1711: el scheduler de workflows, fuera de los workers de la API ---
+    # SCHEDULER es `true` por defecto en el código de Keep (api.py:
+    # `config("SCHEDULER", default="true")`) y el lifespan lo arranca EN CADA
+    # worker gunicorn: hoy los 4 workers de este pod lanzan cada uno su
+    # WorkflowScheduler, compitiendo con los webhooks de Alertmanager por el
+    # CPU y el pool de Postgres del worker (la raíz de keep-hub-degraded,
+    # SC-1600). Con false los workers solo sirven peticiones; quien ejecuta
+    # los workflows periódicos es el deployment dedicado keepsvc-scheduler
+    # (keep/scheduler.yaml). No duplicar ejecuciones no depende de esto —el
+    # lock es la restricción de unicidad sobre workflow_execution en
+    # `get_workflows_that_should_run`— sino de no volver a acoplar carga
+    # periódica al camino crítico de ingesta.
+    - name: SCHEDULER
+      value: "false"
     # --- SC-1600: el timeout de gunicorn mata los webhooks de Alertmanager ---
     # Medido el 02-10-2026 (HUB-7755): cada 15 min, durante la pasada del
     # stale-reaper, los 4 workers dejan de latir 30 s y gunicorn los mata con
