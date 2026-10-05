@@ -1,0 +1,95 @@
+# Casos de CompaniaBuzonAtascado, CompaniaSinTurnos y CompaniaSupervisorSinMetricas (promtool test rules). `rules` la
+# genera tests/test_compania_promtool.py desde la VMRule pocharlies-compania. time() en promtool cuenta desde 0.
+rule_files:
+  - compania.rules.yaml
+evaluation_interval: 1m
+tests:
+  - interval: 1m
+    name: buzón sin dueño creciendo (el 05-10) -> salta a los ~36 min
+    input_series:
+      - series: 'company_buzon_sin_dueno_antiguedad_seconds{job="company-supervisor"}'
+        values: '0+60x60'
+      - series: 'company_encendida{job="company-supervisor"}'
+        values: '1x60'
+    alert_rule_test:
+      - eval_time: 34m
+        alertname: CompaniaBuzonAtascado
+        exp_alerts: []
+      - eval_time: 37m
+        alertname: CompaniaBuzonAtascado
+        exp_alerts:
+          - exp_labels: {severity: critical, area: compania, component: company-supervisor}
+            exp_annotations:
+              summary: "Compañía: un mensaje del buzón lleva 37m 0s sin que nadie lo entregue"
+              description: "Hay mensajes para los perfiles de Hermes en ~/.company/bots/buzon que nadie entrega. Mirar company_synapse{estado} (¿synapse.on pedido con el adaptador company-encargos-adapter caído?) y `journalctl --user -u company-buzon-barrido`. Volver atrás: borrar ~/.company/bots/synapse.on; el barrido entrega lo atascado por turno-* (SC-1872)."
+  - interval: 1m
+    name: buzón sano (lo que hay tiene dueño) o compañía apagada -> no salta
+    input_series:
+      - series: 'company_buzon_sin_dueno_antiguedad_seconds{job="company-supervisor"}'
+        values: '0x60'
+      - series: 'company_encendida{job="company-supervisor"}'
+        values: '1x60'
+    alert_rule_test:
+      - eval_time: 50m
+        alertname: CompaniaBuzonAtascado
+        exp_alerts: []
+  - interval: 1m
+    name: buzón atascado con la compañía apagada -> no salta
+    input_series:
+      - series: 'company_buzon_sin_dueno_antiguedad_seconds{job="company-supervisor"}'
+        values: '0+60x60'
+      - series: 'company_encendida{job="company-supervisor"}'
+        values: '0x60'
+    alert_rule_test:
+      - eval_time: 50m
+        alertname: CompaniaBuzonAtascado
+        exp_alerts: []
+  - interval: 1m
+    name: encargos en marcha y ningún turno bueno -> salta a los ~46 min
+    input_series:
+      - series: 'company_turno_ultimo_ok_timestamp_seconds{job="company-supervisor"}'
+        values: '0x60'
+      - series: 'company_encargos_en_marcha{job="company-supervisor", rol="cto"}'
+        values: '2x60'
+      - series: 'company_encendida{job="company-supervisor"}'
+        values: '1x60'
+    alert_rule_test:
+      - eval_time: 44m
+        alertname: CompaniaSinTurnos
+        exp_alerts: []
+      - eval_time: 47m
+        alertname: CompaniaSinTurnos
+        exp_alerts:
+          - exp_labels: {severity: critical, area: compania, component: company-supervisor}
+            exp_annotations:
+              summary: "Compañía: ningún turno de Hermes terminado en 47m 0s"
+              description: "Hay encargos en marcha a los perfiles de Hermes y ninguno termina un turno. Causas vistas: el buzón sin entregar (CompaniaBuzonAtascado), el api_server de Hermes atascado, el LLM local caído sin fallback. Mirar ~/.company/bots/turnos/turnos.log y `systemctl --user list-units 'turno-*'`."
+  - interval: 1m
+    name: sin encargos en marcha (todo espera) -> no salta aunque no haya turnos
+    input_series:
+      - series: 'company_turno_ultimo_ok_timestamp_seconds{job="company-supervisor"}'
+        values: '0x60'
+      - series: 'company_encargos_en_marcha{job="company-supervisor", rol="cto"}'
+        values: '0x60'
+      - series: 'company_encendida{job="company-supervisor"}'
+        values: '1x60'
+    alert_rule_test:
+      - eval_time: 55m
+        alertname: CompaniaSinTurnos
+        exp_alerts: []
+  - interval: 1m
+    name: el supervisor deja de publicar -> salta a los ~25 min de la última muestra
+    input_series:
+      - series: 'company_encendida{job="company-supervisor"}'
+        values: '1x10 _x40'
+    alert_rule_test:
+      - eval_time: 18m
+        alertname: CompaniaSupervisorSinMetricas
+        exp_alerts: []
+      - eval_time: 30m
+        alertname: CompaniaSupervisorSinMetricas
+        exp_alerts:
+          - exp_labels: {severity: critical, area: compania, component: company-supervisor, job: company-supervisor}
+            exp_annotations:
+              summary: "Compañía: el supervisor lleva 15 min sin publicar métricas"
+              description: "VictoriaMetrics no recibe company_encendida del job company-supervisor (x86 :19911). Mirar `systemctl --user status jira-epic-trigger` en el x86 y el target en vmagent."

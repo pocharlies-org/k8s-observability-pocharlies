@@ -82,9 +82,9 @@ spec:
       # esperar KeepBackendAbsent, confirmar el mensaje, y restaurar.
       # ---------------------------------------------------------------------
       - matchers:
-          # SC-1872: CompaniaBuzonAtascado y CompaniaSinTurnos. Lo que vigila a la compañía (vigilante, IT) va
+          # SC-1872: CompaniaBuzonAtascado, CompaniaSinTurnos y CompaniaSupervisorSinMetricas. Lo que vigila a la compañía (vigilante, IT) va
           # por Hermes; si Hermes o su tubería se rompen, este es el único aviso que llega.
-          - 'alertname =~ "KeepBackendAbsent|KeepIngestionDown|KeepIngestionSilent|AlertmanagerWebhookDeliveryFailed|KubeNodeNotReady|KubeNodeUnreachable|CompaniaBuzonAtascado|CompaniaSinTurnos"'
+          - 'alertname =~ "KeepBackendAbsent|KeepIngestionDown|KeepIngestionSilent|AlertmanagerWebhookDeliveryFailed|KubeNodeNotReady|KubeNodeUnreachable|CompaniaBuzonAtascado|CompaniaSinTurnos|CompaniaSupervisorSinMetricas"'
         receiver: backstop-telegram
         continue: true
         group_by:

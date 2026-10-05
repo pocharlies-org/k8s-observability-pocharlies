@@ -2396,39 +2396,49 @@ spec:
               for over 90 minutes (CronJob every 30 min in namespace whatsapp-mcp). Either the
               passes are failing or their metrics push to vmsingle stopped; in both cases
               BrainWindowsMassDeleteRefused cannot be trusted until it is fixed.
+---
+# SC-1872 (05-10-2026): la compañía pasó 6,5 h sin un turno de Hermes y nada avisó. Se encendió el interruptor de
+# Synapse (~/.company/bots/synapse.on) con el adaptador muerto: todo iba al buzón y nadie lo vaciaba. Quien tenía que
+# verlo (el vigilante = perfil cto, IT = sre-devops, el gestor de problemas) va por la MISMA tubería de Hermes que se
+# rompió. Estas alertas salen del supervisor (job company-supervisor, x86 :19911, contrato http.metrics de
+# x86-host-runtime) y van a backstop-telegram + Keep: no dependen de Hermes.
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMRule
+metadata:
+  name: pocharlies-compania
+  namespace: monitoring
+spec:
+  groups:
     - name: pocharlies.compania
       rules:
-        # SC-1872 (05-10-2026): la compañía pasó 6,5 h sin un turno de Hermes y nada avisó. Se encendió el
-        # interruptor de Synapse (~/.company/bots/synapse.on) con el adaptador muerto: todo iba al buzón y nadie lo
-        # vaciaba. Quien tenía que verlo (el vigilante = perfil cto, IT = sre-devops, el gestor de problemas) va por
-        # la MISMA tubería de Hermes que se rompió. Estas dos alertas salen del supervisor (job company-supervisor,
-        # x86 :19911) y van a backstop-telegram + Keep: no dependen de Hermes.
         - alert: CompaniaBuzonAtascado
-          # El buzón se vacía en minutos cuando funciona (adaptador, o turno-* por el barrido de company_synapse).
-          # 30 min con algo dentro = nadie entrega. El 05-10 habría saltado a las ~10:25 en vez de a las 16:30.
+          # Un mensaje del buzón solo sale al terminar su turno, así que contar mensajes daría falsos atascos con
+          # carga: se mira el más viejo que NADIE está entregando (cerrojo libre). 30 min sin dueño + 5 min de for:
+          # el 05-10 habría saltado hacia las 10:30 en vez de verlo Dani a las 16:30.
           expr: |
-            max(company_buzon_pendientes{job="company-supervisor"}) > 0
+            max(company_buzon_sin_dueno_antiguedad_seconds{job="company-supervisor"}) > 1800
             and on() max(company_encendida{job="company-supervisor"}) == 1
-          for: 30m
+          for: 5m
           labels:
             severity: critical
             area: compania
             component: company-supervisor
           annotations:
-            summary: "Compañía: {{ $value }} mensajes atascados en el buzón de turnos desde hace 30 min o más"
+            summary: "Compañía: un mensaje del buzón lleva {{ $value | humanizeDuration }} sin que nadie lo entregue"
             description: >-
-              Hay mensajes para los perfiles de Hermes en ~/.company/bots/buzon y nadie los entrega. Mirar
+              Hay mensajes para los perfiles de Hermes en ~/.company/bots/buzon que nadie entrega. Mirar
               company_synapse{estado} (¿synapse.on pedido con el adaptador company-encargos-adapter caído?) y
               `journalctl --user -u company-buzon-barrido`. Volver atrás: borrar ~/.company/bots/synapse.on;
               el barrido entrega lo atascado por turno-* (SC-1872).
         - alert: CompaniaSinTurnos
-          # Ningún turno de Hermes termina bien en 1 h con encargos abiertos y la compañía encendida. De noche, con
-          # la compañía trabajando, hay decenas de turnos por hora (287 en 8 h el 05-10).
+          # Ningún turno de Hermes termina bien en 40 min con encargos en marcha (company_encargos.situacion: el cto
+          # que solo espera no cuenta) y la compañía encendida. De noche, trabajando, hay decenas de turnos por hora
+          # (287 en 8 h el 05-10). Sin la marca del primer turno bueno tras el despliegue no hay serie y no salta.
           expr: |
-            (time() - max(company_turno_ultimo_ok_timestamp_seconds{job="company-supervisor"})) > 3600
+            (time() - max(company_turno_ultimo_ok_timestamp_seconds{job="company-supervisor"})) > 2400
             and on() sum(company_encargos_en_marcha{job="company-supervisor"}) > 0
             and on() max(company_encendida{job="company-supervisor"}) == 1
-          for: 10m
+          for: 5m
           labels:
             severity: critical
             area: compania
@@ -2436,6 +2446,21 @@ spec:
           annotations:
             summary: "Compañía: ningún turno de Hermes terminado en {{ $value | humanizeDuration }}"
             description: >-
-              Hay encargos abiertos a los perfiles de Hermes y ninguno termina un turno. Causas vistas: el buzón
-              sin entregar (CompaniaBuzonAtascado), el api_server de Hermes caído o saturado, el LLM local caído
-              sin fallback. Mirar ~/.company/bots/turnos/turnos.log y `systemctl --user list-units 'turno-*'`.
+              Hay encargos en marcha a los perfiles de Hermes y ninguno termina un turno. Causas vistas: el buzón
+              sin entregar (CompaniaBuzonAtascado), el api_server de Hermes atascado, el LLM local caído sin
+              fallback. Mirar ~/.company/bots/turnos/turnos.log y `systemctl --user list-units 'turno-*'`.
+        - alert: CompaniaSupervisorSinMetricas
+          # Si el supervisor muere, las dos de arriba se resuelven en silencio (architect, SC-1872): sin sus métricas
+          # nadie vigila a la compañía.
+          expr: |
+            absent_over_time(company_encendida{job="company-supervisor"}[10m])
+          for: 5m
+          labels:
+            severity: critical
+            area: compania
+            component: company-supervisor
+          annotations:
+            summary: "Compañía: el supervisor lleva 15 min sin publicar métricas"
+            description: >-
+              VictoriaMetrics no recibe company_encendida del job company-supervisor (x86 :19911). Mirar
+              `systemctl --user status jira-epic-trigger` en el x86 y el target en vmagent.
