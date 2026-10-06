@@ -238,9 +238,9 @@ spec:
           command: ["python", "/probe/probe.py"]
           ports: [{ name: metrics, containerPort: 9114 }]
           env:
-            # PROBE_ISSUE_KEY: la Task fija «sonda — no tocar» de SC la entrega IT (SC-1834);
-            # se fija aquí cuando exista. Vacía = tools/call isError = up=0, sin fingir salud.
-            - { name: PROBE_ISSUE_KEY, value: "" }
+            # PROBE_ISSUE_KEY: la Task fija «sonda — no tocar» de SC la entregó IT (SC-1927,
+            # entregada en SC-1918). Vacía = tools/call isError = up=0, sin fingir salud.
+            - { name: PROBE_ISSUE_KEY, value: "SC-1927" }
             - name: PROBE_CLIENT_SECRET
               valueFrom:
                 # optional: el Secret no existe hasta que IT cree el ítem; el pod arranca
