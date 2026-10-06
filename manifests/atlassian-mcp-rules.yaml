@@ -15,11 +15,18 @@
 #   - `absent_over_time(...[10m])`                       -> la sonda muerta o sin scrape: sin serie no hay
 #     (patrón CompaniaSupervisorSinMetricas, SC-1872)     `up==0` que ver, y el silencio no debe ser verde
 #
-# Despliegue: la regla puede vivir antes que la sonda sin ruido — hasta el primer scrape no
-# hay serie y `absent_over_time` es cierto, pero en cuanto la sonda expone métricas (primer
-# ciclo, < 60 s) el término pasa a falso, antes de cumplir el `for: 5m`. Lo que NO debe pasar
-# es desplegar la regla con la sonda desplegada y `up=0` por falta de secreto (ver el
-# PRE-ENTREGA del manifiesto de la sonda): eso sería una crítica perpetua correcta de forma.
+# Despliegue: esta regla NO está en `kustomization.yaml` a propósito (cambio del architect
+# en la PR #84). Sin serie, `absent_over_time` es cierto desde el primer minuto y con
+# `for: 5m` dispararía: desplegarla antes de que la sonda (PR #83) esté publicada y
+# reportando sería una crítica falsa a los 5 min. Se habilita con una PR de una línea
+# (añadir la entrada a `kustomization.yaml`) cuando VictoriaMetrics ya devuelve
+# `atlassian_mcp_tool_up == 1`:
+#   kubectl -n monitoring exec deploy/vmsingle-vm-victoria-metrics-k8s-stack -- \
+#     wget -qO- 'http://localhost:8428/api/v1/query?query=atlassian_mcp_tool_up'
+# Mientras no está habilitada no aparece en el clúster; la matriz y
+# `verify-notification-coverage.py` ya la cubren porque `alert_routing.load_defined`
+# lee también `manifests/`. Una vez habilitada, el término `absent` es el que cubre
+# «sonda muerta».
 #
 # El `summary` empieza por la frase del contrato con ops-watch y company_requests
 # (REGLAS_CAIDA_JIRA / RESUMEN_CAIDA_JIRA en x86-host-runtime): no renombrar.
@@ -55,7 +62,7 @@ spec:
               métricas. Comprobar: `kubectl -n monitoring logs deploy/atlassian-mcp-probe`,
               el contador de fallos del supervisor en el x86 (journalctl --user -u
               jira-epic-trigger | grep -i mcp) y el conector Jira del MCP
-              (`kubectl -n agentgateway-mcp logs`). Consecuencia mientras dure: los roles
+              (`kubectl -n agentgateway logs deploy/agentgateway-mcp`). Consecuencia mientras dure: los roles
               pierden `jira_*` y deben usar `jira_rest.py` por REST. La Request única la
               abre el supervisor o este incidente vía ops-watch (SC-1728); el Operador IT
               la cierra con la causa.

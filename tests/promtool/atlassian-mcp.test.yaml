@@ -32,8 +32,8 @@ tests:
                 métricas. Comprobar: `kubectl -n monitoring logs deploy/atlassian-mcp-probe`,
                 el contador de fallos del supervisor en el x86 (journalctl --user -u
                 jira-epic-trigger | grep -i mcp) y el conector Jira del MCP
-                (`kubectl -n agentgateway-mcp logs`). Consecuencia mientras dure: los roles
-                pierden `jira_*` y deben usar `jira_rest.py` por REST. La Request única la
+                (`kubectl -n agentgateway logs deploy/agentgateway-mcp`). Consecuencia mientras dure:
+                los roles pierden `jira_*` y deben usar `jira_rest.py` por REST. La Request única la
                 abre el supervisor o este incidente vía ops-watch (SC-1728); el Operador IT
                 la cierra con la causa.
 
@@ -56,8 +56,8 @@ tests:
                 métricas. Comprobar: `kubectl -n monitoring logs deploy/atlassian-mcp-probe`,
                 el contador de fallos del supervisor en el x86 (journalctl --user -u
                 jira-epic-trigger | grep -i mcp) y el conector Jira del MCP
-                (`kubectl -n agentgateway-mcp logs`). Consecuencia mientras dure: los roles
-                pierden `jira_*` y deben usar `jira_rest.py` por REST. La Request única la
+                (`kubectl -n agentgateway logs deploy/agentgateway-mcp`). Consecuencia mientras dure:
+                los roles pierden `jira_*` y deben usar `jira_rest.py` por REST. La Request única la
                 abre el supervisor o este incidente vía ops-watch (SC-1728); el Operador IT
                 la cierra con la causa.
 
