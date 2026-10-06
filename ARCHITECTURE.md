@@ -24,7 +24,8 @@ multi-source: chart upstream + `values` de este repo, salvo indicación):
 ## 2. Dependencias, en ambos sentidos
 
 - **Depende de** — todos los nodos (Alloy/scrapes), Postgres compartido (Keep/Aurora, esquema `keep_bridge`), LiteLLM (RCA de
-  Aurora, K8sGPT), Synapse/OpenClaw (webhook de VMAlertmanager), 1Password/ExternalSecrets (`*-secrets.yaml`), Kyverno (excepciones).
+  Aurora, K8sGPT), Synapse/OpenClaw (webhook de VMAlertmanager), 1Password/ExternalSecrets (`*-secrets.yaml`), Kyverno (excepciones),
+  Keycloak + AgentGateway (sonda `atlassian-mcp-probe`: client `atlassian-mcp-probe` y ruta `/atlassian-probe`, SC-1834).
 - **Dependen de él** — dashboard de control-nexus (`PROMETHEUS_URL` → `vmsingle-vm-victoria-metrics-k8s-stack.monitoring.svc:8428`),
   Grafana (`grafana.e-dani.com`), todos los repos que publican `VMServiceScrape/VMRule`; contrato **Keep↔Aurora**
   (`docs/keep-aurora-contract.md` v1.3: despacho a Aurora por `keep_incident_id`; función SECURITY DEFINER `keep_bridge.aurora_rca_coverage()`).
@@ -39,6 +40,7 @@ multi-source: chart upstream + `values` de este repo, salvo indicación):
 | Keep + Aurora | 0.1.96 / 1.2.16 | correlación y RCA de alertas | Alertmanager a pelo |
 | K8sGPT (solo detección determinista cada 15 min) | operator 0.2.27 | diagnóstico sin bucles LLM; analyzers `ReplicaSet/Service/Job` excluidos | análisis LLM continuo |
 | Python 3.12 (`k8sgpt-explainer/explainer.py`) + promtool | CI | explicador y test de reglas (INFRA-376) | — |
+| `atlassian-mcp-probe` (Deployment, script stdlib en ConfigMap) | python 3.12 | sonda funcional del MCP de Atlassian: cada 60 s un `tools/call jira_get_issue` real vía AgentGateway `/atlassian-probe`; métrica `atlassian_mcp_tool_up` (SC-1834, H4 SC-1728) | blackbox `VMProbe` (no hace sesión MCP), `/readyz` (verde con PoolTimeout) |
 
 ## 4. Componentes compartidos
 
