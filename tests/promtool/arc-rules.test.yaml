@@ -1,0 +1,149 @@
+# INFRA-550: casos de las reglas de cola CI (promtool test rules). `rules` la
+# genera tests/test_infra550_arc_promtool.py desde manifests/arc-rules.yaml.
+# Ojo con CIQueueExporterBlind: en promtool `time()` es tiempo SINTEICO desde
+# 0 del test — el término `time() - ts > 900` se evalúa contra el reloj del
+# test, y `absent_over_time[30m]` es cierto desde t=0 si la serie nunca existió.
+rule_files:
+  - arc-rules.generated.yaml
+evaluation_interval: 1m
+tests:
+  - interval: 1m
+    name: cola >20 min dispara sin for; cola corta no dispara
+    input_series:
+      - series: 'ci_queue_oldest_queued_job_age_seconds{label="arc-k8s",pool="pool",repo="hermes-agent"}'
+        values: '1300x10'
+      - series: 'ci_queue_oldest_queued_job_age_seconds{label="ubuntu-latest",pool="github",repo="synapse"}'
+        values: '900x10'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: CIQueueJobQueuedTooLong
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              area: infra
+              label: arc-k8s
+              pool: pool
+              repo: hermes-agent
+            exp_annotations:
+              summary: "Un job de CI lleva más de 20 min en cola"
+              description: "El job más viejo en cola de `arc-k8s` (repo `hermes-agent`) pasa de 20 min esperando runner. Mirar: `kubectl get pods -n arc-runners` (runners atascados, p. ej. CreateContainerError), cola en https://github.com/pocharlies-org/hermes-agent/actions y el informe `python3 scripts/ci_queue_report.py --org pocharlies-org --hours 2` del repo k8s-gitops. Si la cola es de un label sin pool, salta CIQueueLabelWithoutPool con su propio aviso. Contexto: INFRA-400."
+
+  - interval: 1m
+    name: label sin pool dispara tras el for de 5 min
+    input_series:
+      - series: 'ci_queue_queued_jobs{label="ubuntu-latest-32-core",pool="sin-pool"}'
+        values: '1x20'
+      - series: 'ci_queue_queued_jobs{label="arc-k8s",pool="pool"}'
+        values: '3x20'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: CIQueueLabelWithoutPool
+        exp_alerts: []
+      - eval_time: 6m
+        alertname: CIQueueLabelWithoutPool
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              area: infra
+              label: ubuntu-latest-32-core
+              pool: sin-pool
+            exp_annotations:
+              summary: "Jobs de CI con label sin pool de runners"
+              description: "Hay 1 job(s) en cola con label `ubuntu-latest-32-core` que no corresponde a ningún `runnerScaleSetName` de infra/arc.yaml ni a runners de GitHub: no existe ningún listener que los coja y esperarán hasta el timeout de 5 h. Arreglar: cambiar el `runs-on` del workflow a un pool real (ver INFRA-548) o crear el scale set. Pools válidos: `grep runnerScaleSetName infra/arc.yaml` en k8s-gitops."
+
+  - interval: 1m
+    name: runner pendiente de arrancar >10 min (N de INFRA-547) dispara; 9 min no
+    input_series:
+      - series: 'gha_controller_pending_ephemeral_runners{name="arc-gha-rs-controller-x",namespace="arc-systems",organization="pocharlies-org"}'
+        values: '1x15'
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: CIRunnerNoProgress
+        exp_alerts: []
+      - eval_time: 11m
+        alertname: CIRunnerNoProgress
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              area: infra
+              name: arc-gha-rs-controller-x
+              namespace: arc-systems
+              organization: pocharlies-org
+            exp_annotations:
+              summary: "Runners ARC pendientes de arrancar más de 10 min"
+              description: "El controller de ARC tiene runners ephemeral en Pending sostenido 10 min (lo normal: arrancan en ~1-2 min, p95 de cola 94 s según INFRA-547). Sospechar de nodos con disco/I-O saturado (CreateContainerError, el caso 22-09 con md3 al 100 %): `kubectl get pods -n arc-runners -o wide | grep -v Running` y `kubectl describe` del pod colgado. Si coincide con nodos ks5 al límite, revisar el taint/afinidad de infra/arc.yaml."
+
+  - interval: 1m
+    name: pool saturado (asignados>0 y desired==max) 15 min; con desired<max no
+    input_series:
+      - series: 'gha_assigned_jobs{name="arc-k8s-l",namespace="arc-runners",organization="pocharlies-org"}'
+        values: '16x20'
+      - series: 'gha_desired_runners{name="arc-k8s-l",namespace="arc-runners",organization="pocharlies-org"}'
+        values: '16x20'
+      - series: 'gha_max_runners{name="arc-k8s-l",namespace="arc-runners",organization="pocharlies-org"}'
+        values: '16x20'
+      - series: 'gha_assigned_jobs{name="arc-openclaw-l",namespace="arc-runners",organization="pocharlies-org"}'
+        values: '2x20'
+      - series: 'gha_desired_runners{name="arc-openclaw-l",namespace="arc-runners",organization="pocharlies-org"}'
+        values: '1x20'
+      - series: 'gha_max_runners{name="arc-openclaw-l",namespace="arc-runners",organization="pocharlies-org"}'
+        values: '2x20'
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: CIPoolSaturated
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              area: infra
+              name: arc-k8s-l
+              namespace: arc-runners
+              organization: pocharlies-org
+            exp_annotations:
+              summary: "Pool ARC saturado: jobs asignados con desired == maxRunners"
+              description: "El scale set `arc-k8s-l` lleva 15 min con trabajos asignados y el máximo de runners deseado/permitido: la cola crece por capacidad, no por runners rotos. O bajar demanda, o subir maxRunners en infra/arc.yaml (solo con cifras del informe de cola, regla de INFRA-549)."
+
+  - interval: 1m
+    name: exporter ciego por serie ausente (nunca nacio) dispara con el for de 15 min
+    input_series: []
+    alert_rule_test:
+      - eval_time: 14m
+        alertname: CIQueueExporterBlind
+        exp_alerts: []
+      - eval_time: 16m
+        alertname: CIQueueExporterBlind
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              area: infra
+            exp_annotations:
+              summary: "El exporter de cola CI está ciego"
+              description: "`ci-queue-exporter` (ns monitoring) no completa un scrape desde hace >15 min, o no ha nacido nunca (deploy caído, merge de gitops sin desplegar). Comprobar: `kubectl -n monitoring logs deploy/ci-queue-exporter`, que el Secret `ci-queue-github-token` exista y sea fresco (lo renueva external-secrets cada 30 min; si no, force-sync del ExternalSecret `ci-queue-github-token`), y cuota: `ci_queue_api_rate_remaining`. Mientras dure, las reglas CIQueue* no ven nada."
+
+  - interval: 1m
+    name: exporter ciego por scrape viejo (ts=0) dispara a los 30 min del test
+    input_series:
+      - series: 'ci_queue_scrape_success_timestamp_seconds'
+        values: '0x60'
+    alert_rule_test:
+      - eval_time: 29m
+        alertname: CIQueueExporterBlind
+        exp_alerts: []
+      - eval_time: 31m
+        alertname: CIQueueExporterBlind
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              area: infra
+            exp_annotations:
+              summary: "El exporter de cola CI está ciego"
+              description: "`ci-queue-exporter` (ns monitoring) no completa un scrape desde hace >15 min, o no ha nacido nunca (deploy caído, merge de gitops sin desplegar). Comprobar: `kubectl -n monitoring logs deploy/ci-queue-exporter`, que el Secret `ci-queue-github-token` exista y sea fresco (lo renueva external-secrets cada 30 min; si no, force-sync del ExternalSecret `ci-queue-github-token`), y cuota: `ci_queue_api_rate_remaining`. Mientras dure, las reglas CIQueue* no ven nada."
+
+  - interval: 1m
+    name: scrape sano (ts muy por delante del reloj sintético) no dispara en una hora
+    input_series:
+      - series: 'ci_queue_scrape_success_timestamp_seconds'
+        values: '1000000000000x60'
+    alert_rule_test:
+      - eval_time: 59m
+        alertname: CIQueueExporterBlind
+        exp_alerts: []

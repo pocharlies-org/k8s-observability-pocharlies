@@ -68,6 +68,10 @@ resources:
   # del values.yaml de infra/external-secrets.
   - manifests/external-secrets-scrape.yaml
   - manifests/external-secrets-rules.yaml
+  # INFRA-550: salud del pool ARC (gha_* del listener/controller 0.14.1, habilitados
+  # en gitops infra/arc.yaml pero sin scrapear hasta ahora) y del exporter de cola.
+  - manifests/arc-scrape.yaml
+  - manifests/arc-rules.yaml
   - manifests/dgx-gpu-mem-exporter.yaml
   - manifests/kyverno-policy-exceptions.yaml
   - manifests/dgx-cluster-health-watcher.yaml

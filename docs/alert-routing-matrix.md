@@ -15,15 +15,15 @@ llega a algún sitio únicamente si su `alertname` aparece listado antes.
 
 | destino hoy | series | % |
 |---|---:|---:|
-| keep | 309 | 95% |
+| keep | 314 | 95% |
 | backstop-telegram + keep | 16 | 5% |
-| **TOTAL** | **325** | 100% |
+| **TOTAL** | **330** | 100% |
 
 ### Taxonomía de severidad realmente emitida
 
 | valor | series | ¿lo contempla el árbol? |
 |---|---:|---|
-| `warning` | 186 | sí — `severity = warning` → blackhole |
+| `warning` | 191 | sí — `severity = warning` → blackhole |
 | `critical` | 129 | sí — `severity = critical` |
 | `info` | 8 | **no** — cae al receiver raíz |
 | `none` | 2 | **no** — cae al receiver raíz |
@@ -143,8 +143,8 @@ despiertan a nadie pese a llamarse `page`.
 | `KubeNodeUnreachable` | `warning` | backstop-telegram + keep |  |
 | `KubePdbNotEnoughHealthyPods` | `warning` | keep |  |
 | `KubePersistentVolumeErrors` | `critical` | keep |  |
-| `KubePersistentVolumeFillingUp` | `critical` | keep | 5 |
-| `KubePersistentVolumeFillingUp` | `warning` | keep | 5 |
+| `KubePersistentVolumeFillingUp` | `critical` | keep |  |
+| `KubePersistentVolumeFillingUp` | `warning` | keep |  |
 | `KubePersistentVolumeInodesFillingUp` | `critical` | keep |  |
 | `KubePersistentVolumeInodesFillingUp` | `warning` | keep |  |
 | `KubePodCrashLooping` | `warning` | keep |  |
@@ -256,8 +256,8 @@ despiertan a nadie pese a llamarse `page`.
 | `NodeFilesystemAlmostOutOfSpace` | `warning` | keep |  |
 | `NodeFilesystemFilesFillingUp` | `critical` | keep |  |
 | `NodeFilesystemFilesFillingUp` | `warning` | keep |  |
-| `NodeFilesystemSpaceFillingUp` | `critical` | keep | 3 |
-| `NodeFilesystemSpaceFillingUp` | `warning` | keep | 3 |
+| `NodeFilesystemSpaceFillingUp` | `critical` | keep |  |
+| `NodeFilesystemSpaceFillingUp` | `warning` | keep |  |
 | `NodeHighNumberConntrackEntriesUsed` | `warning` | keep |  |
 | `NodeMemoryHighUtilization` | `warning` | keep |  |
 | `NodeMemoryMajorPagesFaults` | `warning` | keep |  |
@@ -381,7 +381,7 @@ despiertan a nadie pese a llamarse `page`.
 | `TrackingIngestionSilent` | `warning` | keep |  |
 | `TrackingPage404Spike` | `critical` | keep |  |
 
-### otros (118)
+### otros (123)
 
 | alertname | sev | destino hoy | firing |
 |---|---|---|---:|
@@ -404,6 +404,11 @@ despiertan a nadie pese a llamarse `page`.
 | `BrainIngestConsecutiveFailures` | `warning` | keep |  |
 | `BrainWindowsMassDeleteRefused` | `warning` | keep |  |
 | `BrainWindowsPassStale` | `warning` | keep |  |
+| `CIPoolSaturated` | `warning` | keep |  |
+| `CIQueueExporterBlind` | `warning` | keep |  |
+| `CIQueueJobQueuedTooLong` | `warning` | keep |  |
+| `CIQueueLabelWithoutPool` | `warning` | keep |  |
+| `CIRunnerNoProgress` | `warning` | keep |  |
 | `CPUThrottlingHigh` | `info` | keep | 2 |
 | `CertManagerCertificateMetricsMissing` | `critical` | keep |  |
 | `CertificateExpiresSoon` | `warning` | keep |  |
@@ -427,7 +432,7 @@ despiertan a nadie pese a llamarse `page`.
 | `HighQueueDepth` | `warning` | keep |  |
 | `IndexDBRecordsDrop` | `critical` | keep |  |
 | `InfoInhibitor` | `none` | keep | 3 |
-| `K8sCronJobFailed` | `warning` | keep | 3 |
+| `K8sCronJobFailed` | `warning` | keep | 2 |
 | `K8sGptExplainerUnavailable` | `warning` | keep |  |
 | `K8sGptFindingsSpike` | `warning` | keep |  |
 | `K8sGptOperatorAbsent` | `warning` | keep |  |
