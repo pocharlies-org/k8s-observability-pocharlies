@@ -46,6 +46,7 @@ multi-source: chart upstream + `values` de este repo, salvo indicación):
 |---|---|---|---|
 | Reglas de enrutado de alertas | matriz | `docs/alert-routing-matrix.md`, `keep/rules/` | toda alerta del estate |
 | Contrato Keep↔Aurora | `docs/keep-aurora-contract.md` | ídem | Keep, Aurora |
+| Alerta de caída del MCP de Atlassian (SC-1728/H5) | `VMRule AtlassianMcpToolDown` + regla de correlación homónima | `manifests/atlassian-mcp-rules.yaml`, `keep/rules/correlation-rules.yaml` | sonda `atlassian-mcp-probe` (SC-1834); `ops-watch` y `company_caida_jira` (x86-host-runtime) por `rule_name` == `company_requests.REGLAS_CAIDA_JIRA` — renombrar = entrada nueva junto a la vieja |
 | Claim de despacho a Aurora (una vez por incidente de Keep, cooldown 6 h) | step `claim-dispatch` del workflow `aurora-investigate` | `keep/values.yaml` | Keep → Aurora; lectores `rca-datos`, `link-datos`, `mark-linked`, `aurora_rca_coverage()` (cruzan por `fingerprint`) |
 | Dashboards | `manifests/dashboards.yaml`, `grafana-company-dashboard.yaml`, `grafana-keep.yaml` | ídem | Grafana |
 | Modelo LLM de Aurora y Keep | nombre directo `qwen38-flash-next` (residente único del perfil `llm-tp`; fallback y allowlist en LiteLLM) | `aurora/values.yaml`, `keep/values.yaml` | Aurora, Keep |

@@ -68,6 +68,8 @@ resources:
   # del values.yaml de infra/external-secrets.
   - manifests/external-secrets-scrape.yaml
   - manifests/external-secrets-rules.yaml
+  # SC-1835: la alerta del MCP de Atlassian (sonda atlassian-mcp-probe, SC-1834).
+  - manifests/atlassian-mcp-rules.yaml
   - manifests/dgx-gpu-mem-exporter.yaml
   - manifests/kyverno-policy-exceptions.yaml
   - manifests/dgx-cluster-health-watcher.yaml

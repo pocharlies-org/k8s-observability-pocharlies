@@ -154,15 +154,25 @@ def load_firing() -> list[dict]:
     return json.loads(raw)
 
 
+def _vmrule_alerts(doc: dict) -> set[tuple[str, str]]:
+    if not doc or doc.get("kind") != "VMRule":
+        return set()
+    return {(rule["alert"], (rule.get("labels") or {}).get("severity", ""))
+            for grp in doc.get("spec", {}).get("groups", [])
+            for rule in grp.get("rules", []) if "alert" in rule}
+
+
 def load_defined() -> list[tuple[str, str]]:
-    """(alertname, severity) de todas las VMRules del clúster."""
-    d = json.loads(kubectl("get", "vmrule", "-A", "-o", "json"))
-    found = set()
-    for item in d["items"]:
-        for grp in item["spec"].get("groups", []):
-            for rule in grp.get("rules", []):
-                if "alert" in rule:
-                    found.add((rule["alert"], (rule.get("labels") or {}).get("severity", "")))
+    """(alertname, severity) de las VMRules del clúster MÁS las definidas en el repo
+    (manifests/*.yaml). La unión (SC-1835) es para que una regla recién definida y aún
+    no desplegada ya esté en la matriz —el tronco de GitOps es la fuente de verdad, el
+    clúster su espejo con retardo— y `verify-notification-coverage.py` la evalúe contra
+    las reglas de correlación ANTES de desplegarla, que es cuando sirve la comprobación."""
+    found = {a for item in json.loads(kubectl("get", "vmrule", "-A", "-o", "json"))["items"]
+             for a in _vmrule_alerts(item)}
+    for f in sorted((REPO / "manifests").glob("*.yaml")):
+        for doc in yaml.safe_load_all(f.read_text()):
+            found |= _vmrule_alerts(doc)
     return sorted(found)
 
 
@@ -213,9 +223,9 @@ def cmd_matrix(_args) -> None:
     w = out.append
     w("# Matriz de routing de alertas — estado actual y destino en Keep")
     w("")
-    w(f"Generado el {today} por `scripts/alert_routing.py matrix` desde el clúster")
-    w(f"`x86-k3s`, simulando el matching de Alertmanager sobre")
-    w(f"`VMAlertmanagerConfig {AM_NAMESPACE}/{AM_CONFIG}`.")
+    w(f"Generado el {today} por `scripts/alert_routing.py matrix` desde las VMRules del")
+    w(f"clúster `x86-k3s` y las definidas en `manifests/` (SC-1835), simulando el")
+    w(f"matching de Alertmanager sobre `VMAlertmanagerConfig {AM_NAMESPACE}/{AM_CONFIG}`.")
     w("")
     w("**No editar a mano.** Regenerar con el script tras cualquier cambio de rutas o reglas.")
     w("")
