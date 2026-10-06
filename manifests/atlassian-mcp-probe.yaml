@@ -47,7 +47,7 @@ data:
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
     MCP_URL = os.environ.get("PROBE_MCP_URL",
-        "http://agentgateway-mcp.agentgateway-mcp.svc.cluster.local:3000/atlassian-probe/mcp")
+        "http://agentgateway-mcp.agentgateway.svc.cluster.local:3000/atlassian-probe/mcp")
     TOKEN_URL = os.environ.get("PROBE_TOKEN_URL",
         "https://auth-next.e-dani.com/realms/edani/protocol/openid-connect/token")
     CLIENT_ID = os.environ.get("PROBE_CLIENT_ID", "atlassian-mcp-probe")
@@ -224,6 +224,12 @@ spec:
   template:
     metadata:
       labels: { app: atlassian-mcp-probe }
+      annotations:
+        # sha256 del data.probe.py del ConfigMap de arriba (patrón checksum/config del
+        # gateway): el ConfigMap se monta plano (sin generator), así que sin esta anotación
+        # editar probe.py NO reiniciaría el pod. tests/test_atlassian_mcp_probe.py la compara
+        # con el hash real: cambiar el script sin refrescarla rompe CI.
+        checksum/script: "sha256:c6f1c1e792c2fad8a3211ec9345ea228789aa7382bc61c88cb0dd8a3143f0728"
     spec:
       containers:
         - name: probe
@@ -241,7 +247,8 @@ spec:
                 # igualmente y la sonda reporta up=0 (kind=http por el 401 del token).
                 secretKeyRef: { name: atlassian-mcp-probe, key: client_secret, optional: true }
           volumeMounts:
-            # ConfigMap con hash: editar el script rueda el pod, como en el shim.
+            # ConfigMap plano: lo que rueda el pod al editar el script es la anotación
+            # checksum/script del template, no un hash del generator.
             - { name: script, mountPath: /probe, readOnly: true }
           readinessProbe: { httpGet: { path: /readyz, port: metrics }, initialDelaySeconds: 3, periodSeconds: 15 }
           livenessProbe: { httpGet: { path: /readyz, port: metrics }, initialDelaySeconds: 15, periodSeconds: 30 }

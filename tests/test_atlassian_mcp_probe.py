@@ -3,9 +3,10 @@ hace el ciclo MCP completo contra un gateway simulado y publica las cuatro métr
 
 Hermético: sin clúster ni red externa — un HTTPServer local hace de Keycloak y de
 AgentGateway (JSON-RPC sobre POST, con variante SSE y variante isError)."""
+import hashlib
 import importlib.util
-import io
 import json
+import os
 import threading
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -153,3 +154,26 @@ def test_metrics_endpoint_exposes_the_four_series():
                  'atlassian_mcp_probe_errors_total{kind="isError"}',
                  'atlassian_mcp_probe_errors_total{kind="jsonrpc"}'):
         assert name in body, name
+
+
+def test_default_mcp_url_points_at_the_real_gateway_service():
+    # El Service agentgateway-mcp vive en el namespace `agentgateway` (medido: kubectl get
+    # svc -A; no existe el ns `agentgateway-mcp`). Sin env, la sonda debe apuntar ahí: con
+    # un ns falso daría up=0 por DNS para siempre y los demás tests no lo verían (inyectan
+    # PROBE_MCP_URL).
+    for var in ("PROBE_MCP_URL", "PROBE_TOKEN_URL", "PROBE_CLIENT_SECRET", "PROBE_ISSUE_KEY"):
+        os.environ.pop(var, None)
+    mod = load_probe({})
+    assert mod.MCP_URL.startswith(
+        "http://agentgateway-mcp.agentgateway.svc.cluster.local:3000/atlassian-probe")
+
+
+def test_checksum_script_annotation_matches_the_script():
+    # El ConfigMap se monta plano: lo único que rueda el pod al editar probe.py es la
+    # anotación checksum/script del template. Si alguien edita el script sin refrescarla,
+    # este test rompe (patrón checksum/config del gateway).
+    docs = list(yaml.safe_load_all(MANIFEST.read_text()))
+    cm = next(d for d in docs if d and d.get("kind") == "ConfigMap")
+    dep = next(d for d in docs if d and d.get("kind") == "Deployment")
+    ann = dep["spec"]["template"]["metadata"]["annotations"]["checksum/script"]
+    assert ann == "sha256:" + hashlib.sha256(cm["data"]["probe.py"].encode()).hexdigest()
