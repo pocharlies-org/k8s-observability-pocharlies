@@ -19,9 +19,10 @@ ROOT = Path(__file__).resolve().parents[1]
 RULES = ROOT / "manifests" / "rules.yaml"
 
 
-def vmrule_groups(name):
-    """spec.groups of the VMRule `name` in manifests/rules.yaml."""
-    docs = [d for d in yaml.safe_load_all(RULES.read_text()) if d]
+def vmrule_groups(name, rules_file=RULES):
+    """spec.groups of the VMRule `name` in `rules_file` (default manifests/rules.yaml;
+    las VMRule con fichero propio —patrón external-secrets-rules.yaml— lo pasan)."""
+    docs = [d for d in yaml.safe_load_all(Path(rules_file).read_text()) if d]
     return next(d for d in docs if d.get("metadata", {}).get("name") == name)["spec"]["groups"]
 
 

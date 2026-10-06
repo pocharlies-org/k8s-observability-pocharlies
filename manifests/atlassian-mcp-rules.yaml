@@ -1,0 +1,68 @@
+# SC-1835 (H5 de SC-1728) — «Jira/MCP de Atlassian no contesta», detectado desde el clúster.
+#
+# Por qué existe. La compañía entera (supervisor, IT, épica-trigger) depende del MCP de
+# Atlassian; cuando el PoolTimeout del conector lo cuelga, cada llamada cuesta 60 s y nada
+# avisa. La sonda `atlassian-mcp-probe` (SC-1834, manifests/atlassian-mcp-probe.yaml) ejerce
+# la ruta de verdad — `initialize` + `tools/call jira_get_issue` cada 60 s — y esta regla la
+# vigila. Detección complementaria: el contador de fallos del supervisor (x86) cubre el tramo
+# del túnel :8790 que la sonda no ejercita; esta regla cubre la caída aunque el supervisor
+# esté muerto (C5 de la épica: detectar sin depender de lo caído).
+#
+# Los tres términos del `or` no son redundancia, son los tres modos de fallo:
+#   - `atlassian_mcp_tool_up == 0`                       -> el MCP responde mal (http/timeout/isError/jsonrpc)
+#   - `time() - last_success > 300`                      -> la sonda viva pero atascada: su hilo lleva
+#     (5 ciclos sin éxito con la serie existiendo)        5 ciclos sin completar uno; `up` conservaría el 1
+#   - `absent_over_time(...[10m])`                       -> la sonda muerta o sin scrape: sin serie no hay
+#     (patrón CompaniaSupervisorSinMetricas, SC-1872)     `up==0` que ver, y el silencio no debe ser verde
+#
+# Despliegue: esta regla NO está en `kustomization.yaml` a propósito (cambio del architect
+# en la PR #84). Sin serie, `absent_over_time` es cierto desde el primer minuto y con
+# `for: 5m` dispararía: desplegarla antes de que la sonda (PR #83) esté publicada y
+# reportando sería una crítica falsa a los 5 min. Se habilita con una PR de una línea
+# (añadir la entrada a `kustomization.yaml`) cuando VictoriaMetrics ya devuelve
+# `atlassian_mcp_tool_up == 1`:
+#   kubectl -n monitoring exec deploy/vmsingle-vm-victoria-metrics-k8s-stack -- \
+#     wget -qO- 'http://localhost:8428/api/v1/query?query=atlassian_mcp_tool_up'
+# Mientras no está habilitada no aparece en el clúster; la matriz y
+# `verify-notification-coverage.py` ya la cubren porque `alert_routing.load_defined`
+# lee también `manifests/`. Una vez habilitada, el término `absent` es el que cubre
+# «sonda muerta».
+#
+# El `summary` empieza por la frase del contrato con ops-watch y company_requests
+# (REGLAS_CAIDA_JIRA / RESUMEN_CAIDA_JIRA en x86-host-runtime): no renombrar.
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMRule
+metadata:
+  name: pocharlies-atlassian-mcp
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: atlassian-mcp-probe
+    app.kubernetes.io/component: alerting
+spec:
+  groups:
+    - name: pocharlies.atlassian-mcp
+      rules:
+        - alert: AtlassianMcpToolDown
+          expr: |
+            atlassian_mcp_tool_up == 0
+              or
+            time() - atlassian_mcp_tool_last_success_timestamp_seconds > 300
+              or
+            absent_over_time(atlassian_mcp_tool_up[10m])
+          for: 5m
+          labels:
+            severity: critical
+            area: compania
+            component: atlassian-mcp-probe
+          annotations:
+            summary: "Jira/MCP de Atlassian no contesta"
+            description: >-
+              La sonda atlassian-mcp-probe (ns monitoring) no consigue leer una issue via
+              el MCP de Atlassian: `tools/call jira_get_issue` falla o la sonda no publica
+              métricas. Comprobar: `kubectl -n monitoring logs deploy/atlassian-mcp-probe`,
+              el contador de fallos del supervisor en el x86 (journalctl --user -u
+              jira-epic-trigger | grep -i mcp) y el conector Jira del MCP
+              (`kubectl -n agentgateway logs deploy/agentgateway-mcp`). Consecuencia mientras dure: los roles
+              pierden `jira_*` y deben usar `jira_rest.py` por REST. La Request única la
+              abre el supervisor o este incidente vía ops-watch (SC-1728); el Operador IT
+              la cierra con la causa.

@@ -257,7 +257,7 @@ rules:
                  "KubeStatefulSetReplicasMismatch", "KubernetesStatefulSetUnavailable",
                  "KubeletInstanceUnreachable", "TargetDown", "BlackboxProbeDown",
                  "ScrapePoolHasNoTargets", "TooManyScrapeErrors", "AlertingRulesError",
-                 "TooManyLogs", "LitellmNotReady"]
+                 "TooManyLogs", "LitellmNotReady", "AtlassianMcpToolDown"]
       )
     sqlQuery:
       sql: "((severity = :severity_1))"
@@ -763,6 +763,34 @@ rules:
     incidentPrefix: MCP
     incidentNameTemplate: "Backends MCP degradados"
     groupDescription: Crashloops, OOM y gateway de los backends MCP.
+
+  # SC-1835 (H5 de SC-1728): la alerta de la sonda del MCP de Atlassian
+  # (manifests/atlassian-mcp-rules.yaml). El ruleName NO es kebab-case como el
+  # resto, es `AtlassianMcpToolDown` a propósito: `ops-watch.fuente_keep` usa el
+  # `rule_name` del incidente para decidir si es la caída de Jira/MCP
+  # (company_requests.REGLAS_CAIDA_JIRA, contrato ya en main de x86-host-runtime)
+  # y hace el dedup de la Request única contra la del supervisor. Renombrar aquí
+  # = entrada nueva junto a la vieja en ese contrato, no edición.
+  #
+  # Crítica, así que está excluida del safety-net arriba (INVARIANTE 1: la
+  # exclusión delega en esta regla, no silencia).
+  - ruleName: AtlassianMcpToolDown
+    celQuery: 'name == "AtlassianMcpToolDown"'
+    sqlQuery:
+      sql: "((name = :name_1))"
+      params:
+        name_1: AtlassianMcpToolDown
+    timeframeInSeconds: 900
+    timeUnit: minutes
+    groupingCriteria: []
+    createOn: any
+    resolveOn: all_resolved
+    incidentPrefix: JIRA
+    incidentNameTemplate: "Jira/MCP de Atlassian no contesta"
+    groupDescription: >-
+      La sonda atlassian-mcp-probe no consigue leer una issue por el MCP
+      (up=0, sonda atascada o serie ausente). ops-watch abre o comenta la
+      Request única [IT] de la caída; el Operador IT la cierra con la causa.
 
   - ruleName: valkey-datastore
     celQuery: 'name.startsWith("SharedValkey") || name.startsWith("SharedDatastore")'
