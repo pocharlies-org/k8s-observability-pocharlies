@@ -50,6 +50,7 @@ multi-source: chart upstream + `values` de este repo, salvo indicación):
 | Contrato Keep↔Aurora | `docs/keep-aurora-contract.md` | ídem | Keep, Aurora |
 | Alerta de caída del MCP de Atlassian (SC-1728/H5) | `VMRule AtlassianMcpToolDown` + regla de correlación homónima | `manifests/atlassian-mcp-rules.yaml`, `keep/rules/correlation-rules.yaml` | sonda `atlassian-mcp-probe` (SC-1834); `ops-watch` y `company_caida_jira` (x86-host-runtime) por `rule_name` == `company_requests.REGLAS_CAIDA_JIRA` — renombrar = entrada nueva junto a la vieja |
 | Claim de despacho a Aurora (una vez por incidente de Keep, cooldown 6 h) | step `claim-dispatch` del workflow `aurora-investigate` | `keep/values.yaml` | Keep → Aurora; lectores `rca-datos`, `link-datos`, `mark-linked`, `aurora_rca_coverage()` (cruzan por `fingerprint`) |
+| Alerta de disco raíz del nodo ubuntu (INFRA-623): <20 % libre o llena en 3 días | `VMRule NodeRootDiskLowOrFilling` (`pocharlies-node-disk`) + test promtool | `manifests/rules.yaml`, `tests/promtool/node-disk.test.yaml` | los defaults del chart (`NodeFilesystem*`) no saltaron el 07-10: el kubelet desaloja a <5 % libre |
 | Dashboards | `manifests/dashboards.yaml`, `grafana-company-dashboard.yaml`, `grafana-keep.yaml` | ídem | Grafana |
 | Modelo LLM de Aurora y Keep | nombre directo `qwen38-flash-next` (residente único del perfil `llm-tp`; fallback y allowlist en LiteLLM) | `aurora/values.yaml`, `keep/values.yaml` | Aurora, Keep |
 
