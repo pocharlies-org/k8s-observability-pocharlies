@@ -2464,3 +2464,52 @@ spec:
             description: >-
               VictoriaMetrics no recibe company_encendida del job company-supervisor (x86 :19911). Mirar
               `systemctl --user status jira-epic-trigger` en el x86 y el target en vmagent.
+
+---
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMRule
+metadata:
+  name: pocharlies-node-disk
+  namespace: monitoring
+spec:
+  groups:
+    - name: pocharlies.node-disk
+      rules:
+        - alert: NodeRootDiskLowOrFilling
+          # INFRA-623. El 07-10 el `/` del nodo ubuntu (LV ubuntu--vg-ubuntu--lv,
+          # 1,8T) llegó al 94 %, el kubelet lo marcó con disk-pressure (evictionHard
+          # nodefs.available<5 %) y desalojó AdGuard, el DNS de la LAN, y node-exporter:
+          # ~6 h caídos sin aviso. Las reglas del chart no saltaron: NodeFilesystemSpaceFillingUp
+          # exige <15 % libre Y quedarse a 0 en 24 h, y AlmostOutOfSpace avisa por debajo
+          # del 5 %, que es justo donde el kubelet ya desaloja.
+          # Dos ramas, el valor de ambas es el % libre:
+          #   1. menos del 20 % libre;
+          #   2. al ritmo de las últimas 6 h (predict_linear) se llenaría en 3 días.
+          # El `and on(pod)` con kube_pod_info limita la regla al nodo ubuntu (las series
+          # de node-exporter no traen label de nodo; patrón de pocharlies-node-memory).
+          # Los Sparks no entran. Para vigilar otro nodo, cambiar el matcher `node`.
+          expr: |
+            (
+              (
+                (node_filesystem_avail_bytes{job="node-exporter",mountpoint="/",fstype!~"tmpfs|overlay"} / node_filesystem_size_bytes{job="node-exporter",mountpoint="/",fstype!~"tmpfs|overlay"} * 100) < 20
+              )
+              or
+              (
+                (node_filesystem_avail_bytes{job="node-exporter",mountpoint="/",fstype!~"tmpfs|overlay"} / node_filesystem_size_bytes{job="node-exporter",mountpoint="/",fstype!~"tmpfs|overlay"} * 100)
+                and
+                (predict_linear(node_filesystem_avail_bytes{job="node-exporter",mountpoint="/",fstype!~"tmpfs|overlay"}[6h], 3 * 86400) < 0)
+              )
+            )
+            and on(pod)
+            kube_pod_info{namespace="monitoring", pod=~"vm-prometheus-node-exporter-.*", node="ubuntu"}
+          for: 30m
+          labels:
+            severity: critical
+            area: capacity
+          annotations:
+            summary: "Disco raíz del nodo ubuntu: poco espacio libre o se llena en menos de 3 días"
+            description: >-
+              A / de {{ $labels.instance }} ({{ $labels.device }}) le queda el {{ printf "%.1f" $value }} % libre.
+              Salta con menos del 20 % libre o si al ritmo de las últimas 6 h se llena en menos de 3 días.
+              Por debajo del 5 % el kubelet entra en disk-pressure y desaloja pods (el 07-10: AdGuard, el DNS de la LAN).
+              Mirar qué crece (du por directorio: /var/lib/longhorn, /home, /srv, /tmp) y liberar caché.
