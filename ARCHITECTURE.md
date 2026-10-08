@@ -26,6 +26,10 @@ multi-source: chart upstream + `values` de este repo, salvo indicación):
 - **Depende de** — todos los nodos (Alloy/scrapes), Postgres compartido (Keep/Aurora, esquema `keep_bridge`), LiteLLM (RCA de
   Aurora, K8sGPT), Synapse/OpenClaw (webhook de VMAlertmanager), 1Password/ExternalSecrets (`*-secrets.yaml`), Kyverno (excepciones),
   Keycloak + AgentGateway (sonda `atlassian-mcp-probe`: client `atlassian-mcp-probe` y ruta `/atlassian-probe`, SC-1834).
+  Desde INFRA-550 también es **consumidor de las métricas `gha_*`** del listener/controller ARC 0.14.1 (scrape en
+  `manifests/arc-scrape.yaml`; las publica `k8s-gitops-pocharlies` `infra/arc.yaml`, puerto `metrics` :8080 de los pods
+  de `arc-systems`) y de `ci_queue_*` del exporter `ci-queue-exporter` (ns monitoring, desplegado por la Application
+  homónima del repo gitops).
 - **Dependen de él** — dashboard de control-nexus (`PROMETHEUS_URL` → `vmsingle-vm-victoria-metrics-k8s-stack.monitoring.svc:8428`),
   Grafana (`grafana.e-dani.com`), todos los repos que publican `VMServiceScrape/VMRule`; contrato **Keep↔Aurora**
   (`docs/keep-aurora-contract.md` v1.3: despacho a Aurora por `keep_incident_id`; función SECURITY DEFINER `keep_bridge.aurora_rca_coverage()`).
@@ -49,6 +53,7 @@ multi-source: chart upstream + `values` de este repo, salvo indicación):
 | Reglas de enrutado de alertas | matriz | `docs/alert-routing-matrix.md`, `keep/rules/` | toda alerta del estate |
 | Contrato Keep↔Aurora | `docs/keep-aurora-contract.md` | ídem | Keep, Aurora |
 | Alerta de caída del MCP de Atlassian (SC-1728/H5) | `VMRule AtlassianMcpToolDown` + regla de correlación homónima | `manifests/atlassian-mcp-rules.yaml`, `keep/rules/correlation-rules.yaml` | sonda `atlassian-mcp-probe` (SC-1834); `ops-watch` y `company_caida_jira` (x86-host-runtime) por `rule_name` == `company_requests.REGLAS_CAIDA_JIRA` — renombrar = entrada nueva junto a la vieja |
+| Reglas ARC / cola de CI (INFRA-550) | `VMRule pocharlies-arc-ci` (cola >20 min, label sin pool, runner sin progreso >10 min, pool saturado, ceguera del exporter) + scrape `gha_*`/`ci_queue_*` | `manifests/arc-rules.yaml`, `manifests/arc-scrape.yaml`; casos en `tests/promtool/arc-rules.test.yaml`, correlación en `tests/test_infra550_ci_queue_correlation.py` | Keep → topic Infra 1248: Alertmanager las lleva a `keep` (catch-all, sin allowlist) y la regla de correlación `ci-queue-degraded` (`keep/rules/correlation-rules.yaml`, prefijo `CIQ`) las convierte en incidente — sin regla una `warning` queda registrada y calla; fuente de «label sin pool» = exporter `ci-queue-exporter` (gitops), no `gha_*` |
 | Claim de despacho a Aurora (una vez por incidente de Keep, cooldown 6 h) | step `claim-dispatch` del workflow `aurora-investigate` | `keep/values.yaml` | Keep → Aurora; lectores `rca-datos`, `link-datos`, `mark-linked`, `aurora_rca_coverage()` (cruzan por `fingerprint`) |
 | Alerta de disco raíz del nodo ubuntu (INFRA-623): <20 % libre o llena en 3 días | `VMRule NodeRootDiskLowOrFilling` (`pocharlies-node-disk`) + test promtool | `manifests/rules.yaml`, `tests/promtool/node-disk.test.yaml` | los defaults del chart (`NodeFilesystem*`) no saltaron el 07-10: el kubelet desaloja a <5 % libre |
 | Dashboards | `manifests/dashboards.yaml`, `grafana-company-dashboard.yaml`, `grafana-keep.yaml` | ídem | Grafana |

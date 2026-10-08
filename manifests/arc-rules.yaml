@@ -1,0 +1,136 @@
+# INFRA-550 (P4 de INFRA-400, criterio C4) — reglas de cola/atasco de CI.
+#
+# Fuentes (ver nota-architect-plan.md §1 de INFRA-400):
+#   - `ci_queue_*`: exporter a medida en gitops (Application `ci-queue-exporter`),
+#     edad real de los jobs en cola desde `created_at` de la API de GitHub. Es la
+#     única fuente para «label sin pool»: esos jobs nunca llegan al listener ARC.
+#   - `gha_*`: métricas oficiales del listener/controller 0.14.1 (scrape en
+#     manifests/arc-scrape.yaml). VERIFICADO EN VIVO 2026-10-06:
+#     `gha_job_startup_duration_seconds` cuenta desde ASIGNADO al listener hasta
+#     que arranca en el runner (media observada 26 s), NO desde encolado — por
+#     eso el umbral de cola de 20 min no se funda en ella.
+#   - N (runner sin progreso): p95 de pool ARC = 94 s medido en INFRA-547
+#     (aproximación a nivel de run, provisional hasta la recuento exacto de
+#     INFRA-551). 10 min ≈ 6x ese p95: el caso real que hay que cazar (22-09)
+#     era un runner en CreateContainerError ocupando plaza 2 h.
+#
+# Enrutado, en dos pasos y los dos hacen falta:
+#   1. Alertmanager: el catch-all `receiver: keep` las entrega a Keep
+#      (`python3 scripts/alert_routing.py matrix`: 0 en blackhole).
+#   2. Keep solo notifica INCIDENTES (workflow notify-incident, topic Infra
+#      1248) y una `warning` sin regla de correlación queda registrada y CALLA:
+#      la regla `ci-queue-degraded` de keep/rules/correlation-rules.yaml (prefijo
+#      CIQ) las convierte en incidente. Una alerta nueva de este grupo con
+#      nombre fuera de CIQueue*/CIRunner*/CIPoolSaturated no suena hasta que se
+#      amplíe esa regla; tests/test_infra550_ci_queue_correlation.py lo vigila.
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMRule
+metadata:
+  name: pocharlies-arc-ci
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: arc
+    app.kubernetes.io/component: alerting
+spec:
+  groups:
+    - name: pocharlies.arc-ci
+      rules:
+        # C4: un job lleva >20 min en cola. Sin `for`: la edad ya es una
+        # magnitud sostenida (crece sola); añadir for sumaría minutos al aviso.
+        # `pool!="github"`: la cola de los runners alojados de GitHub no es
+        # nuestra (no hay nada que arreglar en el cluster); el resto, pool ARC
+        # y label sin pool, sí avisa.
+        - alert: CIQueueJobQueuedTooLong
+          expr: ci_queue_oldest_queued_job_age_seconds{pool!="github"} > 1200
+          labels:
+            severity: warning
+            area: infra
+          annotations:
+            summary: "Un job de CI lleva más de 20 min en cola"
+            description: >-
+              El job más viejo en cola de `{{ $labels.label }}` (repo `{{ $labels.repo }}`) pasa de 20 min
+              esperando runner. Mirar: `kubectl get pods -n arc-runners`
+              (runners atascados, p. ej. CreateContainerError), cola en
+              https://github.com/pocharlies-org/{{ $labels.repo }}/actions y el informe
+              `python3 scripts/ci_queue_report.py --org pocharlies-org --hours 2`
+              del repo k8s-gitops. Si la cola es de un label sin pool, salta
+              CIQueueLabelWithoutPool con su propio aviso. Contexto: INFRA-400.
+
+        # C4: un job pide un label que no es pool ARC ni granja GitHub: espera
+        # un runner que no existe (el caso hermes-agent 32-core, 86401 s).
+        - alert: CIQueueLabelWithoutPool
+          expr: ci_queue_queued_jobs{pool="sin-pool"} > 0
+          for: 5m
+          labels:
+            severity: warning
+            area: infra
+          annotations:
+            summary: "Jobs de CI con label sin pool de runners"
+            description: >-
+              Hay {{ $value }} job(s) en cola con label `{{ $labels.label }}` que no corresponde a
+              ningún `runnerScaleSetName` de infra/arc.yaml ni a runners de
+              GitHub: no existe ningún listener que los coja y esperarán hasta
+              el timeout de 5 h. Arreglar: cambiar el `runs-on` del workflow a
+              un pool real (ver INFRA-548) o crear el scale set. Pools válidos:
+              `grep runnerScaleSetName infra/arc.yaml` en k8s-gitops.
+
+        # Runner asignado pero sin progreso: el controller quiere runners
+        # ephemeral y se quedan en Pending (CreateContainerError del 22-09:
+        # ocupaban plaza sin correr nada 2 h). N=10 min (p95 ARC 94 s, INFRA-547).
+        - alert: CIRunnerNoProgress
+          expr: gha_controller_pending_ephemeral_runners > 0
+          for: 10m
+          labels:
+            severity: warning
+            area: infra
+          annotations:
+            summary: "Runners ARC pendientes de arrancar más de 10 min"
+            description: >-
+              El controller de ARC tiene runners ephemeral en Pending sostenido
+              10 min (lo normal: arrancan en ~1-2 min, p95 de cola 94 s según
+              INFRA-547). Sospechar de nodos con disco/I-O saturado
+              (CreateContainerError, el caso 22-09 con md3 al 100 %):
+              `kubectl get pods -n arc-runners -o wide | grep -v Running` y
+              `kubectl describe` del pod colgado. Si coincide con nodos ks5 al
+              límite, revisar el taint/afinidad de infra/arc.yaml.
+
+        # Pool lleno con trabajo esperando: saturación (no es incidente si la
+        # cola es corta; con CIQueueJobQueuedTooLong dice «no cabe, no lento»).
+        - alert: CIPoolSaturated
+          expr: gha_assigned_jobs > 0 and gha_desired_runners == gha_max_runners
+          for: 15m
+          labels:
+            severity: warning
+            area: infra
+          annotations:
+            summary: "Pool ARC saturado: jobs asignados con desired == maxRunners"
+            description: >-
+              El scale set `{{ $labels.name }}` lleva 15 min con trabajos asignados y el
+              máximo de runners deseado/permitido: la cola crece por capacidad,
+              no por runners rotos. O bajar demanda, o subir maxRunners en
+              infra/arc.yaml (solo con cifras del informe de cola, regla de
+              INFRA-549).
+
+        # Ceguera propia del exporter (patrón KeepBackendAbsent: una regla sobre
+        # una serie ausente no avisa de nada, por eso el `absent_over_time`).
+        # Sin scrape 15 min = la cola vuelve a ser invisible.
+        - alert: CIQueueExporterBlind
+          expr: |
+            time() - ci_queue_scrape_success_timestamp_seconds > 900
+              or
+            absent_over_time(ci_queue_scrape_success_timestamp_seconds[30m]) > 0
+          for: 15m
+          labels:
+            severity: warning
+            area: infra
+          annotations:
+            summary: "El exporter de cola CI está ciego"
+            description: >-
+              `ci-queue-exporter` (ns monitoring) no completa un scrape desde
+              hace >15 min, o no ha nacido nunca (deploy caído, merge de
+              gitops sin desplegar). Comprobar: `kubectl -n monitoring logs
+              deploy/ci-queue-exporter`, que el Secret `ci-queue-github-token`
+              exista y sea fresco (lo renueva external-secrets cada 30 min; si
+              no, force-sync del ExternalSecret `ci-queue-github-token`), y
+              cuota: `ci_queue_api_rate_remaining`. Mientras dure, las reglas
+              CIQueue* no ven nada.

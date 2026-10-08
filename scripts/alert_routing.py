@@ -229,10 +229,21 @@ def cmd_matrix(_args) -> None:
     w("")
     w("**No editar a mano.** Regenerar con el script tras cualquier cambio de rutas o reglas.")
     w("")
+    # La última hija decide qué es el árbol: catch-all (el vivo, desde Keep) → todo
+    # llega a Keep y decide la regla de correlación; si no, el árbol previo (allowlist).
+    final = (root.get("routes") or [{}])[-1]
+    catch_all = not final.get("matchers") and final.get("receiver") != "blackhole"
     w("**Semántica que hace falta entender:** Alertmanager entrega al receiver propio de")
-    w("una ruta sólo cuando *ninguna hija encaja*. Como la última hija del árbol es")
-    w("`severity = warning → blackhole`, el árbol funciona como **allowlist**: un warning")
-    w("llega a algún sitio únicamente si su `alertname` aparece listado antes.")
+    w("una ruta sólo cuando *ninguna hija encaja*.")
+    if catch_all:
+        w(f"La última hija del árbol es un catch-all (`receiver: {final.get('receiver', root['receiver'])}`, sin")
+        w("matchers): toda alerta llega a Keep, sin allowlist ni blackhole. Que haya incidente y")
+        w("aviso lo decide una regla de correlación de `keep/rules/correlation-rules.yaml`")
+        w("(`scripts/verify-notification-coverage.py`), no este árbol.")
+    else:
+        w("Como la última hija del árbol es `severity = warning → blackhole`, el árbol funciona")
+        w("como **allowlist**: un warning llega a algún sitio únicamente si su `alertname`")
+        w("aparece listado antes.")
     w("")
 
     w("## Resumen")
@@ -250,7 +261,8 @@ def cmd_matrix(_args) -> None:
     w("")
     handled = {
         "critical": "sí — `severity = critical`",
-        "warning": "sí — `severity = warning` → blackhole",
+        "warning": (f"sí — catch-all → `{final.get('receiver', root['receiver'])}`" if catch_all
+                    else "sí — `severity = warning` → blackhole"),
     }
     w("| valor | series | ¿lo contempla el árbol? |")
     w("|---|---:|---|")
