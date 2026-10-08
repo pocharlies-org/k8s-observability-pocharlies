@@ -478,12 +478,11 @@ rules:
   # `CIQueue`/`CIRunner` (tests/test_infra550_ci_queue_correlation.py lo evalúa
   # alerta por alerta contra TODAS las reglas).
   #
-  # SIN agrupar, como 23 reglas más: las 5 alertas no comparten ninguna
-  # etiqueta (CIQueueExporterBlind no trae ninguna). Coste conocido: con
-  # `on: [create]`, una alerta que se une a un incidente ya abierto no avisa
-  # de nuevo — si una de las cinco se queda disparada (p. ej. el exporter
-  # ciego por un repo que falla siempre), enmascara a las demás hasta que
-  # todas se resuelvan. Si eso muerde, partir la regla por familia.
+  # Agrupada por alertname, como cron-job-failed (INFRA-378): cada familia de
+  # alerta abre su propio incidente ⇒ `created` ⇒ aviso. Con `on: [create]` una
+  # alerta que se une a un incidente ya abierto no avisa, así que sin alertname
+  # en los criterios un CIPoolSaturated disparado dejaría muda a una
+  # CIQueueLabelWithoutPool posterior.
   - ruleName: ci-queue-degraded
     celQuery: >-
       name.startsWith("CIQueue") || name.startsWith("CIRunner") ||
@@ -496,11 +495,11 @@ rules:
         name_3: CIPoolSaturated
     timeframeInSeconds: 1800
     timeUnit: minutes
-    groupingCriteria: []
+    groupingCriteria: [alertname]
     createOn: any
     resolveOn: all_resolved
     incidentPrefix: CIQ
-    incidentNameTemplate: "Cola de CI atascada"
+    incidentNameTemplate: "Cola de CI: {{ alertname }}"
     groupDescription: >-
       Jobs de CI esperando más de 20 min, jobs con label sin pool de runners,
       runners ARC sin arrancar, pool saturado y el exporter de cola ciego

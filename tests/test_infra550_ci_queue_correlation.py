@@ -80,8 +80,15 @@ class CiQueueCorrelationTests(unittest.TestCase):
         self.assertFalse(set(self.alerts) & set(self.spec["chronic"]))
 
     def test_incident_name_is_a_stable_cause_key(self):
-        # ops-watch hashes the name (keep-causa): no volatile numbers.
-        self.assertEqual(self.by_name[NEW]["incidentNameTemplate"], "Cola de CI atascada")
+        # One incident per alert family (cron-job-failed pattern): without alertname
+        # in the grouping, an open incident swallows the next alert without a notice.
+        rule = self.by_name[NEW]
+        self.assertEqual(rule["groupingCriteria"], ["alertname"])
+        self.assertEqual(rule["incidentNameTemplate"], "Cola de CI: {{ alertname }}")
+        # ops-watch hashes the name (keep-causa): five distinct names, no volatile numbers.
+        names = {rule["incidentNameTemplate"].replace("{{ alertname }}", n) for n in self.alerts}
+        self.assertEqual(len(names), 5, names)
+        self.assertFalse(any(ch.isdigit() for n in names for ch in n), names)
 
     def test_safety_net_does_not_double_notify(self):
         net = self.by_name["critical-safety-net"]["celQuery"]
