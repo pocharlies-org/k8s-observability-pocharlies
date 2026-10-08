@@ -710,9 +710,14 @@ rules:
   # análisis lo hace Aurora (que además ve el clúster entero, no sólo los logs) y
   # la notificación Keep con el resumen del router.
   #
-  # Agrupado por namespace: varios cronjobs del mismo namespace fallando suele ser
-  # la misma causa (imagen, secreto, PVC).
-  # BrainIngestConsecutiveFailures entra en el mismo incidente CRON (INFRA-286).
+  # Agrupado por [namespace, alertname] (INFRA-378): antes era sólo namespace y
+  # el incidente viejo CRON-9d403a3e, abierto con K8sCronJobFailed de los Jobs
+  # t287-test* en firing, absorbía las BrainIngestConsecutiveFailures nuevas sin
+  # emitir `created` — Alertmanager las reenviaba sobre un incidente ya agrupado
+  # y ningún aviso llegaba a Telegram. Con alertname en los criterios, cada
+  # familia de alerta abre su propio incidente ⇒ `created` ⇒ aviso.
+  # BrainIngestConsecutiveFailures entra en la misma regla (INFRA-286), ya no en
+  # el mismo incidente.
   - ruleName: cron-job-failed
     celQuery: 'name == "K8sCronJobFailed" || name == "BrainIngestConsecutiveFailures"'
     sqlQuery:
@@ -722,11 +727,11 @@ rules:
         name_2: BrainIngestConsecutiveFailures
     timeframeInSeconds: 3600
     timeUnit: minutes
-    groupingCriteria: [namespace]
+    groupingCriteria: [namespace, alertname]
     createOn: any
     resolveOn: all_resolved
     incidentPrefix: CRON
-    incidentNameTemplate: "CronJobs fallando en {{ namespace }}"
+    incidentNameTemplate: "{{ alertname }} en {{ namespace }}"
     groupDescription: >-
       CronJobs con Jobs fallidos. Los logs de pods efímeros que Loki pierde los
       recupera Aurora vía kubectl-agent.

@@ -55,8 +55,10 @@ multi-source: chart upstream + `values` de este repo, salvo indicación):
 | Alerta de caída del MCP de Atlassian (SC-1728/H5) | `VMRule AtlassianMcpToolDown` + regla de correlación homónima | `manifests/atlassian-mcp-rules.yaml`, `keep/rules/correlation-rules.yaml` | sonda `atlassian-mcp-probe` (SC-1834); `ops-watch` y `company_caida_jira` (x86-host-runtime) por `rule_name` == `company_requests.REGLAS_CAIDA_JIRA` — renombrar = entrada nueva junto a la vieja |
 | Reglas ARC / cola de CI (INFRA-550) | `VMRule pocharlies-arc-ci` (cola >20 min, label sin pool, runner sin progreso >10 min, pool saturado, ceguera del exporter) + scrape `gha_*`/`ci_queue_*` | `manifests/arc-rules.yaml`, `manifests/arc-scrape.yaml`; casos en `tests/promtool/arc-rules.test.yaml`, correlación en `tests/test_infra550_ci_queue_correlation.py` | Keep → topic Infra 1248: Alertmanager las lleva a `keep` (catch-all, sin allowlist) y la regla de correlación `ci-queue-degraded` (`keep/rules/correlation-rules.yaml`, prefijo `CIQ`) las convierte en incidente — sin regla una `warning` queda registrada y calla; fuente de «label sin pool» = exporter `ci-queue-exporter` (gitops), no `gha_*` |
 | Claim de despacho a Aurora (una vez por incidente de Keep, cooldown 6 h) | step `claim-dispatch` del workflow `aurora-investigate` | `keep/values.yaml` | Keep → Aurora; lectores `rca-datos`, `link-datos`, `mark-linked`, `aurora_rca_coverage()` (cruzan por `fingerprint`) |
+| Alerta de disco raíz del nodo ubuntu (INFRA-623): <20 % libre o llena en 3 días | `VMRule NodeRootDiskLowOrFilling` (`pocharlies-node-disk`) + test promtool | `manifests/rules.yaml`, `tests/promtool/node-disk.test.yaml` | los defaults del chart (`NodeFilesystem*`) no saltaron el 07-10: el kubelet desaloja a <5 % libre |
 | Dashboards | `manifests/dashboards.yaml`, `grafana-company-dashboard.yaml`, `grafana-keep.yaml` | ídem | Grafana |
 | Modelo LLM de Aurora y Keep | nombre directo `qwen38-flash-next` (residente único del perfil `llm-tp`; fallback y allowlist en LiteLLM) | `aurora/values.yaml`, `keep/values.yaml` | Aurora, Keep |
+| Avisos de incidente a Telegram | workflows `notify-incident`, `notify-incident-critical` (título, `[created]`) y `notify-alert-summary` (resúmenes por alerta, `type: alert`) | `keep/values.yaml` | topic 1248 de Pocharlies Operations; reglas de `keep/rules/correlation-rules.yaml` |
 
 ## 5. Cómo se construye aquí
 
@@ -70,6 +72,7 @@ Un componente = `<comp>/values.yaml` + `apps/<comp>.yaml` (registrado en `k8s-gi
 python3 -m unittest discover -s k8sgpt-explainer/tests -p 'test_*.py'    # 7 tests del explicador
 AURORA_TEST_PG_DSN=postgresql://… python3 -m pytest tests/ -q             # claim de Aurora contra Postgres desechable (INFRA-406)
 promtool test rules …                                                    # test de regla INFRA-376 (ver ci.yml)
+python3 scripts/verify-notification-coverage.py                          # red del cutover a Keep: ninguna serie que hoy notifica se queda muda (exit 0)
 ```
 CI ejecuta además contratos de idempotencia, presupuesto y despacho de alertas, y el test de comportamiento del claim de
 Aurora (`tests/test_keep_aurora_claim_behavior.py`: rearme, cooldown 6 h, migración expand/contract con `aurora_rca_coverage()`
@@ -85,6 +88,13 @@ igual). Necesita Postgres: sin `AURORA_TEST_PG_DSN` se salta en local y **falla 
 
 ## 8. Decisiones y trampas
 
+- `2026-10-05` · INFRA-378: la regla `cron-job-failed` agrupa por `[namespace, alertname]` y su nombre lleva el
+  `alertname` — agrupando sólo por namespace, el incidente viejo CRON absorbía las alertas nuevas sin emitir
+  `created` y Telegram no se enteraba (incidente 9d403a3e, 9 días). Los resúmenes de las alertas salen del workflow
+  `notify-alert-summary` (`type: alert`, `only_on_change: [status]`, sin steps ni parse_mode); `incident.alerts`
+  **no se puede volcar en una plantilla** (renderiza el repr de Python). `notify-incident*` siguen en `[created]`:
+  Alertmanager reenvía cada minuto y notificar en `updated` sería un mensaje/min. Test:
+  `tests/test_infra378_keep_notify_contract.py`.
 - `aurora-kubectl-agent` apunta a un **SHA del repo upstream**, no a un chart publicado: subirlo exige revisar el diff upstream.
 - README desfasado (k3s v1.32.5; describe el «estado objetivo» como tarea).
 - `2026-10-02` · Keep↔Aurora v1.3 (INFRA-406): una investigación por incidente de Keep (PK `keep_incident_id`, `fingerprint` = token
