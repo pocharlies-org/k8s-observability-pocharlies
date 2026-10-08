@@ -58,8 +58,15 @@ data:
     # directly to LAN IPs.
     install -m 0600 -o root -g root /root/.ssh/nvidiadgx /tmp/ssh-key 2>/dev/null
     SSH_OPTS="-F /dev/null -i /tmp/ssh-key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes -o ConnectTimeout=10 -o LogLevel=ERROR -o IdentitiesOnly=yes"
-    ssh_dgx()  { ssh $SSH_OPTS dibanerz@192.168.50.140 "$@" 2>/dev/null || echo "[ssh-error]"; }
-    ssh_dgx2() { ssh $SSH_OPTS dibanez@192.168.50.141  "$@" 2>/dev/null || echo "[ssh-error]"; }
+    ssh_to() { local target="$1"; shift; ssh $SSH_OPTS "$target" "$@" 2>/dev/null || echo "[ssh-error]"; }
+    # The Sparks the watcher checks, one row each: key:user@ip:label:vllm
+    # (vllm=1: serves vLLM on hostPort 8200; dgx3 has no `llm` load, INFRA-690).
+    # A new Spark is a new row; the per-host checks below loop over this table.
+    HOSTS="dgx:dibanerz@192.168.50.140:DGX1:1
+    dgx2:dibanez@192.168.50.141:DGX2:1
+    dgx3:dibanez@192.168.50.143:DGX3:0"
+    target_of() { awk -F: -v k="$1" '$1==k {print $2}' <<< "$HOSTS"; }
+    ssh_dgx() { ssh_to "$(target_of dgx)" "$@"; }  # NVMe and thermal below are DGX1-only
 
     NOW_LOCAL="$(TZ=Europe/Madrid date '+%Y-%m-%d %H:%M %Z')"
     RED=0; YELLOW=0
@@ -123,12 +130,9 @@ data:
 
     add_line ""
     add_line "Xid / NVRM (last 12h)"
-    for host in dgx dgx2; do
-      if [ "$host" = "dgx" ]; then
-        XID=$(ssh_dgx 'sudo dmesg -T --since "12 hours ago" | grep -iE "Xid|NVRM:" | tail -10')
-      else
-        XID=$(ssh_dgx2 'sudo dmesg -T --since "12 hours ago" | grep -iE "Xid|NVRM:" | tail -10')
-      fi
+    for row in $HOSTS; do
+      IFS=: read -r host target LBL vllm <<< "$row"
+      XID=$(ssh_to "$target" 'sudo dmesg -T --since "12 hours ago" | grep -iE "Xid|NVRM:" | tail -10')
       if [ "$XID" = "[ssh-error]" ]; then
         add_line "  ⚠️ $host: ssh failed"; YELLOW=$((YELLOW+1))
       elif [ -z "$XID" ]; then
@@ -202,8 +206,10 @@ data:
 
     add_line ""
     add_line "Direct hostPort"
-    for entry in "192.168.50.140 DGX1" "192.168.50.141 DGX2"; do
-      IP="${entry% *}"; LBL="${entry#* }"
+    for row in $HOSTS; do
+      IFS=: read -r host target LBL vllm <<< "$row"
+      [ "$vllm" = "1" ] || continue
+      IP="${target#*@}"
       HEALTH_CODE=$(curl -sS -o /dev/null -w "%{http_code}" -m 10 "http://${IP}:8200/health" 2>/dev/null)
       MODELS_JSON=$(curl -sS -m 10 "http://${IP}:8200/v1/models" 2>/dev/null)
       MODELS_CODE=$(curl -sS -o /dev/null -w "%{http_code}" -m 10 "http://${IP}:8200/v1/models" 2>/dev/null)
@@ -220,13 +226,9 @@ data:
 
     add_line ""
     add_line "GPU snapshot"
-    for h in dgx dgx2; do
-      LBL="DGX1"; [ "$h" = "dgx2" ] && LBL="DGX2"
-      if [ "$h" = "dgx" ]; then
-        GPU=$(ssh_dgx 'nvidia-smi --query-gpu=memory.used,memory.total,utilization.gpu,temperature.gpu --format=csv,noheader,nounits 2>/dev/null')
-      else
-        GPU=$(ssh_dgx2 'nvidia-smi --query-gpu=memory.used,memory.total,utilization.gpu,temperature.gpu --format=csv,noheader,nounits 2>/dev/null')
-      fi
+    for row in $HOSTS; do
+      IFS=: read -r host target LBL vllm <<< "$row"
+      GPU=$(ssh_to "$target" 'nvidia-smi --query-gpu=memory.used,memory.total,utilization.gpu,temperature.gpu --format=csv,noheader,nounits 2>/dev/null')
       if [ -z "$GPU" ] || [ "$GPU" = "[ssh-error]" ]; then
         add_line "  $LBL: read failed ⚠️"; YELLOW=$((YELLOW+1))
       else
