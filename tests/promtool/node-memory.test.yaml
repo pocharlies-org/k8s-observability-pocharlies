@@ -1,0 +1,52 @@
+# Casos de NodeMemoryHighUtilization (promtool test rules, INFRA-690). `rules` la genera
+# tests/test_infra690_node_memory_promtool.py desde la VMRule pocharlies-node-memory.
+# Nodos de 1000 GB (1e12 bytes) con 50 GB disponibles: 95 % usado, por encima del 90 %.
+rule_files:
+  - node-memory.rules.yaml
+evaluation_interval: 5m
+tests:
+  - interval: 5m
+    name: un nodo normal (ubuntu) al 95 % de memoria -> salta pasados los 15 min
+    input_series:
+      - series: 'node_memory_MemAvailable_bytes{job="node-exporter",instance="10.42.0.147:9100",pod="vm-prometheus-node-exporter-aaaaa"}'
+        values: '50000000000x20'
+      - series: 'node_memory_MemTotal_bytes{job="node-exporter",instance="10.42.0.147:9100",pod="vm-prometheus-node-exporter-aaaaa"}'
+        values: '1000000000000x20'
+      - series: 'kube_pod_info{namespace="monitoring",pod="vm-prometheus-node-exporter-aaaaa",node="ubuntu"}'
+        values: '1x20'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: NodeMemoryHighUtilization
+        exp_alerts: []
+      - eval_time: 30m
+        alertname: NodeMemoryHighUtilization
+        exp_alerts:
+          - exp_labels: {severity: warning, area: capacity, job: node-exporter, instance: "10.42.0.147:9100", pod: vm-prometheus-node-exporter-aaaaa}
+            exp_annotations:
+              summary: "Host is running out of memory"
+              description: "Memory is filling up at vm-prometheus-node-exporter-aaaaa, has been above 90% for the last 15 minutes, is currently at 95.00%. Sparks (nvidia-dgx/gx10-ec3d/dgx3) are excluded by design while the llm-tp profile is resident — check the gpu-arbiter CM before assuming drift."
+  - interval: 5m
+    name: los tres Sparks (nvidia-dgx, gx10-ec3d, dgx3) al 95 % de memoria -> no salta
+    input_series:
+      - series: 'node_memory_MemAvailable_bytes{job="node-exporter",instance="10.42.1.173:9100",pod="vm-prometheus-node-exporter-bbbbb"}'
+        values: '50000000000x20'
+      - series: 'node_memory_MemTotal_bytes{job="node-exporter",instance="10.42.1.173:9100",pod="vm-prometheus-node-exporter-bbbbb"}'
+        values: '1000000000000x20'
+      - series: 'kube_pod_info{namespace="monitoring",pod="vm-prometheus-node-exporter-bbbbb",node="nvidia-dgx"}'
+        values: '1x20'
+      - series: 'node_memory_MemAvailable_bytes{job="node-exporter",instance="10.42.2.20:9100",pod="vm-prometheus-node-exporter-ccccc"}'
+        values: '50000000000x20'
+      - series: 'node_memory_MemTotal_bytes{job="node-exporter",instance="10.42.2.20:9100",pod="vm-prometheus-node-exporter-ccccc"}'
+        values: '1000000000000x20'
+      - series: 'kube_pod_info{namespace="monitoring",pod="vm-prometheus-node-exporter-ccccc",node="gx10-ec3d"}'
+        values: '1x20'
+      - series: 'node_memory_MemAvailable_bytes{job="node-exporter",instance="10.42.3.30:9100",pod="vm-prometheus-node-exporter-ddddd"}'
+        values: '50000000000x20'
+      - series: 'node_memory_MemTotal_bytes{job="node-exporter",instance="10.42.3.30:9100",pod="vm-prometheus-node-exporter-ddddd"}'
+        values: '1000000000000x20'
+      - series: 'kube_pod_info{namespace="monitoring",pod="vm-prometheus-node-exporter-ddddd",node="dgx3"}'
+        values: '1x20'
+    alert_rule_test:
+      - eval_time: 40m
+        alertname: NodeMemoryHighUtilization
+        exp_alerts: []
