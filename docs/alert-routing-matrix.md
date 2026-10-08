@@ -7,9 +7,11 @@ matching de Alertmanager sobre `VMAlertmanagerConfig monitoring/synapse-webhook`
 **No editar a mano.** Regenerar con el script tras cualquier cambio de rutas o reglas.
 
 **Semántica que hace falta entender:** Alertmanager entrega al receiver propio de
-una ruta sólo cuando *ninguna hija encaja*. Como la última hija del árbol es
-`severity = warning → blackhole`, el árbol funciona como **allowlist**: un warning
-llega a algún sitio únicamente si su `alertname` aparece listado antes.
+una ruta sólo cuando *ninguna hija encaja*.
+La última hija del árbol es un catch-all (`receiver: keep`, sin
+matchers): toda alerta llega a Keep, sin allowlist ni blackhole. Que haya incidente y
+aviso lo decide una regla de correlación de `keep/rules/correlation-rules.yaml`
+(`scripts/verify-notification-coverage.py`), no este árbol.
 
 ## Resumen
 
@@ -23,7 +25,7 @@ llega a algún sitio únicamente si su `alertname` aparece listado antes.
 
 | valor | series | ¿lo contempla el árbol? |
 |---|---:|---|
-| `warning` | 191 | sí — `severity = warning` → blackhole |
+| `warning` | 191 | sí — catch-all → `keep` |
 | `critical` | 130 | sí — `severity = critical` |
 | `info` | 8 | **no** — cae al receiver raíz |
 | `none` | 2 | **no** — cae al receiver raíz |

@@ -8,11 +8,15 @@ rule_files:
 evaluation_interval: 1m
 tests:
   - interval: 1m
-    name: cola >20 min dispara sin for; cola corta no dispara
+    name: cola >20 min dispara sin for en pool propio; pool github y cola corta no
     input_series:
       - series: 'ci_queue_oldest_queued_job_age_seconds{label="arc-k8s",pool="pool",repo="hermes-agent"}'
         values: '1300x10'
+      # cola de runners alojados de GitHub: pasa de 20 min y NO dispara (no es nuestra)
       - series: 'ci_queue_oldest_queued_job_age_seconds{label="ubuntu-latest",pool="github",repo="synapse"}'
+        values: '1300x10'
+      # pool propio con cola corta: no dispara
+      - series: 'ci_queue_oldest_queued_job_age_seconds{label="arc-openclaw",pool="pool",repo="synapse"}'
         values: '900x10'
     alert_rule_test:
       - eval_time: 1m

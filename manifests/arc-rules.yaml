@@ -37,8 +37,11 @@ spec:
       rules:
         # C4: un job lleva >20 min en cola. Sin `for`: la edad ya es una
         # magnitud sostenida (crece sola); añadir for sumaría minutos al aviso.
+        # `pool!="github"`: la cola de los runners alojados de GitHub no es
+        # nuestra (no hay nada que arreglar en el cluster); el resto, pool ARC
+        # y label sin pool, sí avisa.
         - alert: CIQueueJobQueuedTooLong
-          expr: ci_queue_oldest_queued_job_age_seconds > 1200
+          expr: ci_queue_oldest_queued_job_age_seconds{pool!="github"} > 1200
           labels:
             severity: warning
             area: infra
