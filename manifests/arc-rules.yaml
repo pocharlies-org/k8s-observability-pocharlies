@@ -14,10 +14,15 @@
 #     INFRA-551). 10 min ≈ 6x ese p95: el caso real que hay que cazar (22-09)
 #     era un runner en CreateContainerError ocupando plaza 2 h.
 #
-# Enrutado: sin tocar nada. Del árbol de Alertmanager sale el catch-all
-# `receiver: keep`; Keep (`keep/values.yaml`, workflow notify-incident) lleva
-# todo incidente no crítico al topic Infra 1248. Verificado con
-# `python3 scripts/alert_routing.py matrix` (0 en blackhole).
+# Enrutado, en dos pasos y los dos hacen falta:
+#   1. Alertmanager: el catch-all `receiver: keep` las entrega a Keep
+#      (`python3 scripts/alert_routing.py matrix`: 0 en blackhole).
+#   2. Keep solo notifica INCIDENTES (workflow notify-incident, topic Infra
+#      1248) y una `warning` sin regla de correlación queda registrada y CALLA:
+#      la regla `ci-queue-degraded` de keep/rules/correlation-rules.yaml (prefijo
+#      CIQ) las convierte en incidente. Una alerta nueva de este grupo con
+#      nombre fuera de CIQueue*/CIRunner*/CIPoolSaturated no suena hasta que se
+#      amplíe esa regla; tests/test_infra550_ci_queue_correlation.py lo vigila.
 apiVersion: operator.victoriametrics.com/v1beta1
 kind: VMRule
 metadata:

@@ -467,6 +467,46 @@ rules:
       Workflows del trunk en rojo, por repo. El sensor es ops-watch (fuente
       `ci`); run_url va en la alerta para saltar directo al log.
 
+  # INFRA-550 (P4 de INFRA-400): cola y runners de CI atascados. Las 5 alertas
+  # de manifests/arc-rules.yaml (VMRule pocharlies-arc-ci) llegan como
+  # `warning`/area=infra y SIN esta regla no creaban incidente: Keep solo
+  # notifica incidentes (cabecera de este fichero), así que nunca habrían
+  # llegado al topic Infra 1248. Por nombre y no por severity, como el resto.
+  # El prefijo `CI` ya es de trunk-ci-failed (TrunkCIFailed, otro sensor: el
+  # trunk en rojo, no la cola), de ahí `CIQ`; los celQuery no se solapan:
+  # ningún nombre de aquí empieza por `TrunkCI` y TrunkCIFailed no empieza por
+  # `CIQueue`/`CIRunner` (tests/test_infra550_ci_queue_correlation.py lo evalúa
+  # alerta por alerta contra TODAS las reglas).
+  #
+  # SIN agrupar, como 23 reglas más: las 5 alertas no comparten ninguna
+  # etiqueta (CIQueueExporterBlind no trae ninguna). Coste conocido: con
+  # `on: [create]`, una alerta que se une a un incidente ya abierto no avisa
+  # de nuevo — si una de las cinco se queda disparada (p. ej. el exporter
+  # ciego por un repo que falla siempre), enmascara a las demás hasta que
+  # todas se resuelvan. Si eso muerde, partir la regla por familia.
+  - ruleName: ci-queue-degraded
+    celQuery: >-
+      name.startsWith("CIQueue") || name.startsWith("CIRunner") ||
+      name == "CIPoolSaturated"
+    sqlQuery:
+      sql: "((name like :name_1) or (name like :name_2) or (name = :name_3))"
+      params:
+        name_1: CIQueue%
+        name_2: CIRunner%
+        name_3: CIPoolSaturated
+    timeframeInSeconds: 1800
+    timeUnit: minutes
+    groupingCriteria: []
+    createOn: any
+    resolveOn: all_resolved
+    incidentPrefix: CIQ
+    incidentNameTemplate: "Cola de CI atascada"
+    groupDescription: >-
+      Jobs de CI esperando más de 20 min, jobs con label sin pool de runners,
+      runners ARC sin arrancar, pool saturado y el exporter de cola ciego
+      (manifests/arc-rules.yaml). Fuente: gha_* del listener ARC y el exporter
+      ci-queue-exporter (API de GitHub).
+
   # Actualizaciones automáticas fallidas (fuente `updates` de ops-watch:
   # Renovate, updatetool…). Agrupa por `fail_reason` — `<via>:<firma>`
   # normalizada por `_firma_causa` en ops-watch, nunca el texto crudo (las

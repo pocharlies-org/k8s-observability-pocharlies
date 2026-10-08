@@ -32,6 +32,19 @@ spec:
       path: /metrics
       interval: 60s
       scrapeTimeout: 15s
+      # Medido en vivo el 2026-10-08: el listener arc-k8s expone ~109 000 líneas
+      # gha_*, ~90 000 de ellas buckets de los dos histogramas de duración (una
+      # serie por repo x job_name x evento x resultado x `le`, y crece con cada
+      # nombre de job nuevo): ~+10 % de las series activas de vmsingle, cada
+      # 60 s, y ninguna regla ni panel las lee. Se tiran los buckets; `_sum` y
+      # `_count` se quedan (la media de arranque/ejecución, con la que se midió
+      # que gha_job_startup_duration_seconds cuenta desde asignado). Si un
+      # panel necesita percentiles, quitar la entrada correspondiente o
+      # acotar el regex a un solo histograma y revisar el coste en series.
+      metricRelabelConfigs:
+        - sourceLabels: [__name__]
+          regex: gha_job_(startup|execution)_duration_seconds_bucket
+          action: drop
 ---
 # El exporter de cola (ci_queue_*): su Deployment y Service viven en
 # k8s-gitops-pocharlies (Application `ci-queue-exporter`, path `ci-queue/`);
