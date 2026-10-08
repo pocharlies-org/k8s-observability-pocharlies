@@ -1,0 +1,30 @@
+# INFRA-712 (P2b de INFRA-701) — scrape de Frigate 0.18.
+#
+# `GET /api/metrics` existe en 0.18 y se verificó en vivo el 2026-10-08 desde el host contra la IP del pod
+# (HTTP 200, ~19 KB, formato Prometheus): frigate_camera_fps / frigate_detection_fps / frigate_skipped_fps
+# por `camera_name` (NO `camera`), frigate_detector_inference_speed_seconds{name}, frigate_service_uptime_seconds,
+# frigate_storage_* por punto de montaje y frigate_cpu/mem/gpu_*.
+#
+# Va por el puerto `api` (5000), el único que sirve la ruta sin sesión: el 8971 pide login y Frigate no tiene
+# token de API (ARCHITECTURE.md de k8s-frigate-pocharlies §11). El vmagent solo llega al 5000 porque la
+# NetworkPolicy `frigate` de ese repo tiene una regla para él (INFRA-712, PR hermana): sin ella el target da
+# `up == 0` y salta FrigateCaido. Fusionar primero la del repo de Frigate.
+#
+# El Service y su namespace los posee k8s-frigate-pocharlies (Application `frigate`); el scrape va aquí, como el
+# resto de scrapes de plataforma (patrón cert-manager-scrape.yaml, arc-scrape.yaml).
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMServiceScrape
+metadata:
+  name: frigate
+  namespace: monitoring
+spec:
+  namespaceSelector:
+    matchNames: ["frigate"]
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: frigate
+  endpoints:
+    - port: api
+      path: /api/metrics
+      interval: 30s
+      scrapeTimeout: 10s

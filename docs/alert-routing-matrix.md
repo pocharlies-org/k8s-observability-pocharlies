@@ -17,15 +17,15 @@ aviso lo decide una regla de correlación de `keep/rules/correlation-rules.yaml`
 
 | destino hoy | series | % |
 |---|---:|---:|
-| keep | 315 | 95% |
+| keep | 319 | 95% |
 | backstop-telegram + keep | 16 | 5% |
-| **TOTAL** | **331** | 100% |
+| **TOTAL** | **335** | 100% |
 
 ### Taxonomía de severidad realmente emitida
 
 | valor | series | ¿lo contempla el árbol? |
 |---|---:|---|
-| `warning` | 191 | sí — catch-all → `keep` |
+| `warning` | 195 | sí — catch-all → `keep` |
 | `critical` | 130 | sí — `severity = critical` |
 | `info` | 8 | **no** — cae al receiver raíz |
 | `none` | 2 | **no** — cae al receiver raíz |
@@ -384,7 +384,7 @@ despiertan a nadie pese a llamarse `page`.
 | `TrackingIngestionSilent` | `warning` | keep |  |
 | `TrackingPage404Spike` | `critical` | keep |  |
 
-### otros (123)
+### otros (127)
 
 | alertname | sev | destino hoy | firing |
 |---|---|---|---:|
@@ -430,6 +430,10 @@ despiertan a nadie pese a llamarse `page`.
 | `DiskRunsOutOfSpace` | `critical` | keep |  |
 | `DiskRunsOutOfSpaceIn3Days` | `critical` | keep |  |
 | `ExternalSecretsMetricsAbsent` | `warning` | keep |  |
+| `FrigateAlmacenamientoLleno` | `warning` | keep |  |
+| `FrigateCaido` | `warning` | keep |  |
+| `FrigateCamaraSinFps` | `warning` | keep |  |
+| `FrigateDetectorLento` | `warning` | keep |  |
 | `GpuArbiterResidentRestoreStuck` | `critical` | keep |  |
 | `GpuArbiterStateObservationUnavailable` | `warning` | keep |  |
 | `HighQueueDepth` | `warning` | keep |  |

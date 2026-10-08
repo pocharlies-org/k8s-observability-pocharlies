@@ -1,0 +1,189 @@
+# INFRA-712: casos de las alertas de Frigate (promtool test rules). `rules` la genera
+# tests/test_infra712_frigate_promtool.py desde manifests/frigate-rules.yaml.
+# Nombres y etiquetas medidos en vivo contra /api/metrics de Frigate 0.18 el 2026-10-08
+# (`camera_name`, no `camera`). Las cámaras reales son c8w y hp7; `prueba` va apagada.
+rule_files:
+  - frigate-rules.generated.yaml
+evaluation_interval: 1m
+tests:
+  - interval: 1m
+    name: Frigate sin responder (up == 0) salta pasado el for de 5 min, no antes
+    input_series:
+      - series: 'up{job="frigate",namespace="frigate",pod="frigate-6b6cd8df4f-lnj9p"}'
+        values: '0x15'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: FrigateCaido
+        exp_alerts: []
+      - eval_time: 6m
+        alertname: FrigateCaido
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              area: availability
+              job: frigate
+              namespace: frigate
+              pod: frigate-6b6cd8df4f-lnj9p
+            exp_annotations:
+              summary: "Frigate no responde: las cámaras de casa no se están grabando ni analizando"
+              description: "VictoriaMetrics lleva 5 min sin poder leer `/api/metrics` de Frigate (puerto 5000 del ns `frigate`). Mirar primero `kubectl -n frigate get pods` y `kubectl -n frigate logs deploy/frigate` (rollout, OOM, GPU ocupada por Krea2: el árbitro lo deja en `coexist`). Si el pod está `1/1`, el culpable es la red: la NetworkPolicy `frigate` de k8s-frigate-pocharlies debe admitir al vmagent del ns `monitoring` en el 5000. Mientras dure, ninguna alerta de cámara ve nada."
+
+  - interval: 1m
+    name: Frigate sin target (pod sin Ready, el endpoint desaparece) salta por ausencia
+    input_series:
+      # una serie ajena para que el test tenga datos; ninguna `up{job="frigate"}`
+      - series: 'up{job="otro",namespace="monitoring"}'
+        values: '1x15'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: FrigateCaido
+        exp_alerts: []
+      - eval_time: 6m
+        alertname: FrigateCaido
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              area: availability
+              job: frigate
+              namespace: frigate
+            exp_annotations:
+              summary: "Frigate no responde: las cámaras de casa no se están grabando ni analizando"
+              description: "VictoriaMetrics lleva 5 min sin poder leer `/api/metrics` de Frigate (puerto 5000 del ns `frigate`). Mirar primero `kubectl -n frigate get pods` y `kubectl -n frigate logs deploy/frigate` (rollout, OOM, GPU ocupada por Krea2: el árbitro lo deja en `coexist`). Si el pod está `1/1`, el culpable es la red: la NetworkPolicy `frigate` de k8s-frigate-pocharlies debe admitir al vmagent del ns `monitoring` en el 5000. Mientras dure, ninguna alerta de cámara ve nada."
+
+  - interval: 1m
+    name: un rollout Recreate de 3 min (target ausente) no dispara; Frigate sano tampoco
+    input_series:
+      - series: 'up{job="frigate",namespace="frigate",pod="frigate-viejo"}'
+        values: '1x5 _x15'
+      - series: 'up{job="frigate",namespace="frigate",pod="frigate-nuevo"}'
+        values: '_x8 1x12'
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: FrigateCaido
+        exp_alerts: []
+      - eval_time: 19m
+        alertname: FrigateCaido
+        exp_alerts: []
+
+  - interval: 1m
+    name: detector lento (250 ms) con una cámara real entregando frames salta tras 10 min; el GPU sano (12 ms) no
+    input_series:
+      - series: 'frigate_detector_inference_speed_seconds{job="frigate",namespace="frigate",name="onnx"}'
+        values: '0.25x20'
+      - series: 'frigate_camera_fps{job="frigate",namespace="frigate",camera_name="c8w"}'
+        values: '5x20'
+      # un segundo Frigate hipotético con el detector sano: no debe disparar
+      - series: 'frigate_detector_inference_speed_seconds{job="frigate",namespace="frigate",name="sano"}'
+        values: '0.012x20'
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: FrigateDetectorLento
+        exp_alerts: []
+      - eval_time: 11m
+        alertname: FrigateDetectorLento
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              area: availability
+              job: frigate
+              namespace: frigate
+              name: onnx
+            exp_annotations:
+              summary: "El detector de Frigate tarda más de 100 ms por inferencia (¿ha caído a CPU?)"
+              description: "El detector `onnx` lleva 10 min tardando 250ms por inferencia (en la GPU son decenas de ms; en CPU, cientos). Con eso Frigate se salta fotogramas y puede perder una persona. Mirar `kubectl -n frigate exec deploy/frigate -- curl -s localhost:5000/api/stats` (`detectors`) y la VRAM libre de la RTX (`DCGM_FI_DEV_FB_FREE`): si ComfyUI/Krea2 se la ha quedado, el detector cae a CPU."
+
+  - interval: 1m
+    name: detector lento pero solo la cámara de prueba (o ninguna real) entrega frames -> no dispara
+    input_series:
+      - series: 'frigate_detector_inference_speed_seconds{job="frigate",namespace="frigate",name="onnx"}'
+        values: '0.25x20'
+      - series: 'frigate_camera_fps{job="frigate",namespace="frigate",camera_name="prueba"}'
+        values: '5x20'
+      - series: 'frigate_camera_fps{job="frigate",namespace="frigate",camera_name="c8w"}'
+        values: '0x20'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: FrigateDetectorLento
+        exp_alerts: []
+
+  - interval: 1m
+    name: cámara real a 0 fps salta tras 5 min; la otra real a 5 fps y la de prueba a 0 no
+    input_series:
+      - series: 'frigate_camera_fps{job="frigate",namespace="frigate",camera_name="c8w"}'
+        values: '0x15'
+      - series: 'frigate_camera_fps{job="frigate",namespace="frigate",camera_name="hp7"}'
+        values: '5x15'
+      # la `prueba` va apagada: 0 fps es lo normal y NO debe avisar
+      - series: 'frigate_camera_fps{job="frigate",namespace="frigate",camera_name="prueba"}'
+        values: '0x15'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: FrigateCamaraSinFps
+        exp_alerts: []
+      - eval_time: 6m
+        alertname: FrigateCamaraSinFps
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              area: availability
+              job: frigate
+              namespace: frigate
+              camera_name: c8w
+            exp_annotations:
+              summary: "Cámara c8w sin frames en Frigate"
+              description: "La cámara `c8w` lleva 5 min a 0 fps: no llega vídeo, no se detecta ni se graba. Mirar `kubectl -n frigate logs deploy/frigate | grep c8w` (RTSP rechazado, timeout, clave) y que la cámara siga en la red; en la app de EZVIZ comprobar que el RTSP sigue activado."
+
+  - interval: 1m
+    name: una cámara real que se recupera antes de 5 min no dispara
+    input_series:
+      - series: 'frigate_camera_fps{job="frigate",namespace="frigate",camera_name="hp7"}'
+        values: '0x3 5x12'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: FrigateCamaraSinFps
+        exp_alerts: []
+
+  - interval: 1m
+    name: frigate-media al 7 % libre salta tras 15 min; el 9 % y otro PVC del ns (frigate-config al 3 %) no
+    input_series:
+      # 100 GiB; los labels de nodo del kubelet los agrega el sum by
+      - series: 'kubelet_volume_stats_capacity_bytes{namespace="frigate",persistentvolumeclaim="frigate-media",node="ubuntu"}'
+        values: '107374182400x30'
+      - series: 'kubelet_volume_stats_available_bytes{namespace="frigate",persistentvolumeclaim="frigate-media",node="ubuntu"}'
+        values: '7516192768x30'
+      - series: 'kubelet_volume_stats_capacity_bytes{namespace="frigate",persistentvolumeclaim="frigate-config",node="ubuntu"}'
+        values: '1073741824x30'
+      - series: 'kubelet_volume_stats_available_bytes{namespace="frigate",persistentvolumeclaim="frigate-config",node="ubuntu"}'
+        values: '32212254x30'
+      # otro namespace con un PVC llamado igual al 9 %: tampoco
+      - series: 'kubelet_volume_stats_capacity_bytes{namespace="otro",persistentvolumeclaim="frigate-media",node="ubuntu"}'
+        values: '107374182400x30'
+      - series: 'kubelet_volume_stats_available_bytes{namespace="otro",persistentvolumeclaim="frigate-media",node="ubuntu"}'
+        values: '9663676416x30'
+    alert_rule_test:
+      - eval_time: 14m
+        alertname: FrigateAlmacenamientoLleno
+        exp_alerts: []
+      - eval_time: 16m
+        alertname: FrigateAlmacenamientoLleno
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              area: capacity
+              namespace: frigate
+              persistentvolumeclaim: frigate-media
+            exp_annotations:
+              summary: "El volumen de grabaciones de Frigate está casi lleno"
+              description: "A `frigate-media` le queda el 7.0 % libre desde hace 15 min. Con la retención actual (3/14/7/14 días, fijada por security) algo graba más de lo previsto: mirar el bitrate de las cámaras (`frigate_bandwidth_usages_kBps`) y `du` por cámara en `/media/frigate`. Los números de retención y el tamaño del volumen no se tocan sin security."
+
+  - interval: 1m
+    name: frigate-media al 9 % libre no dispara
+    input_series:
+      - series: 'kubelet_volume_stats_capacity_bytes{namespace="frigate",persistentvolumeclaim="frigate-media",node="ubuntu"}'
+        values: '107374182400x30'
+      - series: 'kubelet_volume_stats_available_bytes{namespace="frigate",persistentvolumeclaim="frigate-media",node="ubuntu"}'
+        values: '9663676416x30'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: FrigateAlmacenamientoLleno
+        exp_alerts: []
