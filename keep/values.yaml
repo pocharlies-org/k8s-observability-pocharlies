@@ -236,6 +236,57 @@ backend:
                   https://keep.e-dani.com/incidents/{{ incident.id }}
 
       # ---------------------------------------------------------------------
+      # INFRA-378 — LOS RESÚMENES DE LAS ALERTAS, POR SU PROPIO WORKFLOW. Los
+      # `notify-incident*` son `type: incident` y sólo llevan el título: el
+      # cuerpo del incidente (`incident.alerts`) NO se puede volcar en una
+      # plantilla, renderiza el repr de Python (no hay `incident.alerts_
+      # description` en la OSS). Un workflow `type: alert` sí expone
+      # `alert.annotations.summary` por alerta, y de ahí sale el resumen.
+      #
+      # `only_on_change: [status]` (patrón de `severity-drift-guard`):
+      # Alertmanager reenvía cada minuto (pass-through) y sin esto esto sería un
+      # mensaje por minuto, la misma trampa que deja `notify-incident*` en
+      # `[created]`. Coste aceptado: una alerta ya en firing que sólo cambia el
+      # texto del summary (p. ej. un job nuevo dentro de la regla) no re-avisa;
+      # sí cada alerta nueva, que resuelve o re-dispara.
+      #
+      # SIN `steps:` — un step que falla = cero avisos (ver el comentario de
+      # `notify-incident`). SIN `parse_mode` — el summary puede traer `<`, `>`,
+      # `&` y Telegram da 400 con html (misma razón que `incident-summary`).
+      #
+      # Alcance deliberado: las dos alertas de la regla `cron-job-failed`
+      # (keep/rules/correlation-rules.yaml). Ampliarlo a más familias es otro
+      # ticket. `notify-incident` y `notify-incident-critical` NO se tocan.
+      - id: notify-alert-summary
+        name: Telegram — resúmenes de alertas al tema alertas
+        description: >-
+          Lleva el summary de cada alerta de la regla cron-job-failed al topic
+          1248, además del título del incidente que manda notify-incident.
+        triggers:
+          - type: alert
+            only_on_change: [status]
+            cel: >-
+              name == "BrainIngestConsecutiveFailures" || name == "K8sCronJobFailed"
+        actions:
+          - name: telegram-alert-summary
+            # Mismo reintento que en la lane de incidentes; ver allí el porqué.
+            on-failure:
+              retry:
+                count: 3
+                interval: 15
+            provider:
+              type: telegram
+              config: "{{ providers.telegram_ops }}"
+              with:
+                chat_id: "-1004409526898"
+                # `topic_id`, NO `message_thread_id` (ver notify-incident).
+                topic_id: 1248
+                message: |
+                  🧾 {{ alert.name }} · {{ alert.status }}
+                  {{ alert.annotations.summary }}
+                  namespace: {{ alert.labels.namespace }}
+
+      # ---------------------------------------------------------------------
       # EL RESUMEN, AISLADO. Este workflow SÍ puede abortar — ése es justamente
       # el sentido de haberlo separado. Si LiteLLM está caído o la allowlist de
       # la key deja de incluir el modelo pedido (INFRA-431),
