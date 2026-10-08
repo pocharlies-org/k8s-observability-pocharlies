@@ -84,7 +84,10 @@ spec:
       - matchers:
           # SC-1872: CompaniaBuzonAtascado, CompaniaSinTurnos y CompaniaSupervisorSinMetricas. Lo que vigila a la compañía (vigilante, IT) va
           # por Hermes; si Hermes o su tubería se rompen, este es el único aviso que llega.
-          - 'alertname =~ "KeepBackendAbsent|KeepIngestionDown|KeepIngestionSilent|AlertmanagerWebhookDeliveryFailed|KubeNodeNotReady|KubeNodeUnreachable|CompaniaBuzonAtascado|CompaniaSinTurnos|CompaniaSupervisorSinMetricas"'
+          # INFRA-690: SparkGpuClockStuckLow (VMRule `spark-gpu` de dgx-infra). Un Spark con la GPU cargada y el reloj < 1000 MHz
+          # (USB-PD en modo seguro; ~611 MHz en vez de ~2190) no cae ni da error: sigue sirviendo, más lento, y solo se ve a ojo.
+          # Es `warning` y sin regla de correlación Keep la registra y calla; por aquí además llega a Telegram.
+          - 'alertname =~ "KeepBackendAbsent|KeepIngestionDown|KeepIngestionSilent|AlertmanagerWebhookDeliveryFailed|KubeNodeNotReady|KubeNodeUnreachable|CompaniaBuzonAtascado|CompaniaSinTurnos|CompaniaSupervisorSinMetricas|SparkGpuClockStuckLow"'
         receiver: backstop-telegram
         continue: true
         group_by:
