@@ -2515,3 +2515,38 @@ spec:
               Salta con menos del 20 % libre o si al ritmo de las últimas 6 h se llena en menos de 3 días.
               Por debajo del 5 % el kubelet entra en disk-pressure y desaloja pods (el 07-10: AdGuard, el DNS de la LAN).
               Mirar qué crece (du por directorio: /var/lib/longhorn, /home, /srv, /tmp) y liberar caché.
+---
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMRule
+metadata:
+  name: pocharlies-x86-silencioso
+  namespace: monitoring
+spec:
+  groups:
+    - name: pocharlies.x86-silencioso
+      rules:
+        - alert: X86Silencioso
+          # INFRA-727. El 07-10 el nodo ubuntu (x86) se quedó mudo 34 min (22:15–22:49Z):
+          # NFS hard contra sauvage por relay DERP, kubelet bloqueado. Nada avisó.
+          # La señal es Ready del nodo en kube-state-metrics: lo calcula el control plane
+          # (node-lifecycle, 40 s sin latido de Lease → Unknown), no el kubelet, así que
+          # dispara aunque el kubelet esté muerto. Las métricas de pod de node-exporter
+          # sí se quedan stale (patrón 2026-07-20) y por eso no se usan.
+          # `absent_over_time`: si la serie desaparece, KSM está mudo y también es alarma.
+          # Un reinicio planificado de más de 5 min también salta: es intencionado.
+          expr: |
+            (
+              kube_node_status_condition{node="ubuntu",condition="Ready",status="true"} == 0
+            )
+            or
+            absent_over_time(kube_node_status_condition{node="ubuntu",condition="Ready"}[5m])
+          for: 5m
+          labels:
+            severity: critical
+            area: node
+          annotations:
+            summary: "x86 (ubuntu) sin latido de nodo más de 5 min"
+            description: >-
+              El nodo ubuntu (x86) lleva más de 5 min sin Ready en kube-state-metrics, o la serie ha desaparecido.
+              Causa típica: NFS hard contra sauvage (100.109.183.9) o kubelet bloqueado. Mirar
+              `grep sauvage /proc/mounts`, `journalctl -b -1 -k` y `systemctl --user status openchamber`.
