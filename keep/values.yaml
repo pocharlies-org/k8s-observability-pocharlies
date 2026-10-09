@@ -1258,19 +1258,32 @@ backend:
       value: https://keep-api.e-dani.com
     - name: PORT
       value: "8080"
-    # --- SC-1711: el scheduler de workflows, fuera de los workers de la API ---
+    # --- SC-1711 / INFRA-751: reparto del scheduler entre backend y keepsvc-scheduler ---
     # SCHEDULER es `true` por defecto en el código de Keep (api.py:
     # `config("SCHEDULER", default="true")`) y el lifespan lo arranca EN CADA
-    # worker gunicorn: hoy los 4 workers de este pod lanzan cada uno su
-    # WorkflowScheduler, compitiendo con los webhooks de Alertmanager por el
-    # CPU y el pool de Postgres del worker (la raíz de keep-hub-degraded,
-    # SC-1600). Con false los workers solo sirven peticiones; quien ejecuta
-    # los workflows periódicos es el deployment dedicado keepsvc-scheduler
-    # (keep/scheduler.yaml). No duplicar ejecuciones no depende de esto —el
-    # lock es la restricción de unicidad sobre workflow_execution en
-    # `get_workflows_that_should_run`— sino de no volver a acoplar carga
-    # periódica al camino crítico de ingesta.
+    # worker gunicorn; SC-1711 lo puso a false para sacar la carga periódica
+    # (workflows con `interval`) del camino crítico de ingesta (keep-hub-
+    # degraded, SC-1600). PERO en Keep 0.52.1, sin Redis, los workflows
+    # disparados por alerta/incidente viajan por una cola EN MEMORIA del
+    # propio proceso: el worker que recibe el webhook de Alertmanager los
+    # encola en `self.scheduler.workflows_to_run` (workflowmanager.py, rama
+    # no-REDIS) y los drena `_handle_event_workflows` del WorkflowScheduler
+    # del MISMO proceso. Con SCHEDULER=false el backend nunca arranca ese
+    # bucle: los workflows de evento se encolan y se pierden (INFRA-751 —
+    # Keep dejó de entregar alertas al topic 1248 de Telegram tras el merge
+    # de SC-1711). El reparto correcto:
+    #   keep-backend        → SCHEDULER=true, WORKFLOWS_INTERVAL_ENABLED=false
+    #                         (solo drena eventos, ligeros y ya en su camino
+    #                         de ingesta; flag verificado en
+    #                         workflowscheduler.py l.88, default true)
+    #   keepsvc-scheduler   → SCHEDULER=true, WORKFLOWS_INTERVAL_ENABLED=true
+    #                         (único ejecutor de los de intervalo:
+    #                         aurora-link, aurora-report-back)
+    # No duplicar ejecuciones sigue garantizado por el lock de unicidad sobre
+    # workflow_execution en `get_workflows_that_should_run`.
     - name: SCHEDULER
+      value: "true"
+    - name: WORKFLOWS_INTERVAL_ENABLED
       value: "false"
     # --- SC-1600: el timeout de gunicorn mata los webhooks de Alertmanager ---
     # Medido el 02-10-2026 (HUB-7755): cada 15 min, durante la pasada del
