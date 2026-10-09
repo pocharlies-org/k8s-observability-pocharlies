@@ -17,15 +17,15 @@ aviso lo decide una regla de correlación de `keep/rules/correlation-rules.yaml`
 
 | destino hoy | series | % |
 |---|---:|---:|
-| keep | 318 | 95% |
+| keep | 322 | 95% |
 | backstop-telegram + keep | 17 | 5% |
-| **TOTAL** | **335** | 100% |
+| **TOTAL** | **339** | 100% |
 
 ### Taxonomía de severidad realmente emitida
 
 | valor | series | ¿lo contempla el árbol? |
 |---|---:|---|
-| `warning` | 194 | sí — catch-all → `keep` |
+| `warning` | 198 | sí — catch-all → `keep` |
 | `critical` | 131 | sí — `severity = critical` |
 | `info` | 8 | **no** — cae al receiver raíz |
 | `none` | 2 | **no** — cae al receiver raíz |
@@ -145,8 +145,8 @@ despiertan a nadie pese a llamarse `page`.
 | `KubeNodeUnreachable` | `warning` | backstop-telegram + keep |  |
 | `KubePdbNotEnoughHealthyPods` | `warning` | keep |  |
 | `KubePersistentVolumeErrors` | `critical` | keep |  |
-| `KubePersistentVolumeFillingUp` | `critical` | keep | 6 |
-| `KubePersistentVolumeFillingUp` | `warning` | keep | 6 |
+| `KubePersistentVolumeFillingUp` | `critical` | keep |  |
+| `KubePersistentVolumeFillingUp` | `warning` | keep |  |
 | `KubePersistentVolumeInodesFillingUp` | `critical` | keep |  |
 | `KubePersistentVolumeInodesFillingUp` | `warning` | keep |  |
 | `KubePodCrashLooping` | `warning` | keep |  |
@@ -354,7 +354,7 @@ despiertan a nadie pese a llamarse `page`.
 | `SynapseScheduledWorkflowStalledDaily` | `warning` | keep |  |
 | `SynapseScheduledWorkflowStalledWeekly` | `warning` | keep |  |
 | `SynapseUnroutableMessages` | `warning` | backstop-telegram + keep |  |
-| `SynapseWorkflowFailed` | `warning` | keep |  |
+| `SynapseWorkflowFailed` | `warning` | keep | 1 |
 
 ### Target (1)
 
@@ -386,7 +386,7 @@ despiertan a nadie pese a llamarse `page`.
 | `TrackingIngestionSilent` | `warning` | keep |  |
 | `TrackingPage404Spike` | `critical` | keep |  |
 
-### otros (125)
+### otros (129)
 
 | alertname | sev | destino hoy | firing |
 |---|---|---|---:|
@@ -414,7 +414,7 @@ despiertan a nadie pese a llamarse `page`.
 | `CIQueueJobQueuedTooLong` | `warning` | keep |  |
 | `CIQueueLabelWithoutPool` | `warning` | keep |  |
 | `CIRunnerNoProgress` | `warning` | keep |  |
-| `CPUThrottlingHigh` | `info` | keep | 1 |
+| `CPUThrottlingHigh` | `info` | keep | 2 |
 | `CertManagerCertificateMetricsMissing` | `critical` | keep |  |
 | `CertificateExpiresSoon` | `warning` | keep |  |
 | `CertificateNotReady` | `critical` | keep |  |
@@ -432,12 +432,16 @@ despiertan a nadie pese a llamarse `page`.
 | `DiskRunsOutOfSpace` | `critical` | keep |  |
 | `DiskRunsOutOfSpaceIn3Days` | `critical` | keep |  |
 | `ExternalSecretsMetricsAbsent` | `warning` | keep |  |
+| `FrigateAlmacenamientoLleno` | `warning` | keep |  |
+| `FrigateCaido` | `warning` | keep |  |
+| `FrigateCamaraSinFps` | `warning` | keep |  |
+| `FrigateDetectorLento` | `warning` | keep |  |
 | `GpuArbiterResidentRestoreStuck` | `critical` | keep |  |
 | `GpuArbiterStateObservationUnavailable` | `warning` | keep |  |
 | `HighQueueDepth` | `warning` | keep |  |
 | `IndexDBRecordsDrop` | `critical` | keep |  |
 | `InfoInhibitor` | `none` | keep | 4 |
-| `K8sCronJobFailed` | `warning` | keep | 1 |
+| `K8sCronJobFailed` | `warning` | keep | 3 |
 | `K8sGptExplainerUnavailable` | `warning` | keep |  |
 | `K8sGptFindingsSpike` | `warning` | keep |  |
 | `K8sGptOperatorAbsent` | `warning` | keep |  |

@@ -1,0 +1,110 @@
+# INFRA-712 (P2b de INFRA-701) — alertas de Frigate (vigilancia de casa).
+#
+# Fuente: `frigate_*` de /api/metrics (scrape en manifests/frigate-scrape.yaml) y, para el disco, las
+# `kubelet_volume_stats_*` del PVC `frigate-media` (no dependen de que Frigate esté vivo). Nombres medidos en vivo
+# el 2026-10-08: la etiqueta de cámara es `camera_name`, no `camera`.
+#
+# Cámaras reales: `c8w` y `hp7` (la `prueba` va apagada y se enciende solo en las pruebas de qa, así que ninguna
+# regla la mira). Mientras P5 no las dé de alta no hay serie y no salta nada: a propósito no hay un `absent()` por
+# cámara (sería una alerta que grita desde el primer minuto, el fallo de la primera KeepBackendAbsent).
+#
+# `/` del nodo ubuntu (el plan pedía <8 % libre): ya lo cubre NodeRootDiskLowOrFilling (INFRA-623, <20 % libre o
+# llena en 3 días, critical). No se duplica aquí.
+#
+# Enrutado, en dos pasos y los dos hacen falta (como arc-rules.yaml):
+#   1. Alertmanager: el catch-all `receiver: keep` las entrega a Keep. NO hay ruta nueva por alertname ni
+#      blackhole de warnings que sortear: el blackhole se retiró con el cutover a Keep (cabecera de
+#      alertmanager-config.yaml; `python3 scripts/alert_routing.py matrix`).
+#   2. Keep solo notifica INCIDENTES y una `warning` sin regla de correlación queda registrada y CALLA: la regla
+#      `frigate-vigilancia` de keep/rules/correlation-rules.yaml (prefijo FRG) las convierte en incidente. Una
+#      alerta nueva `Frigate*` queda cubierta sola; tests/test_infra712_frigate_correlation.py lo vigila.
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMRule
+metadata:
+  name: pocharlies-frigate
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: frigate
+    app.kubernetes.io/component: alerting
+spec:
+  groups:
+    - name: pocharlies.frigate
+      rules:
+        # Sin scrape que responda 5 min: o Frigate está caído (el Deployment es `Recreate`: un rollout normal deja
+        # el pod fuera ~1-3 min, por eso el `for`) o el vmagent no llega al 5000. Las dos ramas hacen falta: con el
+        # pod sin Ready el endpoint desaparece y no hay `up == 0`, solo ausencia.
+        - alert: FrigateCaido
+          expr: |
+            up{job="frigate", namespace="frigate"} == 0
+              or
+            absent(up{job="frigate", namespace="frigate"})
+          for: 5m
+          labels:
+            severity: warning
+            area: availability
+          annotations:
+            summary: "Frigate no responde: las cámaras de casa no se están grabando ni analizando"
+            description: >-
+              VictoriaMetrics lleva 5 min sin poder leer `/api/metrics` de Frigate (puerto 5000 del ns
+              `frigate`). Mirar primero `kubectl -n frigate get pods` y `kubectl -n frigate logs deploy/frigate`
+              (rollout, OOM, GPU ocupada por Krea2: el árbitro lo deja en `coexist`). Si el pod está `1/1`, el
+              culpable es la red: la NetworkPolicy `frigate` de k8s-frigate-pocharlies debe admitir al vmagent
+              del ns `monitoring` en el 5000. Mientras dure, ninguna alerta de cámara ve nada.
+
+        # Inferencia por encima de 100 ms sostenida: la RTX da 1-2 dígitos de ms (criterio C2 de INFRA-701:
+        # < 50 ms) y cientos si el detector cae a CPU. Solo se evalúa con alguna cámara real entregando frames:
+        # la métrica es del detector, no de una cámara, y la de prueba o un Frigate sin cámaras no debe avisar.
+        - alert: FrigateDetectorLento
+          expr: |
+            frigate_detector_inference_speed_seconds{job="frigate"} > 0.1
+              and on()
+            (sum(frigate_camera_fps{job="frigate", camera_name=~"c8w|hp7"}) > 0)
+          for: 10m
+          labels:
+            severity: warning
+            area: availability
+          annotations:
+            summary: "El detector de Frigate tarda más de 100 ms por inferencia (¿ha caído a CPU?)"
+            description: >-
+              El detector `{{ $labels.name }}` lleva 10 min tardando {{ $value | humanizeDuration }} por
+              inferencia (en la GPU son decenas de ms; en CPU, cientos). Con eso Frigate se salta fotogramas y
+              puede perder una persona. Mirar `kubectl -n frigate exec deploy/frigate -- curl -s
+              localhost:5000/api/stats` (`detectors`) y la VRAM libre de la RTX (`DCGM_FI_DEV_FB_FREE`): si
+              ComfyUI/Krea2 se la ha quedado, el detector cae a CPU.
+
+        # Una cámara real a 0 fps 5 min: sin RTSP, cámara apagada o clave cambiada. Frigate reintenta solo, así
+        # que 5 min ya no es un parpadeo de red. Una cámara apagada a mano por MQTT también salta: las dos reales
+        # deben estar siempre encendidas.
+        - alert: FrigateCamaraSinFps
+          expr: frigate_camera_fps{job="frigate", camera_name=~"c8w|hp7"} == 0
+          for: 5m
+          labels:
+            severity: warning
+            area: availability
+          annotations:
+            summary: "Cámara {{ $labels.camera_name }} sin frames en Frigate"
+            description: >-
+              La cámara `{{ $labels.camera_name }}` lleva 5 min a 0 fps: no llega vídeo, no se detecta ni se
+              graba. Mirar `kubectl -n frigate logs deploy/frigate | grep {{ $labels.camera_name }}` (RTSP
+              rechazado, timeout, clave) y que la cámara siga en la red; en la app de EZVIZ comprobar que el
+              RTSP sigue activado.
+
+        # `frigate-media` por debajo del 8 % libre 15 min. El 10 % saltaría sin parar según la medición del sre
+        # (el `/` del x86 estuvo bajo el 10 % libre el 64 % de los últimos 4 días). El 8 % deja margen para ajustar
+        # retención o tamaño con security antes de que el volumen se llene.
+        - alert: FrigateAlmacenamientoLleno
+          expr: |
+            100 * sum by (namespace, persistentvolumeclaim) (kubelet_volume_stats_available_bytes{namespace="frigate", persistentvolumeclaim="frigate-media"})
+              / sum by (namespace, persistentvolumeclaim) (kubelet_volume_stats_capacity_bytes{namespace="frigate", persistentvolumeclaim="frigate-media"})
+              < 8
+          for: 15m
+          labels:
+            severity: warning
+            area: capacity
+          annotations:
+            summary: "El volumen de grabaciones de Frigate está casi lleno"
+            description: >-
+              A `frigate-media` le queda el {{ $value | printf "%.1f" }} % libre desde hace 15 min. Con la
+              retención actual (3/14/7/14 días, fijada por security) algo graba más de lo previsto: mirar el
+              bitrate de las cámaras (`frigate_bandwidth_usages_kBps`) y `du` por cámara en `/media/frigate`.
+              Los números de retención y el tamaño del volumen no se tocan sin security.

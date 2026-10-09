@@ -506,6 +506,37 @@ rules:
       (manifests/arc-rules.yaml). Fuente: gha_* del listener ARC y el exporter
       ci-queue-exporter (API de GitHub).
 
+  # INFRA-712 (P2b de INFRA-701): vigilancia de casa. Las alertas de
+  # manifests/frigate-rules.yaml (VMRule pocharlies-frigate: Frigate caído,
+  # detector lento/en CPU, cámara sin frames, disco de frigate-media) llegan como
+  # `warning` y SIN esta regla no creaban incidente: Keep solo notifica
+  # incidentes (cabecera de este fichero), así que nunca habrían llegado al
+  # topic Infra 1248. Por prefijo de nombre (`Frigate*`): una alerta nueva del
+  # mismo VMRule queda cubierta sola, y el test la lee del VMRule real.
+  # Agrupa por alertname, como ci-queue-degraded: con groupingCriteria [] una
+  # alerta abierta (FrigateCaido) dejaría muda a la siguiente
+  # (FrigateAlmacenamientoLleno) porque, con on: [create], la que se une a un
+  # incidente abierto no avisa. Todas son `warning`: critical-safety-net no las
+  # recoge y no hay que excluirlas de su lista (INVARIANTE 1).
+  - ruleName: frigate-vigilancia
+    celQuery: 'name.startsWith("Frigate")'
+    sqlQuery:
+      sql: "((name like :name_1))"
+      params:
+        name_1: Frigate%
+    timeframeInSeconds: 1800
+    timeUnit: minutes
+    groupingCriteria: [alertname]
+    createOn: any
+    resolveOn: all_resolved
+    incidentPrefix: FRG
+    incidentNameTemplate: "Vigilancia: {{ alertname }}"
+    groupDescription: >-
+      Frigate caído (o inalcanzable para el vmagent), detector lento o caído a
+      CPU, cámara real sin frames y volumen de grabaciones casi lleno
+      (manifests/frigate-rules.yaml). Fuente: frigate_* de /api/metrics y
+      kubelet_volume_stats_* del PVC frigate-media.
+
   # Actualizaciones automáticas fallidas (fuente `updates` de ops-watch:
   # Renovate, updatetool…). Agrupa por `fail_reason` — `<via>:<firma>`
   # normalizada por `_firma_causa` en ops-watch, nunca el texto crudo (las

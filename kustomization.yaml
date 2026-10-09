@@ -72,6 +72,11 @@ resources:
   # en gitops infra/arc.yaml pero sin scrapear hasta ahora) y del exporter de cola.
   - manifests/arc-scrape.yaml
   - manifests/arc-rules.yaml
+  # INFRA-712 (P2b de INFRA-701): Frigate (ns frigate, repo k8s-frigate-pocharlies): scrape de
+  # /api/metrics por el 5000 y sus cuatro alertas. Va aquí y no en el repo de Frigate por el
+  # mismo motivo que arc-scrape.yaml: los scrapes y reglas de plataforma viven en este repo.
+  - manifests/frigate-scrape.yaml
+  - manifests/frigate-rules.yaml
   - manifests/dgx-gpu-mem-exporter.yaml
   - manifests/kyverno-policy-exceptions.yaml
   - manifests/dgx-cluster-health-watcher.yaml
