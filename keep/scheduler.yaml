@@ -14,8 +14,13 @@
 #
 # QUÉ HACE ESTE DEPLOYMENT. Un solo proceso con el mismo código que ejecuta el
 # scheduler hoy —la app completa con gunicorn --workers 1, SCHEDULER=true—,
-# fuera del camino crítico de ingesta. keep-backend lleva desde este PR
-# SCHEDULER=false (keep/values.yaml): sus workers solo sirven peticiones.
+# fuera del camino crítico de ingesta. Reparto con keep-backend (INFRA-751):
+# este pod es el ÚNICO ejecutor de los workflows de `interval`
+# (WORKFLOWS_INTERVAL_ENABLED=true); keep-backend lleva SCHEDULER=true con
+# WORKFLOWS_INTERVAL_ENABLED=false porque en Keep 0.52.1, sin Redis, los
+# workflows de evento (alerta/incidente) viajan por una cola en memoria del
+# propio proceso que recibe el webhook y solo pueden drenarse ahí —con
+# SCHEDULER=false se encolaban y se perdían.
 #
 # Por qué gunicorn y no un script a medida: el scheduler necesita el arranque
 # que hace `keep/api/config.py` (provisión de providers desde KEEP_PROVIDERS y
@@ -101,6 +106,12 @@ spec:
             - --preload
           env:
             - name: SCHEDULER
+              value: "true"
+            # INFRA-751: el reparto con keep-backend se declara, no se hereda
+            # del default. Este pod ejecuta SOLO los workflows de intervalo;
+            # los de evento los drena keep-backend (cola en memoria, ver
+            # cabecera arriba y el bloque SCHEDULER en keep/values.yaml).
+            - name: WORKFLOWS_INTERVAL_ENABLED
               value: "true"
             # CONSUMER=false: el EventSubscriber consume el bus de eventos
             # INTERNOS de Keep, que en este despliegue (sin Redis, REDIS no
