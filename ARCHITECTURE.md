@@ -98,6 +98,13 @@ igual). Necesita Postgres: sin `AURORA_TEST_PG_DSN` se salta en local y **falla 
   **no se puede volcar en una plantilla** (renderiza el repr de Python). `notify-incident*` siguen en `[created]`:
   Alertmanager reenvía cada minuto y notificar en `updated` sería un mensaje/min. Test:
   `tests/test_infra378_keep_notify_contract.py`.
+- `2026-10-09` · INFRA-378 / INFRA-751: **quién drena los workflows de evento de Keep**. Sin Redis (0.52.1) van por una
+  cola en memoria del proceso que recibe el webhook de Alertmanager, y solo el WorkflowScheduler de ESE proceso la
+  vacía. `keep-backend` lleva `SCHEDULER=true` + `WORKFLOWS_INTERVAL_ENABLED=false`; `keepsvc-scheduler`, `true` + `true`
+  (únicos de intervalo). SC-1711 puso `SCHEDULER=false` en el backend: último `workflowexecution` de Telegram
+  04-10 01:24:47Z, siguiente 09-10 15:10:39Z — cinco días sin un solo aviso al topic 1248 y nada lo detectó. Test:
+  `tests/test_infra378_keep_scheduler_split_contract.py`. Un aviso perdido en ese hueco no se reenvía solo: con
+  `only_on_change: [status]` y `[created]` solo sale en el siguiente cambio de estado.
 - `aurora-kubectl-agent` apunta a un **SHA del repo upstream**, no a un chart publicado: subirlo exige revisar el diff upstream.
 - README desfasado (k3s v1.32.5; describe el «estado objetivo» como tarea).
 - `2026-10-02` · Keep↔Aurora v1.3 (INFRA-406): una investigación por incidente de Keep (PK `keep_incident_id`, `fingerprint` = token
