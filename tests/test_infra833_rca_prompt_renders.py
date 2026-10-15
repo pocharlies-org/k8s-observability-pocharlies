@@ -22,11 +22,12 @@ tests se saltan en local y FALLAN con `CI=true`.
 
 import html
 import os
-import re
 import unittest
-from pathlib import Path
 
-import yaml
+try:
+    from keep_values import step
+except ImportError:  # invocado como `python -m unittest tests.test_...` desde la raíz
+    from tests.keep_values import step
 
 try:
     import psycopg
@@ -40,7 +41,6 @@ except ImportError:  # pragma: no cover - exercised only without chevron
     chevron = None
     ChevronError = Exception
 
-ROOT = Path(__file__).resolve().parents[1]
 DSN = os.environ.get("AURORA_TEST_PG_DSN")
 IN_CI = os.environ.get("CI", "").lower() == "true"
 
@@ -75,38 +75,16 @@ CREATE TABLE keep_bridge.aurora_dispatches (
 FINGERPRINT = "322d42d10e0325ad"
 
 
-def _find_workflows(node):
-    if isinstance(node, dict):
-        if isinstance(node.get("workflows"), list):
-            return node["workflows"]
-        for v in node.values():
-            found = _find_workflows(v)
-            if found:
-                return found
-    elif isinstance(node, list):
-        for v in node:
-            found = _find_workflows(v)
-            if found:
-                return found
-    return None
-
-
-def _step(workflow_id, step_name):
-    values = yaml.safe_load((ROOT / "keep/values.yaml").read_text())
-    wf = next(w for w in _find_workflows(values) if w.get("id") == workflow_id)
-    return next(s for s in wf["steps"] if s["name"] == step_name)
-
-
 def rca_datos_sql() -> str:
-    return _step("aurora-report-back", "rca-datos")["provider"]["with"]["query"]
+    return step("aurora-report-back", "rca-datos")["provider"]["with"]["query"]
 
 
 def llm_rca_prompt() -> str:
-    return _step("aurora-report-back", "llm-rca")["provider"]["with"]["prompt"]
+    return step("aurora-report-back", "llm-rca")["provider"]["with"]["prompt"]
 
 
 def link_datos_sql() -> str:
-    return _step("aurora-link", "link-datos")["provider"]["with"]["query"]
+    return step("aurora-link", "link-datos")["provider"]["with"]["query"]
 
 
 def poisoned_tool_output() -> str:

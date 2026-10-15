@@ -15,7 +15,10 @@ import unittest
 import uuid
 from pathlib import Path
 
-import yaml
+try:
+    from keep_values import step
+except ImportError:  # invocado como `python -m unittest tests.test_...` desde la raíz
+    from tests.keep_values import step
 
 try:
     import psycopg
@@ -40,27 +43,8 @@ CREATE TABLE public.incidents (
 """
 
 
-def _find_workflows(node):
-    if isinstance(node, dict):
-        if isinstance(node.get("workflows"), list):
-            return node["workflows"]
-        for v in node.values():
-            found = _find_workflows(v)
-            if found:
-                return found
-    elif isinstance(node, list):
-        for v in node:
-            found = _find_workflows(v)
-            if found:
-                return found
-    return None
-
-
 def claim_sql() -> str:
-    values = yaml.safe_load((ROOT / "keep/values.yaml").read_text())
-    wf = next(w for w in _find_workflows(values) if w.get("id") == "aurora-investigate")
-    step = next(s for s in wf["steps"] if s["name"] == "claim-dispatch")
-    return step["provider"]["with"]["query"]
+    return step("aurora-investigate", "claim-dispatch")["provider"]["with"]["query"]
 
 
 def render(sql: str, incident_id: str, alert_fp, severity="critical") -> str:
