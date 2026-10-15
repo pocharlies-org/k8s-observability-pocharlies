@@ -1,10 +1,12 @@
 """Contract for the x86 correlation rules (INFRA-405, P2 of INFRA-394).
 
-Pins the three rules that turn the alert families pushed by ops-watch
+Pins the four rules that turn the alert families pushed by ops-watch
 (`empujar_a_keep` in x86-host-runtime-pocharlies) into incidents:
 
 * ``x86-unit-failed``     — ``X86UnitFailed``, grouped by ``unit``, 1800 s, X86U
 * ``trunk-ci-failed``     — ``TrunkCIFailed``, grouped by ``repo``, 1800 s, CI
+* ``trunk-ci-stale``      — ``TrunkCIStale``, grouped by ``repo``+``workflow``,
+  1800 s, STALE (SC-2459: schedule muerto)
 * ``update-watch-failed`` — ``UpdateWatchFailed``, grouped by ``fail_reason``,
   3600 s, UPD
 
@@ -54,6 +56,14 @@ X86_RULES = {
         "incidentPrefix": "CI",
         "nameTemplate": "CI en rojo: {{ repo }}",
     },
+    "trunk-ci-stale": {
+        # SC-2459: schedule muerto (CI muerto > CI rojo). Agrupa por repo Y workflow.
+        "alert": "TrunkCIStale",
+        "groupingCriteria": ["repo", "workflow"],
+        "timeframeInSeconds": 1800,
+        "incidentPrefix": "STALE",
+        "nameTemplate": "Schedule muerto: {{ repo }}/{{ workflow }}",
+    },
     "update-watch-failed": {
         "alert": "UpdateWatchFailed",
         "groupingCriteria": ["fail_reason"],
@@ -74,7 +84,7 @@ class X86CorrelationRulesTests(unittest.TestCase):
     def setUpClass(cls):
         cls.spec, cls.rules = load()
 
-    def test_the_three_rules_exist(self):
+    def test_the_x86_rules_exist(self):
         for name in X86_RULES:
             self.assertIn(name, self.rules, f"falta la regla {name}")
 
