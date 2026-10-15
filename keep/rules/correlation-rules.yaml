@@ -537,6 +537,30 @@ rules:
       (manifests/frigate-rules.yaml). Fuente: frigate_* de /api/metrics y
       kubelet_volume_stats_* del PVC frigate-media.
 
+  # Schedule muerto (fuente `schedules` de ops-watch, SC-2459): un workflow programado
+  # crítico sin ningún run en su margen (p. ej. GitHub lo desactivó tras 3 fallos). Es
+  # la causa hermana de trunk-ci-failed y NO la reutiliza: un CI muerto es peor que un
+  # CI en rojo — sin runs la regla roja no puede sonar y la cadena queda muda. Agrupa
+  # por `repo` Y `workflow` (dos schedules muertos del mismo repo son dos causas
+  # distintas, a diferencia de trunk-ci-failed, donde el repo es la causa).
+  - ruleName: trunk-ci-stale
+    celQuery: 'name == "TrunkCIStale"'
+    sqlQuery:
+      sql: "((name = :name_1))"
+      params:
+        name_1: TrunkCIStale
+    timeframeInSeconds: 1800
+    timeUnit: minutes
+    groupingCriteria: [repo, workflow]
+    createOn: any
+    resolveOn: all_resolved
+    incidentPrefix: STALE
+    incidentNameTemplate: "Schedule muerto: {{ repo }}/{{ workflow }}"
+    groupDescription: >-
+      Workflows programados críticos sin runs en su margen esperado. El sensor es
+      ops-watch (fuente `schedules`); el `resolved` lo emite la pasada que vuelve a
+      ver un run.
+
   # Actualizaciones automáticas fallidas (fuente `updates` de ops-watch:
   # Renovate, updatetool…). Agrupa por `fail_reason` — `<via>:<firma>`
   # normalizada por `_firma_causa` en ops-watch, nunca el texto crudo (las
