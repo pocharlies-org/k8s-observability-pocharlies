@@ -418,8 +418,6 @@ despiertan a nadie pese a llamarse `page`.
 | `CertManagerCertificateMetricsMissing` | `critical` | keep |  |
 | `CertificateExpiresSoon` | `warning` | keep |  |
 | `CertificateNotReady` | `critical` | keep |  |
-| `CompaniaBuzonAtascado` | `critical` | backstop-telegram + keep |  |
-| `CompaniaSinTurnos` | `critical` | backstop-telegram + keep |  |
 | `CompaniaSupervisorSinMetricas` | `critical` | backstop-telegram + keep |  |
 | `ConcurrentInsertsHitTheLimit` | `warning` | keep |  |
 | `ConfigurationReloadFailure` | `warning` | keep |  |
