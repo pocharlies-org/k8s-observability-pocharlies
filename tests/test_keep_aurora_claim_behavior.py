@@ -137,9 +137,10 @@ class ClaimBehaviourTests(unittest.TestCase):
         self.assertEqual(self.claim(c, fp), ("", ""))  # 4. same keep_incident_id again
         self.assertEqual(len(self.dispatches()), 2)
 
-    def test_lane_is_critical_and_warning_only(self):
-        self.assertNotEqual(self.claim(str(uuid.uuid4()), "aa01", "warning")[0], "")
-        self.assertEqual(self.claim(str(uuid.uuid4()), "aa02", "info")[0], "")
+    def test_lane_is_critical_only(self):
+        self.assertNotEqual(self.claim(str(uuid.uuid4()), "aa01", "critical")[0], "")
+        self.assertEqual(self.claim(str(uuid.uuid4()), "aa02", "warning")[0], "")
+        self.assertEqual(self.claim(str(uuid.uuid4()), "aa03", "info")[0], "")
         self.assertEqual(len(self.dispatches()), 1)
 
     def test_incident_without_alert_fingerprint_is_dispatched(self):

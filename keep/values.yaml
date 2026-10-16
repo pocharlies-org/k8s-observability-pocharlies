@@ -922,7 +922,7 @@ backend:
         # huella de alerta acota el coste si una alerta flapea.
         disabled: false
         description: >-
-          Manda los incidentes critical y warning nuevos a Aurora, que lanza agentes
+          Manda los incidentes critical nuevos a Aurora, que lanza agentes
           read-only sobre el clúster y produce un RCA, una vez por incidente de
           Keep (y como mucho una vez cada 6 h por huella de alerta).
         triggers:
@@ -992,14 +992,13 @@ backend:
                         ''
                       ) AS alert_fingerprint,
                       NULLIF('{{ incident.severity }}', '') AS severity
-                    -- Defensa antes del claim: info/low ni siquiera se
-                    -- convierten en candidatos, por lo que no dejan una marca
-                    -- duradera que impediría investigarlos si después se eleva.
-                    -- 29-09-2026: warning entra también — la cadena al agente
-                    -- sre-devops de Hermes es Keep -> Aurora -> Hermes
-                    -- (el workflow de vuelta del RCA), y lo que antes le llegaba directo de
-                    -- Alertmanager era warning|critical.
-                    WHERE '{{ incident.severity }}' IN ('critical', 'warning')
+                    -- Defensa antes del claim: lo que no es critical ni siquiera se
+                    -- convierte en candidato, por lo que no deja una marca
+                    -- duradera que impediría investigarlo si después se eleva.
+                    -- INFRA-882 (16-10, Dani): RCA solo de critical. En 7 días el
+                    -- 77 % de los despachos eran warning (CI en rojo, unidades del
+                    -- x86, update-watch) a unas 15-25 llamadas LLM por RCA.
+                    WHERE '{{ incident.severity }}' = 'critical'
                   ), claimed AS (
                     INSERT INTO keep_bridge.aurora_dispatches (
                       keep_incident_id,
@@ -1053,7 +1052,7 @@ backend:
             # No hay retry del webhook: si Aurora aceptó la petición pero se
             # perdió la respuesta, reintentar aquí volvería a lanzar sus tareas
             # LLM aunque el incidente de Aurora ya existiera.
-            if: "('{{ incident.severity }}' == 'critical' or '{{ incident.severity }}' == 'warning') and '{{ steps.claim-dispatch.results.0.0 }}' != ''"
+            if: "'{{ incident.severity }}' == 'critical' and '{{ steps.claim-dispatch.results.0.0 }}' != ''"
             provider:
               type: webhook
               config: "{{ providers.aurora }}"
