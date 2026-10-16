@@ -13,35 +13,16 @@ saltó y nadie actuó):
    una cola nueva sin consumidor abre su propio incidente (con `[]` se unía al
    incidente abierto de otra cola y no avisaba). Y la lista `chronic` no
    resucita (INFRA-882: tapaba alertas reales).
+
+Los helpers de enrutado y workflows se reutilizan de los tests de contratos
+hermanos (test_infra690_spark_gpu_backstop, test_infra378_keep_notify_contract):
+misma semántica, una sola copia.
 """
 
-import importlib.util
-from pathlib import Path
 import unittest
 
-import yaml
-
-ROOT = Path(__file__).resolve().parents[1]
-spec = importlib.util.spec_from_file_location("alert_routing", ROOT / "scripts" / "alert_routing.py")
-alert_routing = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(alert_routing)
-
-ROUTE = yaml.safe_load((ROOT / "manifests" / "alertmanager-config.yaml").read_text())["spec"]["route"]
-VALUES = ROOT / "keep" / "values.yaml"
-CORRELATION = ROOT / "keep" / "rules" / "correlation-rules.yaml"
-
-
-def workflows():
-    values = yaml.safe_load(VALUES.read_text())
-    return {w["id"]: w for w in values["backend"]["provision"]["workflows"]}
-
-
-def rule(name):
-    rules = yaml.safe_load(CORRELATION.read_text())["rules"]
-    for r in rules:
-        if r["ruleName"] == name:
-            return r
-    raise AssertionError(f"rule {name} not found")
+from test_infra378_keep_notify_contract import ROOT, rule, workflows
+from test_infra690_spark_gpu_backstop import ROUTE, alert_routing
 
 
 class SynapseCrashloopBackstopTest(unittest.TestCase):
@@ -84,7 +65,7 @@ class SynapsePipelineGroupsPerQueueTest(unittest.TestCase):
 
     def test_chronic_list_stays_dead(self):
         # INFRA-882: la lista chronic tapaba alertas reales (el gmail, 3 h). No vuelve.
-        text = CORRELATION.read_text()
+        text = (ROOT / "keep" / "rules" / "correlation-rules.yaml").read_text()
         self.assertNotIn("chronic-debt", text)
 
 
