@@ -8,11 +8,15 @@
 # y había que acordarse de listar lo que querías ver: aquí el default es registrar,
 # y una regla es lo que convierte un patrón en algo que suena.
 #
-# Tres capas:
+# Dos capas:
 #
-#   aguda      -> regla de dominio -> incidente -> Telegram
-#   crónica    -> chronic-debt     -> UN incidente permanente, avisa una vez
+#   con regla  -> regla de dominio -> incidente -> Telegram
 #   sin regla  -> sólo registro auditable en Keep
+#
+# No hay capa «crónica» (INFRA-882, 16-10): una alerta que suena siempre es algo
+# roto (su incidente queda acknowledged con el ticket que lo arregla) o una regla
+# mala (se corrige o se borra). La lista `chronic` tapaba alertas reales: el
+# 16-10 el gmail de Synapse estuvo 3 h sin consumidor con su alerta disparada.
 #
 # ---------------------------------------------------------------------------
 # INVARIANTE 1 — la exclusión del safety-net delega, no silencia
@@ -27,13 +31,6 @@
 # Si excluyes algo sin darle regla, lo has silenciado. Si le das regla y olvidas
 # excluirlo, se notifica dos veces — molesto, no peligroso: ése es el lado
 # correcto por el que fallar. Keep no tiene prioridades entre reglas.
-#
-# INVARIANTE 2 — ninguna regla de dominio puede contener una crónica
-#
-# La aplica el script, no la vista: `apply-rules.py` añade automáticamente
-# `&& !(name in <chronic>)` al celQuery de toda regla que no lleve
-# `exemptFromChronic: true`. Por eso la lista `chronic:` aparece UNA vez y las
-# expresiones de abajo se leen sin ruido. No repitas la lista a mano.
 #
 # Verificar tras cada cambio:
 #     scripts/verify-notification-coverage.py
@@ -54,56 +51,7 @@
 # la da el NOMBRE y no la severidad — y por eso las 9 alertas `page`, que hoy no
 # llegan a Telegram, empiezan a hacerlo.
 
-# ===========================================================================
-# DEUDA CONOCIDA
-# ===========================================================================
-# Medido sobre vmsingle con:
-#   sum by (alertname) (count_over_time(ALERTS{alertstate="firing"}[7d]))
-# El porcentaje es del tiempo que llevaba disparada en los últimos 7 días
-# (>100% = varias instancias simultáneas). Umbral de corte: 20%.
-#
-# Estas NO son incidentes: son un baseline roto. Y meterlas en una regla de
-# dominio no sería sólo ruidoso, sería peligroso: con `resolveOn: all_resolved`,
-# un miembro permanentemente disparado hace que el incidente nunca se resuelva,
-# y como notificamos con `on: [create]`, cualquier alerta AGUDA que encaje en esa
-# misma regla se añadiría al incidente ya abierto sin avisar. Un
-# RabbitmqClusterPartition real entraría mudo en el incidente eterno de
-# RabbitmqDlqGrowth. Los crónicos son una píldora envenenada para su regla.
-#
-# Cómo se sale de aquí: se arregla la causa y se borra el nombre de esta lista.
-# Eso re-arma su regla de dominio automáticamente. La lista debería encoger; si
-# crece, ésa es la señal.
-#
-# Volver a medir con: scripts/alert_routing.py chronic
-chronic:
-  - InstagramLoraPrivateArtifactsStale   # 186% — varias instancias, siempre
-  - TooManyLogs                          # 139%
-  - RabbitmqDlqGrowth                    # 100% — los 7 días completos
-  - SynapseOutboxExhausted               #  90%
-  - SynapseOutboxOldestStale             #  90%
-  - SynapseScheduledWorkflowStalled      #  76%
-  - RequestErrorsToAPI                   #  62%
-  - RabbitmqFunctionalQueueNoConsumer    #  61%
-  - BlackboxProbeDown                    #  46%
-  - TargetDown                           #  46%
-  - NodeMemoryHighUtilization            #  45%
-  - ScrapePoolHasNoTargets               #  37%
-  - LibrePlayQueueFailures               #  31%
-  - AlertingRulesError                   #  31%
-  - TooManyScrapeErrors                  #  31%
-
 rules:
-  # =========================================================================
-  # DEUDA — un incidente permanente, a propósito
-  # =========================================================================
-  # `celQuery: chronic` es una palabra reservada que el script expande a la lista
-  # de arriba. `exemptFromChronic` evita que se autoexcluya a sí misma.
-  #
-  # Pendiente: un digest diario en vez de depender de mirar el incidente. Hace
-  # falta un workflow `type: interval` que consulte VictoriaMetrics, y no he
-  # verificado los nombres de parámetros de ese provider — prefiero no
-  # inventarlos que dejar un workflow que falle en silencio.
-
   # ---------------------------------------------------------------------------
   # COBERTURA DE HUÉRFANAS (2026-08-04)
   #
@@ -209,26 +157,6 @@ rules:
     groupDescription: >-
       Router de Telegram de OpenClaw pausado y demás alertas del dominio.
 
-  - ruleName: chronic-debt
-    celQuery: chronic
-    exemptFromChronic: true
-    sqlQuery:
-      sql: "((name in (:name_1, :name_2)))"
-      params:
-        name_1: RabbitmqDlqGrowth
-        name_2: SynapseOutboxExhausted
-    timeframeInSeconds: 3600
-    timeUnit: minutes
-    groupingCriteria: []
-    createOn: any
-    resolveOn: all_resolved
-    incidentPrefix: DEBT
-    incidentNameTemplate: "Deuda de alertas conocida"
-    groupDescription: >-
-      Alertas crónicas (>20% de los últimos 7 días disparadas). Un incidente
-      permanentemente abierto a propósito: no es una emergencia, es la lista de
-      lo que hay que arreglar para que el resto vuelva a significar algo.
-
   # =========================================================================
   # RED DE SEGURIDAD
   # =========================================================================
@@ -329,10 +257,6 @@ rules:
     incidentNameTemplate: "Nodos degradados"
     groupDescription: Presión de recursos y disponibilidad de kubelet.
 
-  # Los 6 miembros de esta regla están HOY en la lista de crónicas, así que el
-  # script la deja sin nada que hacer match. No la borro: es el estado objetivo.
-  # Cuando se arregle el scraping y salgan de `chronic`, la regla se re-arma sola
-  # y estos fallos vuelven a ser incidentes de verdad.
   - ruleName: monitoring-degraded
     celQuery: >-
       name in ["TargetDown", "BlackboxProbeDown", "ScrapePoolHasNoTargets",
@@ -628,11 +552,10 @@ rules:
   # SYNAPSE
   # =========================================================================
   # Dos reglas y no una: el flujo de datos atascado y los servicios caídos se
-  # arreglan de formas distintas, así que merecen incidentes distintos. Nota que
-  # 4 de los miembros del pipeline (Outbox x2, ScheduledWorkflowStalled,
-  # RabbitmqDlqGrowth, RabbitmqFunctionalQueueNoConsumer) son crónicos hoy: esta
-  # regla queda casi vacía hasta que se arreglen, que es justo lo correcto —
-  # antes se habría comido cualquier fallo agudo del bus.
+  # arreglan de formas distintas, así que merecen incidentes distintos.
+  # El pipeline agrupa por alerta Y cola (INFRA-882): con `[]`, una cola nueva sin
+  # consumidor (el gmail, 16-10) se unía al incidente abierto de otra (voicelab) y,
+  # con `on: [create]`, no avisaba. Un incidente por cola.
   - ruleName: synapse-pipeline
     celQuery: >-
       name.startsWith("SynapseOutbox") || name.startsWith("SynapseJanitor") ||
@@ -646,11 +569,11 @@ rules:
         name_2: Rabbitmq%
     timeframeInSeconds: 1800
     timeUnit: minutes
-    groupingCriteria: []
+    groupingCriteria: [alertname, queue]
     createOn: any
     resolveOn: all_resolved
     incidentPrefix: SYNP
-    incidentNameTemplate: "Pipeline de Synapse degradado"
+    incidentNameTemplate: "Synapse: {{ alertname }} {{ queue }}"
     groupDescription: Outbox, DLQ y colas del bus.
 
   - ruleName: synapse-control-plane

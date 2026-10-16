@@ -351,53 +351,11 @@ def cmd_matrix(_args) -> None:
     print(f"{target.relative_to(REPO)}: {len(rows)} series, {len(bh)} en blackhole ({len(bh_real)} ciegas reales)")
 
 
-def cmd_chronic(args) -> None:
-    """Mide qué alertas llevan disparadas tanto tiempo que no son incidentes.
-
-    Alimenta la lista `chronic:` de keep/rules/correlation-rules.yaml. El umbral
-    por defecto (20% de los últimos 7 días) es un juicio, no una constante
-    sagrada: por debajo hay alertas que van y vienen, por encima hay cosas que
-    llevan roto tanto que tratarlas como incidente vacía el concepto.
-    """
-    window_days = 7
-    query = f'sum by (alertname) (count_over_time(ALERTS{{alertstate="firing"}}[{window_days}d]))'
-    raw = kubectl(
-        "-n", AM_NAMESPACE, "exec", AM_POD, "-c", "alertmanager", "--", "wget", "-qO-",
-        "http://vmsingle-vm-victoria-metrics-k8s-stack.monitoring.svc.cluster.local:8428"
-        f"/api/v1/query?query={urllib.parse.quote(query)}",
-    )
-    # vmagent scrapea cada 30s -> 2 muestras/min es el 100% de la ventana.
-    samples_full = window_days * 24 * 60 * 2
-    rows = []
-    for item in json.loads(raw)["data"]["result"]:
-        name = item["metric"].get("alertname")
-        if not name or name in HEARTBEAT_ALERTS:
-            continue
-        rows.append((100 * float(item["value"][1]) / samples_full, name))
-
-    rows.sort(reverse=True)
-    print(f"% del tiempo disparada en los últimos {window_days}d (>100% = varias instancias)\n")
-    for pct, name in rows:
-        if pct < 1:
-            continue
-        mark = "  <- crónica" if pct >= args.threshold else ""
-        print(f"  {name:<44} {pct:>6.0f}%{mark}")
-
-    chronic = [n for pct, n in rows if pct >= args.threshold]
-    print(f"\n{len(chronic)} por encima del {args.threshold}%. Para el YAML:\n")
-    for name in sorted(chronic):
-        pct = next(p for p, n in rows if n == name)
-        print(f"  - {name:<38} # {pct:>4.0f}%")
-
-
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="cmd", required=True)
     sub.add_parser("live", help="destino de las alertas disparadas ahora mismo").set_defaults(fn=cmd_live)
     sub.add_parser("matrix", help="regenerar docs/alert-routing-matrix.md").set_defaults(fn=cmd_matrix)
-    chronic = sub.add_parser("chronic", help="medir alertas crónicas para la lista de deuda")
-    chronic.add_argument("--threshold", type=float, default=20.0, help="%% mínimo (default 20)")
-    chronic.set_defaults(fn=cmd_chronic)
     args = p.parse_args()
     try:
         args.fn(args)

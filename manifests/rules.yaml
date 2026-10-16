@@ -9,13 +9,15 @@ spec:
       rules:
         - alert: BlackboxProbeDown
           expr: probe_success{job=~"k8s-.*"} == 0
-          for: 2m
+          # 10m, no 2m (INFRA-882): 14 probes con cortes de 3-9 min la tenían
+          # disparada sin que hubiera nada que hacer.
+          for: 10m
           labels:
             severity: warning
             area: availability
           annotations:
             summary: "Endpoint probe is failing"
-            description: "{{ $labels.instance }} has failed blackbox probes for more than 2 minutes."
+            description: "{{ $labels.instance }} has failed blackbox probes for more than 10 minutes."
         - alert: CertificateExpiresSoon
           expr: |
             certmanager_certificate_not_after_timestamp_seconds{issuer_name!="letsencrypt-staging"}
@@ -971,7 +973,9 @@ spec:
           # forever. Motivation: 19 dead-lettered expense commands sat FIVE
           # days unalerted (2026-07-16..21, publisher-channel outage) because
           # every queue alert above excludes dlq.* by design.
-          expr: (rabbitmq_detailed_queue_messages_ready{vhost="/synapse",queue=~"dlq\\..+"} - (rabbitmq_detailed_queue_messages_ready{vhost="/synapse",queue=~"dlq\\..+"} offset 6h)) > 0
+          # >= 5, no > 0 (INFRA-882): un mensaje suelto ya lo avisa SynapseWorkflowFailed
+          # (pata DLQ) y el ops-explainer; esto es el manejador que falla en bucle.
+          expr: (rabbitmq_detailed_queue_messages_ready{vhost="/synapse",queue=~"dlq\\..+"} - (rabbitmq_detailed_queue_messages_ready{vhost="/synapse",queue=~"dlq\\..+"} offset 6h)) >= 5
           for: 30m
           labels:
             severity: warning
@@ -1589,10 +1593,12 @@ spec:
           # vmsingle): status ∈ {completed, failed}, más `workflow` y `tenant`.
           # Validada con control positivo (>= 0 devuelve las 2 series activas) y
           # negativo (> 0 no devuelve nada porque ahora no hay fallos recientes).
+          # >= 2 en 30m (INFRA-882): un fallo suelto ya lo explica el ops-explainer en
+          # el topic Infra; aquí, el workflow que falla de forma repetida.
           expr: |
             sum by (workflow, tenant) (
-              increase(synapse_engine_workflow_instance_duration_seconds_count{status="failed"}[10m])
-            ) > 0
+              increase(synapse_engine_workflow_instance_duration_seconds_count{status="failed"}[30m])
+            ) >= 2
           for: 2m
           labels:
             severity: warning
@@ -1601,8 +1607,8 @@ spec:
             summary: "Workflow de Synapse fallido: {{ $labels.workflow }}"
             description: >-
               El engine ha finalizado con error el workflow
-              {{ $labels.workflow }} (tenant {{ $labels.tenant }}) en los últimos
-              10 minutos. Detalle en la UI de Synapse; el RCA lo produce Aurora.
+              {{ $labels.workflow }} (tenant {{ $labels.tenant }}) al menos dos veces
+              en los últimos 30 minutos. Detalle en la UI de Synapse; el RCA lo produce Aurora.
         - alert: SynapseWorkflowFailed
           # Pata DLQ/unroutable: la métrica del engine (alerta de arriba) no ve
           # fallos que nunca corrieron en el engine — dead-letters y publishes

@@ -7,7 +7,7 @@ stays silent (Keep only notifies INCIDENTS), so every such family gets a rule an
 five checks; the alert names are read from the live VMRule, never copied, so a new alert of
 the family fails until the rule covers it.
 
-Reuses the composition (chronic expansion) and the CEL evaluator of
+Reuses the composition and the CEL evaluator of
 ``scripts/verify-notification-coverage.py``, like test_infra405_correlation_rules. When
 ``celpy`` (the engine Keep runs, rulesengine.py) is installed the same matrix is also
 evaluated with it; CI does not install it, so that part skips. Hermetic: no kubectl, no network.
@@ -64,15 +64,13 @@ class CorrelationContract:
         for name, severity in self.alerts.items():
             self.assertEqual(matches(self.rules, name, severity), [self.RULE], name)
 
-    def test_lifecycle_prefix_and_not_chronic(self):
+    def test_lifecycle_and_prefix(self):
         rule = self.by_name[self.RULE]
         self.assertEqual(rule["createOn"], "any")
         self.assertEqual(rule["resolveOn"], "all_resolved")
         self.assertEqual(rule["timeUnit"], "minutes")
         prefixes = [r["incidentPrefix"] for r in self.rules]
         self.assertEqual(prefixes.count(rule["incidentPrefix"]), 1, "incidentPrefix propio")
-        self.assertIn("!(name in [", rule["celQuery"], "apply-job le aplica la exclusión de crónicas")
-        self.assertFalse(set(self.alerts) & set(self.spec["chronic"]))
 
     def test_incident_name_is_a_stable_cause_key(self):
         # One incident per alert family (cron-job-failed pattern): without alertname
