@@ -1031,12 +1031,22 @@ spec:
           # consumers==0 y el backlog del día > 0: la alerta disparaba cada
           # noche por diseño, no por fallo. Su señal de fallo real es
           # RabbitmqContactSyncBacklogAfterWindow, justo debajo.
+          #
+          # synapse.unroutable EXCLUIDA (2026-10-17, INFRA-878): es la cola de
+          # aterrizaje del alternate-exchange y NO tiene consumidor por diseño
+          # (los mensajes los inspecciona un humano; ver SynapseUnroutable-
+          # Messages, que es SU señal: >0 = contrato roto, con runbook). Con
+          # cualquier mensaje pendiente esta alerta se quedaba firing junto a
+          # ella (doble aviso, SYNP-15125) y habría vuelto crónica la regla.
+          # adapter.telegram.ingress NO se excluye: medido el 17-10 tiene
+          # consumidor (synapse_adapter_telegram); si muere, esta alerta es la
+          # única señal — sacarla la cegaría (es lo que esta Request combate).
           expr: |
             (
               max by (vhost, queue) (
                 rabbitmq_detailed_queue_consumers{
                   vhost="/synapse",
-                  queue!~"dlq\\..+|archive\\..+|adapter\\.[^.]+|adapter\\.messaging\\.whatsapp_contact_sync"
+                  queue!~"dlq\\..+|archive\\..+|adapter\\.[^.]+|adapter\\.messaging\\.whatsapp_contact_sync|synapse\\.unroutable"
                 }
               ) == 0
             )
@@ -1045,7 +1055,7 @@ spec:
               max by (vhost, queue) (
                 rabbitmq_detailed_queue_messages_ready{
                   vhost="/synapse",
-                  queue!~"dlq\\..+|archive\\..+|adapter\\.[^.]+|adapter\\.messaging\\.whatsapp_contact_sync"
+                  queue!~"dlq\\..+|archive\\..+|adapter\\.[^.]+|adapter\\.messaging\\.whatsapp_contact_sync|synapse\\.unroutable"
                 }
               ) > 0
             )

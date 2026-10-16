@@ -255,18 +255,25 @@ backend:
       # `&` y Telegram da 400 con html (misma razón que `incident-summary`).
       #
       # Alcance deliberado: las dos alertas de la regla `cron-job-failed`
-      # (keep/rules/correlation-rules.yaml). Ampliarlo a más familias es otro
-      # ticket. `notify-incident` y `notify-incident-critical` NO se tocan.
+      # (keep/rules/correlation-rules.yaml) y KubePodCrashLooping del ns
+      # `synapse` (INFRA-878, 17-10: el crashloop de synapse-adapter-voicelab
+      # avisó una sola vez al crear el incidente agrupado WORK y calló 6 días;
+      # en Synapse un pod en crashloop = consumidor de colas muerto, y esta
+      # alerta por alerta es lo que el `type: incident` no puede dar). Ampliarlo
+      # a más familias sigue siendo otro ticket. `notify-incident` y
+      # `notify-incident-critical` NO se tocan.
       - id: notify-alert-summary
         name: Telegram — resúmenes de alertas al tema alertas
         description: >-
-          Lleva el summary de cada alerta de la regla cron-job-failed al topic
-          1248, además del título del incidente que manda notify-incident.
+          Lleva el summary de cada alerta de la regla cron-job-failed (y del
+          CrashLooping del ns synapse) al topic 1248, además del título del
+          incidente que manda notify-incident.
         triggers:
           - type: alert
             only_on_change: [status]
             cel: >-
               name == "BrainIngestConsecutiveFailures" || name == "K8sCronJobFailed"
+              || (name == "KubePodCrashLooping" && labels.namespace == "synapse")
         actions:
           - name: telegram-alert-summary
             # Mismo reintento que en la lane de incidentes; ver allí el porqué.

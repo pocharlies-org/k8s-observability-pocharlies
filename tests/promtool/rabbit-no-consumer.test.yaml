@@ -1,0 +1,65 @@
+# INFRA-878: RabbitmqFunctionalQueueNoConsumer — exclusiones y disparo por cola.
+rule_files:
+  - "rabbit-no-consumer.rules.yaml"
+
+evaluation_interval: 1m
+
+tests:
+  # Una cola funcional con mensajes y 0 consumidores: DEBE avisar (10m de for).
+  - interval: 1m
+    input_series:
+      - series: 'rabbitmq_detailed_queue_consumers{vhost="/synapse",queue="adapter.expenses.process",job="shared-rabbitmq"}'
+        values: '0+0x15'
+      - series: 'rabbitmq_detailed_queue_messages_ready{vhost="/synapse",queue="adapter.expenses.process",job="shared-rabbitmq"}'
+        values: '4+0x15'
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: RabbitmqFunctionalQueueNoConsumer
+        exp_alerts: []
+      - eval_time: 11m
+        alertname: RabbitmqFunctionalQueueNoConsumer
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              area: messaging
+              component: shared-rabbitmq
+              vhost: /synapse
+              queue: adapter.expenses.process
+            exp_annotations:
+              summary: "RabbitMQ queue adapter.expenses.process has messages but no consumer"
+              description: "Queue adapter.expenses.process (vhost /synapse) has ready messages with zero consumers for 10m. The handler is dead or disconnected — messages will sit until a consumer reattaches."
+
+  # synapse.unroutable: sin consumidor POR DISEÑO (SynapseUnroutableMessages es
+  # su señal) — excluida (INFRA-878). Con mensajes no debe disparar.
+  - interval: 1m
+    input_series:
+      - series: 'rabbitmq_detailed_queue_consumers{vhost="/synapse",queue="synapse.unroutable",job="shared-rabbitmq"}'
+        values: '0+0x15'
+      - series: 'rabbitmq_detailed_queue_messages_ready{vhost="/synapse",queue="synapse.unroutable",job="shared-rabbitmq"}'
+        values: '1+0x15'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: RabbitmqFunctionalQueueNoConsumer
+        exp_alerts: []
+
+  # adapter.telegram.ingress NO está excluida (medido 17-10: tiene consumidor):
+  # si muere, la alerta debe volver. Con 0 consumidores y mensajes, dispara.
+  - interval: 1m
+    input_series:
+      - series: 'rabbitmq_detailed_queue_consumers{vhost="/synapse",queue="adapter.telegram.ingress",job="shared-rabbitmq"}'
+        values: '0+0x15'
+      - series: 'rabbitmq_detailed_queue_messages_ready{vhost="/synapse",queue="adapter.telegram.ingress",job="shared-rabbitmq"}'
+        values: '12+0x15'
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: RabbitmqFunctionalQueueNoConsumer
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              area: messaging
+              component: shared-rabbitmq
+              vhost: /synapse
+              queue: adapter.telegram.ingress
+            exp_annotations:
+              summary: "RabbitMQ queue adapter.telegram.ingress has messages but no consumer"
+              description: "Queue adapter.telegram.ingress (vhost /synapse) has ready messages with zero consumers for 10m. The handler is dead or disconnected — messages will sit until a consumer reattaches."

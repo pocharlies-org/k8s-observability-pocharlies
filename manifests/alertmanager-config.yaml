@@ -154,6 +154,30 @@ spec:
         repeat_interval: 1h
 
       # ---------------------------------------------------------------------
+      # SYNAPSE: CRASHLOOP Y CRONJOBS SIGUEN AVISANDO (INFRA-878, 17-10)
+      #
+      # El crashloop de synapse-adapter-voicelab avisó una sola vez (al crear el
+      # incidente agrupado WORK de Keep) y calló 6 días mientras seguía firing;
+      # `notify-incident` es `on: create` y el ack de Keep silencia el hallazgo
+      # en ops-watch. En este ns un pod en crashloop o un CronJob roto es un
+      # consumidor de colas muerto (el caso gmail de SKIRM-161: 3 h sin nadie).
+      # El backstop repite mientras la alerta siga disparada (repeat_interval),
+      # que es justo lo que la ruta agrupada no da. `continue: true`: Keep las
+      # registra igual (WORK/CRON siguen su camino).
+      # ---------------------------------------------------------------------
+      - matchers:
+          - 'alertname =~ "KubePodCrashLooping|K8sCronJobFailed"'
+          - 'namespace = "synapse"'
+        receiver: backstop-telegram
+        continue: true
+        group_by:
+          - alertname
+          - namespace
+        group_wait: 30s
+        group_interval: 5m
+        repeat_interval: 1h
+
+      # ---------------------------------------------------------------------
       # SHARED-VALKEY CRÍTICAS (INFRA-859, 16-10)
       #
       # El 10-10 la caché compartida quedó sin master (replicación circular tras
