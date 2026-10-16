@@ -141,6 +141,27 @@ spec:
         repeat_interval: 1h
 
       # ---------------------------------------------------------------------
+      # SHARED-VALKEY CRÍTICAS (INFRA-859, 16-10)
+      #
+      # El 10-10 la caché compartida quedó sin master (replicación circular tras
+      # el reinicio del nodo, problema INFRA-822). `SharedValkeyMasterCountInvalid`
+      # estaba disparada — evidencia en el índice de VM (ventaja de la serie
+      # ALERTS sobre el incidente, con los datos ya borrados por la retention de
+      # 48 h) — y nadie actuó: la ruta de estas alertas era sólo Keep, y Keep no
+      # retuvo el aviso. Van también por Telegram (mismo patrón que las dos rutas
+      # de arriba: `continue: true`, Keep las registra igual).
+      # ---------------------------------------------------------------------
+      - matchers:
+          - 'alertname =~ "SharedValkeyMasterCountInvalid|SharedValkeyMetricsMissing|SharedValkeyExporterDown|SharedValkeyReplicaCountLow|SharedValkeyRejectedConnections|SharedValkeyAofUnhealthy"'
+        receiver: backstop-telegram
+        continue: true
+        group_by:
+          - alertname
+        group_wait: 30s
+        group_interval: 5m
+        repeat_interval: 30m
+
+      # ---------------------------------------------------------------------
       # CATCH-ALL EXPLÍCITO — no borrar, no es redundante
       #
       # `receiver: keep` en la ruta padre NO basta: Alertmanager usa el receiver
