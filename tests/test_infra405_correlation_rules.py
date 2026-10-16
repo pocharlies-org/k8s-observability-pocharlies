@@ -119,3 +119,19 @@ class X86CorrelationRulesTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class OneIncidentPerAlertTests(unittest.TestCase):
+    """INFRA-882: Keep no prioriza reglas; una alerta que casa con dos abre dos incidentes
+    (SynapseWorkflowFailed abría SYNC y SYNW a la vez)."""
+
+    def test_every_vmrule_alert_matches_at_most_one_rule(self):
+        _, rules = load()
+        for path in sorted((REPO / "manifests").glob("*.yaml")):
+            for doc in yaml.safe_load_all(path.read_text()):
+                if not doc or doc.get("kind") != "VMRule":
+                    continue
+                for rule in (r for g in doc["spec"]["groups"] for r in g["rules"] if "alert" in r):
+                    sev = rule.get("labels", {}).get("severity", "warning")
+                    hits = [n for n, r in rules.items() if coverage.cel_matches(r["celQuery"], rule["alert"], sev)]
+                    self.assertLessEqual(len(hits), 1, f"{path.name}: {rule['alert']} casa con {hits}")
