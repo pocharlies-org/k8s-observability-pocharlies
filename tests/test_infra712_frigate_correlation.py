@@ -37,12 +37,14 @@ class FrigateCorrelationTests(CorrelationContract, unittest.TestCase):
         self.assertEqual(self.alerts, {name: "warning" for name in names})
 
     def test_no_alertmanager_route_needed(self):
-        # Everything reaches Keep through the catch-all; no blackhole to get in front of.
+        # Frigate (warning) reaches Keep through the catch-all; the only blackhole is for info
+        # and InfoInhibitor (INFRA-882).
         cfg = yaml.safe_load((REPO / "manifests" / "alertmanager-config.yaml").read_text())
         route = cfg["spec"]["route"]
         self.assertEqual(route["receiver"], "keep")
         self.assertEqual(route["routes"][-1], {"receiver": "keep"})
-        self.assertNotIn("blackhole", {r["name"] for r in cfg["spec"]["receivers"]})
+        negros = [m for r in route["routes"] if r.get("receiver") == "blackhole" for m in r["matchers"]]
+        self.assertEqual(negros, ['alertname = "InfoInhibitor"', 'severity = "info"'])
 
 
 if __name__ == "__main__":

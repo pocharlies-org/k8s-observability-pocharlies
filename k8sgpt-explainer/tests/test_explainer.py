@@ -92,6 +92,11 @@ class FingerprintTests(unittest.TestCase):
             explainer.result_fingerprint(right, "v1"),
         )
 
+    def test_fingerprint_is_stable_across_cronjob_runs(self):
+        runs = [sample_result(name=f"brain/snap-{n}-{sfx}", error=f"pod snap-{n}-{sfx} failed")
+                for n, sfx in (("29868585", "rqzq5"), ("29868595", "f2rxs"))]
+        self.assertEqual(*(explainer.result_fingerprint(r, "v1") for r in runs))
+
     def test_namespace_extraction(self):
         self.assertEqual(explainer.result_namespace(sample_result()), "skirmshop")
         self.assertEqual(explainer.result_namespace(sample_result(name="node-1")), "_cluster")

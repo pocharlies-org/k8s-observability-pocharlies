@@ -15,6 +15,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import ssl
 import time
 import urllib.error
@@ -63,12 +64,17 @@ def normalized_failures(result: dict[str, Any]) -> list[str]:
     return sorted(set(failures))
 
 
+# Pod de un Job de CronJob: `<cronjob>-<minutos, 8 dígitos>-<5>`. Cada ejecución es un pod nuevo, pero es
+# el mismo fallo: sin esto cada run gastaba una llamada del cupo diario (INFRA-882).
+CRONJOB_RUN = re.compile(r"-\d{8}(-[a-z0-9]{5})?\b")
+
+
 def result_fingerprint(result: dict[str, Any], prompt_version: str) -> str:
     spec = result.get("spec") or {}
     payload = {
         "kind": spec.get("kind") or "unknown",
-        "name": spec.get("name") or result.get("metadata", {}).get("name", "unknown"),
-        "failures": normalized_failures(result),
+        "name": CRONJOB_RUN.sub("", spec.get("name") or result.get("metadata", {}).get("name", "unknown")),
+        "failures": [CRONJOB_RUN.sub("", f) for f in normalized_failures(result)],
         "prompt_version": prompt_version,
     }
     raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))

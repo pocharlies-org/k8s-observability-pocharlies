@@ -91,6 +91,14 @@ igual). Necesita Postgres: sin `AURORA_TEST_PG_DSN` se salta en local y **falla 
 
 ## 8. Decisiones y trampas
 
+- `2026-10-16` · INFRA-882 (Dani: «Keep a cero, solo lo que pide acción»). `severity=info` e `InfoInhibitor` van al
+  `blackhole` de Alertmanager; `TrunkCIFailed`/`UpdateWatchFailed` ya no entran (ops-watch dejó de empujarlos y sus
+  reglas se borraron; las ya creadas en Keep se borran a mano, el apply-job no borra). **Trampa del reaper**: resolvía
+  también lo empujado por ops-watch (nunca está en AM), ops-watch lo volvía a disparar y Keep abría otro incidente:
+  ~300 incidentes por causa en 7 días y una alerta con nombre-UUID por replay. Ahora el reaper ignora `source: x86`;
+  ArgoCD sigue pasando por él porque no emite `resolved`. `K8sCronJobFailed` agrega por CronJob (`owner_name`), no por
+  Job, y el explicador de k8sgpt quita el sufijo de ejecución de CronJob de su huella (cada pod gastaba cupo).
+
 - `2026-10-05` · INFRA-378: la regla `cron-job-failed` agrupa por `[namespace, alertname]` y su nombre lleva el
   `alertname` — agrupando sólo por namespace, el incidente viejo CRON absorbía las alertas nuevas sin emitir
   `created` y Telegram no se enteraba (incidente 9d403a3e, 9 días). Los resúmenes de las alertas salen del workflow
