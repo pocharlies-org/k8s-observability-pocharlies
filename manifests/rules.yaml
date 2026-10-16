@@ -2474,6 +2474,31 @@ spec:
               Salta con menos del 20 % libre o si al ritmo de las últimas 6 h se llena en menos de 3 días.
               Por debajo del 5 % el kubelet entra en disk-pressure y desaloja pods (el 07-10: AdGuard, el DNS de la LAN).
               Mirar qué crece (du por directorio: /var/lib/longhorn, /home, /srv, /tmp) y liberar caché.
+        - alert: NodeDiskPressure
+          # INFRA-849. Backstop independiente del exporter del nodo que se llena.
+          # El 07-10 el node-exporter de ubuntu murió con el disco y NodeRootDiskLowOrFilling
+          # (que casa con ese exporter vía kube_pod_info) se quedó ciega justo cuando hacía
+          # falta; KubeNodePressure (la del chart, que sí sobrevive porque la calcula
+          # kube-state-metrics en el control plan) lleva severity: info y Keep sólo manda a
+          # Telegram incidentes críticos → el taint disk-pressure real acabó sin destinatario.
+          # Ésta: condición DiskPressure del kubelet vista por kube-state-metrics (corre en
+          # ks5-cp-3, no en el nodo afectado), cualquier nodo, severity critical. El nombre
+          # empieza por "Node" → cae en la regla node-degraded de Keep (correlation-rules.yaml)
+          # → incidente + Telegram. La de arriba queda como complementaria (aviso temprano al
+          # 20 % libre, antes de que el kubelet alcance su umbral de desalojo).
+          expr: |
+            kube_node_status_condition{job="kube-state-metrics",condition="DiskPressure",status="true"} == 1
+          for: 5m
+          labels:
+            severity: critical
+            area: capacity
+          annotations:
+            summary: "Nodo {{ $labels.node }} en disk-pressure (taint del kubelet)"
+            description: >-
+              El kubelet del nodo {{ $labels.node }} lleva más de 5 min con la condición DiskPressure=true
+              (umbral de desalojo alcanzado: está podando pods). La señal la trae kube-state-metrics,
+              no el node-exporter del nodo afectado: dispara aunque el exporter esté muerto (07-10).
+              Mirar `df -h /` en el nodo, qué crece (du por directorio) y liberar espacio.
 ---
 apiVersion: operator.victoriametrics.com/v1beta1
 kind: VMRule
