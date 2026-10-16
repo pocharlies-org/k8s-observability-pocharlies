@@ -29,10 +29,6 @@ class CiQueueCorrelationTests(CorrelationContract, unittest.TestCase):
     def test_the_vmrule_has_the_five_alerts(self):
         self.assertEqual(len(self.alerts), 5, sorted(self.alerts))
 
-    def test_trunk_ci_failed_keeps_its_own_rule(self):
-        # `CI` prefix is trunk-ci-failed's; the new rule must not capture it.
-        self.assertEqual(matches(self.rules, "TrunkCIFailed"), ["trunk-ci-failed"])
-
 
 if __name__ == "__main__":
     unittest.main()

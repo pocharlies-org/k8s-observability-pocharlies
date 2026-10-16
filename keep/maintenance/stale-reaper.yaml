@@ -103,8 +103,14 @@ data:
             print(f"  {inc['id'][:8]}: sin alerts ({e})", file=sys.stderr)
             continue
         items = resp.get("items", resp) if isinstance(resp, dict) else resp
+        # Fuera lo de ops-watch (source x86): nunca está en AM y su emisor manda
+        # su propio resolved. Reaperlo lo resolvía cada 15 min, ops-watch lo volvía
+        # a disparar y Keep abría otro incidente (INFRA-882: ~300 incidentes por
+        # causa en 7 días, más una alerta-UUID por replay). ArgoCD no emite
+        # resolved: sus alertas siguen pasando por aquí.
         zombies = [a for a in items
-                   if a.get("status") == "firing" and a.get("fingerprint") not in live]
+                   if a.get("status") == "firing" and a.get("fingerprint") not in live
+                   and "x86" not in (a.get("source") or [])]
         if zombies:
             # Un incident visto hace poco puede estar a medio actualizar: fuera.
             last_seen = (inc.get("last_seen_time") or "")[:19]

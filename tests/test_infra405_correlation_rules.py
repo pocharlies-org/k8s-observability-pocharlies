@@ -1,14 +1,13 @@
 """Contract for the x86 correlation rules (INFRA-405, P2 of INFRA-394).
 
-Pins the four rules that turn the alert families pushed by ops-watch
+Pins the rules that turn the alert families pushed by ops-watch
 (`empujar_a_keep` in x86-host-runtime-pocharlies) into incidents:
 
 * ``x86-unit-failed``     — ``X86UnitFailed``, grouped by ``unit``, 1800 s, X86U
-* ``trunk-ci-failed``     — ``TrunkCIFailed``, grouped by ``repo``, 1800 s, CI
 * ``trunk-ci-stale``      — ``TrunkCIStale``, grouped by ``repo``+``workflow``,
   1800 s, STALE (SC-2459: schedule muerto)
-* ``update-watch-failed`` — ``UpdateWatchFailed``, grouped by ``fail_reason``,
-  3600 s, UPD
+
+(INFRA-882: CI en rojo and update-watch no longer reach Keep.)
 
 The rules live in ``keep/rules/correlation-rules.yaml`` and are applied by
 ``keep/rules/apply-job.yaml`` (not by the chart).  The incident NAME is part of
@@ -49,13 +48,6 @@ X86_RULES = {
         "incidentPrefix": "X86U",
         "nameTemplate": "x86: {{ unit }} fallida",
     },
-    "trunk-ci-failed": {
-        "alert": "TrunkCIFailed",
-        "groupingCriteria": ["repo"],
-        "timeframeInSeconds": 1800,
-        "incidentPrefix": "CI",
-        "nameTemplate": "CI en rojo: {{ repo }}",
-    },
     "trunk-ci-stale": {
         # SC-2459: schedule muerto (CI muerto > CI rojo). Agrupa por repo Y workflow.
         "alert": "TrunkCIStale",
@@ -63,13 +55,6 @@ X86_RULES = {
         "timeframeInSeconds": 1800,
         "incidentPrefix": "STALE",
         "nameTemplate": "Schedule muerto: {{ repo }}/{{ workflow }}",
-    },
-    "update-watch-failed": {
-        "alert": "UpdateWatchFailed",
-        "groupingCriteria": ["fail_reason"],
-        "timeframeInSeconds": 3600,
-        "incidentPrefix": "UPD",
-        "nameTemplate": "Actualización fallida: {{ fail_reason }}",
     },
 }
 

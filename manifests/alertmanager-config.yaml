@@ -66,6 +66,19 @@ spec:
     repeat_interval: 15m
     routes:
       # ---------------------------------------------------------------------
+      # FUERA DE KEEP (INFRA-882, Dani 16-10: «Keep a cero, solo lo que pide
+      # acción»). `info` no pide acción por definición, e InfoInhibitor es
+      # fontanería de inhibición (9.250 eventos en 7 días). Watchdog NO va
+      # aquí: KeepIngestionSilent mide su tráfico hacia Keep.
+      # ---------------------------------------------------------------------
+      - matchers:
+          - 'alertname = "InfoInhibitor"'
+        receiver: blackhole
+      - matchers:
+          - 'severity = "info"'
+        receiver: blackhole
+
+      # ---------------------------------------------------------------------
       # DEAD-MAN'S SWITCH
       #
       # Estas alertas notifican por Telegram SIN pasar por Keep, porque su modo
@@ -175,6 +188,8 @@ spec:
       - receiver: keep
 
   receivers:
+    - name: blackhole
+
     # Ingesta in-cluster: Service a Service dentro de monitoring. Ni ingress, ni
     # salto externo, ni hostAliases — el camino crítico más corto que hay.
     - name: keep
