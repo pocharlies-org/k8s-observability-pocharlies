@@ -15,7 +15,7 @@ P4's cause key (``keep-causa:<rule_name>:<sha1(name)>`` in ops-watch), so the
 template must carry the grouping label and no volatile numbers — a name that
 drifted between two alerts of the same cause would open two IT Requests.
 
-The tests reuse the composition (chronic expansion, invariante 2) and the CEL
+The tests reuse the composition and the CEL
 evaluator from ``scripts/verify-notification-coverage.py`` rather than
 reimplementing them: that file is the gate that keeps the rules honest, and
 duplicating its logic here would let the two drift.
@@ -83,22 +83,10 @@ class X86CorrelationRulesTests(unittest.TestCase):
             self.assertEqual(rule["resolveOn"], "all_resolved", name)
             self.assertEqual(rule["timeUnit"], "minutes", name)
 
-    def test_cel_matches_only_its_family_after_chronic_expansion(self):
-        # Invariante 2 wraps every rule with `&& !(name in <chronic>)`; the new
-        # families must survive that expansion and still match their own alert
-        # name (they are acute signals, never chronic debt).
+    def test_cel_matches_its_family(self):
         for name, want in X86_RULES.items():
             cel = self.rules[name]["celQuery"]
-            self.assertIn("!(name in [", cel, f"{name}: apply-job no le aplicó la exclusión de crónicas")
-            self.assertTrue(
-                coverage.cel_matches(cel, want["alert"], "warning"),
-                f"{name} no casa con {want['alert']} tras la expansión de chronic",
-            )
-
-    def test_new_alert_names_are_not_chronic(self):
-        chronic = set(self.spec["chronic"])
-        for name, want in X86_RULES.items():
-            self.assertNotIn(want["alert"], chronic, name)
+            self.assertTrue(coverage.cel_matches(cel, want["alert"], "warning"), f"{name} no casa con {want['alert']}")
 
     def test_no_overlap_with_critical_safety_net(self):
         # The families arrive as `warning`, and the safety net only captures

@@ -94,25 +94,8 @@ def cel_matches(cel: str, name: str, raw_severity: str) -> bool:
 
 
 def compose(spec: dict) -> list[dict]:
-    """Réplica de la composición que hace keep/rules/apply-job.yaml.
-
-    Expande `celQuery: chronic` y añade la exclusión de crónicas al resto. Está
-    duplicada a propósito: el Job corre dentro de un contenedor con sólo su
-    ConfigMap, así que no puede importar de aquí. Si cambias una, cambia la otra
-    — y este script es el que se dará cuenta, porque evalúa el resultado.
-    """
-    chronic = spec.get("chronic") or []
-    cel_list = ", ".join(json.dumps(n) for n in chronic)
-    out = []
-    for rule in spec["rules"]:
-        rule = dict(rule)
-        exempt = rule.pop("exemptFromChronic", False)
-        if rule["celQuery"].strip() == "chronic":
-            rule["celQuery"] = f"name in [{cel_list}]"
-        elif chronic and not exempt:
-            rule["celQuery"] = f'({rule["celQuery"].strip()}) && !(name in [{cel_list}])'
-        out.append(rule)
-    return out
+    """Las reglas tal como las aplica keep/rules/apply-job.yaml."""
+    return [dict(rule) for rule in spec["rules"]]
 
 
 def main() -> int:

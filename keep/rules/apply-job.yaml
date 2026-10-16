@@ -53,23 +53,9 @@ data:
 
 
     def compose(spec):
-        """Expande `chronic` y aplica la invariante 2 del fichero de reglas.
-
-        La lista de alertas crónicas vive UNA vez en el YAML. Aquí se convierte en:
-          - el celQuery de la regla chronic-debt (celQuery: chronic)
-          - una exclusión `&& !(name in [...])` añadida a toda regla que no lleve
-            exemptFromChronic, para que un crónico no pueda dejar un incidente
-            permanentemente abierto que se coma las alertas agudas de su regla.
-
-        Repetir la lista a mano en 16 expresiones CEL era el mismo acoplamiento
-        manual que ya se rompió una vez; esto lo hace imposible de desincronizar.
-        """
-        chronic = spec.get("chronic") or []
-        cel_list = ", ".join(json.dumps(n) for n in chronic)
         out = []
         for rule in spec["rules"]:
             rule = dict(rule)
-            exempt = rule.pop("exemptFromChronic", False)
             # Obligatorio en el PUT por un bug de Keep: create_rule lo toma del
             # DTO de Pydantic (requireApprove: bool = False, rules.py:30) pero
             # update_rule hace body.get("requireApprove", []) (rules.py:200) —
@@ -77,18 +63,14 @@ data:
             # "unhashable type: 'list'". El POST funciona y el PUT no. Mandarlo
             # explícito arregla ambos caminos.
             rule.setdefault("requireApprove", False)
-            if rule["celQuery"].strip() == "chronic":
-                rule["celQuery"] = f"name in [{cel_list}]"
-            elif chronic and not exempt:
-                rule["celQuery"] = f'({rule["celQuery"].strip()}) && !(name in [{cel_list}])'
             out.append(rule)
-        return out, chronic
+        return out
 
 
     def main():
         spec = yaml.safe_load(open(SPEC))
-        desired, chronic = compose(spec)
-        print(f"{len(desired)} reglas, {len(chronic)} alertas en deuda crónica\n")
+        desired = compose(spec)
+        print(f"{len(desired)} reglas\n")
 
         # El nombre es la clave de identidad: la API asigna un UUID que no
         # podemos fijar desde git.

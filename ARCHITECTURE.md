@@ -91,6 +91,13 @@ igual). Necesita Postgres: sin `AURORA_TEST_PG_DSN` se salta en local y **falla 
 
 ## 8. Decisiones y trampas
 
+- `2026-10-16` · INFRA-882: **sin capa crónica**. Se borran la lista `chronic`, la regla `chronic-debt` y su expansión
+  (apply-job, verify-notification-coverage, `alert_routing.py chronic`): tapaba alertas reales (el gmail de Synapse,
+  3 h sin consumidor). Una alerta que suena siempre es algo roto (incidente acknowledged con su ticket) o una regla
+  mala (se corrige). `synapse-pipeline` agrupa por `[alertname, queue]`: con `[]` una cola nueva se unía al incidente
+  abierto de otra y no avisaba. Corregidas: `BlackboxProbeDown` 10m, `RabbitmqDlqGrowth` >= 5 en 6 h,
+  `SynapseWorkflowFailed` (engine) >= 2 en 30m.
+
 - `2026-10-16` · INFRA-882 (Dani: «Keep a cero, solo lo que pide acción»). `severity=info` e `InfoInhibitor` van al
   `blackhole` de Alertmanager; `TrunkCIFailed`/`UpdateWatchFailed` ya no entran (ops-watch dejó de empujarlos y sus
   reglas se borraron; las ya creadas en Keep se borran a mano, el apply-job no borra). **Trampa del reaper**: resolvía
