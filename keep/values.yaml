@@ -652,6 +652,23 @@ backend:
                 # que ve. Viendo `Keep.` escribe `Keep.`, que tampoco dispara el
                 # escáner. Antes veía `keep_` y ya lo escribió una vez.
                 #
+                # `{{` y `}}` neutralizados a `{ {` / `} }` (INFRA-833), y esto
+                # tampoco es cosmética. IOHandler.render_recursively
+                # (iohandler.py, medido en el pod keep-backend 2026-10-15)
+                # RE-renderiza con chevron mientras el resultado siga llevando
+                # `{{`: la evidencia sustituida en el prompt se vuelve
+                # PLANTILLA en la segunda pasada. Un `{{` sin su `}}` y
+                # chevron.tokenizer lanza "unclosed tag" antes de llamar al
+                # LLM. Medido: incidente Aurora 408f3d00 (fingerprint
+                # 322d42d10e0325ad), paso 4 con `{{` en la posición 567 y `}}`
+                # en la 604 del tool_output — el left(...,600) cortaba entre
+                # las dos y envenenaba el prompt. 32 pasadas seguidas en error
+                # (12:11Z-14:51Z del 2026-10-10) y la cola bloqueada hasta que
+                # el incidente salió de la ventana de 24 h. Se neutraliza
+                # DESPUÉS del left(...,600) (es el corte lo que abre la
+                # pareja) y en título y respaldo igual: los renderiza el
+                # telegram-rca y el `if` de las actions.
+                #
                 # Orden de preferencia: primero los pasos que llevan un comando
                 # real, luego el resto. Sin esto, un incidente con 114
                 # `get_alert_field` se come el presupuesto entero antes de
@@ -679,11 +696,15 @@ backend:
                      LIMIT 1
                   )
                   SELECT coalesce(c.fp,''),
-                         regexp_replace(coalesce(c.titulo,''),
-                                        'keep\.', 'Keep.', 'g'),
+                         regexp_replace(regexp_replace(
+                           regexp_replace(coalesce(c.titulo,''),
+                                          'keep\.', 'Keep.', 'g'),
+                           '\{\{', '{ {', 'g'), '\}\}', '} }', 'g'),
                          coalesce(c.severity::text,''),
-                         regexp_replace(coalesce(c.respaldo,''),
-                                        'keep\.', 'Keep.', 'g'),
+                         regexp_replace(regexp_replace(
+                           regexp_replace(coalesce(c.respaldo,''),
+                                          'keep\.', 'Keep.', 'g'),
+                           '\{\{', '{ {', 'g'), '\}\}', '} }', 'g'),
                          regexp_replace(coalesce(
                            (SELECT string_agg(e.linea, E'\n\n' ORDER BY e.idx)
                               FROM (SELECT es.step_index AS idx,
@@ -692,8 +713,11 @@ backend:
                                               || CASE WHEN es.status <> 'success'
                                                       THEN '   [FALLÓ]' ELSE '' END
                                               || E'\n'
-                                              || left(regexp_replace(es.tool_output,
-                                                      '<[^>]*>', '', 'g'), 600) AS linea
+                                              || regexp_replace(regexp_replace(
+                                                   left(regexp_replace(es.tool_output,
+                                                           '<[^>]*>', '', 'g'), 600),
+                                                   '\{\{', '{ {', 'g'),
+                                                 '\}\}', '} }', 'g') AS linea
                                       FROM execution_steps es
                                      WHERE es.incident_id = c.id
                                        AND es.tool_output IS NOT NULL
@@ -1149,7 +1173,9 @@ backend:
                 # badge. El título se desinfecta igual que en rca-datos:
                 # `keep.` -> `Keep.` porque IOHandler.extract_keep_functions
                 # trata el texto ya sustituido como plantilla si ve el literal
-                # `keep.`, y las etiquetas HTML se quitan igual que allá.
+                # `keep.`, `{{`/`}}` neutralizados por el mismo motivo del
+                # INFRA-833 (render_recursively re-renderiza con chevron), y las
+                # etiquetas HTML se quitan igual que allá.
                 query: >-
                   SELECT set_config('myapp.current_org_id',
                                     (SELECT id::text FROM organizations
@@ -1171,8 +1197,10 @@ backend:
                   SELECT coalesce(c.keep_incident_id::text,''),
                          coalesce(c.aurora_id::text,''),
                          coalesce(c.fingerprint,''),
-                         regexp_replace(coalesce(c.titulo,''),
-                                        'keep\.', 'Keep.', 'g') AS titulo
+                         regexp_replace(regexp_replace(
+                           regexp_replace(coalesce(c.titulo,''),
+                                          'keep\.', 'Keep.', 'g'),
+                           '\{\{', '{ {', 'g'), '\}\}', '} }', 'g') AS titulo
                     FROM (VALUES (1)) AS siempre(x)
                     LEFT JOIN cand c ON true
         actions:

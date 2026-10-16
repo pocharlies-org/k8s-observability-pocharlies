@@ -38,7 +38,7 @@ jobs:
           python-version: "3.13"
       - name: Install promtool (INFRA-376 rule test)
         run: |
-          pip install pyyaml "psycopg[binary]"
+          pip install pyyaml "psycopg[binary]" chevron
           curl -fsSL https://github.com/prometheus/prometheus/releases/download/v2.55.1/prometheus-2.55.1.linux-amd64.tar.gz \
             | tar -xz --strip-components=1 -C "$RUNNER_TEMP" prometheus-2.55.1.linux-amd64/promtool
           echo "PROMTOOL=$RUNNER_TEMP/promtool" >> "$GITHUB_ENV"
