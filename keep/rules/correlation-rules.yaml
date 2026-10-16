@@ -581,7 +581,8 @@ rules:
       name.startsWith("Synapse") && !(
         name.startsWith("SynapseOutbox") || name.startsWith("SynapseJanitor") ||
         name in ["SynapseDLQBacklog", "SynapseScheduledWorkflowStalled",
-                 "SynapsePollFaultedBacklog", "SynapseOrphanIndexEntries"]
+                 "SynapsePollFaultedBacklog", "SynapseOrphanIndexEntries",
+                 "SynapseWorkflowFailed"]
       )
     sqlQuery:
       sql: "((name like :name_1))"
