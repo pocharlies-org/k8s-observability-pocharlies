@@ -1,0 +1,48 @@
+# Casos de NodeDiskPressure (promtool test rules, INFRA-849). `rules` la genera
+# tests/test_infra849_node_pressure_promtool.py desde la VMRule pocharlies-node-disk.
+# EN NINGÚN CASO HAY SERIES DE node-exporter: eso ES lo que se prueba — la alerta
+# dispara con el exporter del nodo afectado muerto (el 07-10 quedó ciega la regla
+# que dependía de él). La señal es la condición DiskPressure que publica
+# kube-state-metrics desde el control plano.
+rule_files:
+  - node-pressure.rules.yaml
+evaluation_interval: 1m
+tests:
+  - interval: 1m
+    name: ubuntu en DiskPressure (exporter sin series) -> salta a los 5 min
+    input_series:
+      - series: 'kube_node_status_condition{job="kube-state-metrics",node="ubuntu",condition="DiskPressure",status="true"}'
+        values: '1x30'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: NodeDiskPressure
+        exp_alerts: []
+      - eval_time: 6m
+        alertname: NodeDiskPressure
+        exp_alerts:
+          - exp_labels: {severity: critical, area: capacity, job: kube-state-metrics, node: ubuntu, condition: DiskPressure, status: "true"}
+            exp_annotations:
+              summary: "Nodo ubuntu en disk-pressure (taint del kubelet)"
+              description: "El kubelet del nodo ubuntu lleva más de 5 min con la condición DiskPressure=true (umbral de desalojo alcanzado: está podando pods). La señal la trae kube-state-metrics, no el node-exporter del nodo afectado: dispara aunque el exporter esté muerto (07-10). Mirar `df -h /` en el nodo, qué crece (du por directorio) y liberar espacio."
+  - interval: 1m
+    name: otro nodo (nvidia-dgx) en DiskPressure -> también salta (cubre cualquier nodo)
+    input_series:
+      - series: 'kube_node_status_condition{job="kube-state-metrics",node="nvidia-dgx",condition="DiskPressure",status="true"}'
+        values: '1x20'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: NodeDiskPressure
+        exp_alerts:
+          - exp_labels: {severity: critical, area: capacity, job: kube-state-metrics, node: nvidia-dgx, condition: DiskPressure, status: "true"}
+            exp_annotations:
+              summary: "Nodo nvidia-dgx en disk-pressure (taint del kubelet)"
+              description: "El kubelet del nodo nvidia-dgx lleva más de 5 min con la condición DiskPressure=true (umbral de desalojo alcanzado: está podando pods). La señal la trae kube-state-metrics, no el node-exporter del nodo afectado: dispara aunque el exporter esté muerto (07-10). Mirar `df -h /` en el nodo, qué crece (du por directorio) y liberar espacio."
+  - interval: 1m
+    name: DiskPressure=false (nodo sano) -> no salta
+    input_series:
+      - series: 'kube_node_status_condition{job="kube-state-metrics",node="ubuntu",condition="DiskPressure",status="false"}'
+        values: '1x30'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: NodeDiskPressure
+        exp_alerts: []
