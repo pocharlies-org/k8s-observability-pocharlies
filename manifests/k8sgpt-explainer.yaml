@@ -68,7 +68,7 @@ spec:
   template:
     metadata:
       annotations:
-        aiops.e-dani.com/code-revision: "2"
+        aiops.e-dani.com/code-revision: "3"
       labels:
         app.kubernetes.io/name: k8sgpt-explainer
         app.kubernetes.io/component: explainer

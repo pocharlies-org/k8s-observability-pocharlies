@@ -1,14 +1,13 @@
 """Contract for the x86 correlation rules (INFRA-405, P2 of INFRA-394).
 
-Pins the four rules that turn the alert families pushed by ops-watch
+Pins the rules that turn the alert families pushed by ops-watch
 (`empujar_a_keep` in x86-host-runtime-pocharlies) into incidents:
 
 * ``x86-unit-failed``     — ``X86UnitFailed``, grouped by ``unit``, 1800 s, X86U
-* ``trunk-ci-failed``     — ``TrunkCIFailed``, grouped by ``repo``, 1800 s, CI
 * ``trunk-ci-stale``      — ``TrunkCIStale``, grouped by ``repo``+``workflow``,
   1800 s, STALE (SC-2459: schedule muerto)
-* ``update-watch-failed`` — ``UpdateWatchFailed``, grouped by ``fail_reason``,
-  3600 s, UPD
+
+(INFRA-882: CI en rojo and update-watch no longer reach Keep.)
 
 The rules live in ``keep/rules/correlation-rules.yaml`` and are applied by
 ``keep/rules/apply-job.yaml`` (not by the chart).  The incident NAME is part of
@@ -16,7 +15,7 @@ P4's cause key (``keep-causa:<rule_name>:<sha1(name)>`` in ops-watch), so the
 template must carry the grouping label and no volatile numbers — a name that
 drifted between two alerts of the same cause would open two IT Requests.
 
-The tests reuse the composition (chronic expansion, invariante 2) and the CEL
+The tests reuse the composition and the CEL
 evaluator from ``scripts/verify-notification-coverage.py`` rather than
 reimplementing them: that file is the gate that keeps the rules honest, and
 duplicating its logic here would let the two drift.
@@ -49,13 +48,6 @@ X86_RULES = {
         "incidentPrefix": "X86U",
         "nameTemplate": "x86: {{ unit }} fallida",
     },
-    "trunk-ci-failed": {
-        "alert": "TrunkCIFailed",
-        "groupingCriteria": ["repo"],
-        "timeframeInSeconds": 1800,
-        "incidentPrefix": "CI",
-        "nameTemplate": "CI en rojo: {{ repo }}",
-    },
     "trunk-ci-stale": {
         # SC-2459: schedule muerto (CI muerto > CI rojo). Agrupa por repo Y workflow.
         "alert": "TrunkCIStale",
@@ -63,13 +55,6 @@ X86_RULES = {
         "timeframeInSeconds": 1800,
         "incidentPrefix": "STALE",
         "nameTemplate": "Schedule muerto: {{ repo }}/{{ workflow }}",
-    },
-    "update-watch-failed": {
-        "alert": "UpdateWatchFailed",
-        "groupingCriteria": ["fail_reason"],
-        "timeframeInSeconds": 3600,
-        "incidentPrefix": "UPD",
-        "nameTemplate": "Actualización fallida: {{ fail_reason }}",
     },
 }
 
@@ -98,22 +83,10 @@ class X86CorrelationRulesTests(unittest.TestCase):
             self.assertEqual(rule["resolveOn"], "all_resolved", name)
             self.assertEqual(rule["timeUnit"], "minutes", name)
 
-    def test_cel_matches_only_its_family_after_chronic_expansion(self):
-        # Invariante 2 wraps every rule with `&& !(name in <chronic>)`; the new
-        # families must survive that expansion and still match their own alert
-        # name (they are acute signals, never chronic debt).
+    def test_cel_matches_its_family(self):
         for name, want in X86_RULES.items():
             cel = self.rules[name]["celQuery"]
-            self.assertIn("!(name in [", cel, f"{name}: apply-job no le aplicó la exclusión de crónicas")
-            self.assertTrue(
-                coverage.cel_matches(cel, want["alert"], "warning"),
-                f"{name} no casa con {want['alert']} tras la expansión de chronic",
-            )
-
-    def test_new_alert_names_are_not_chronic(self):
-        chronic = set(self.spec["chronic"])
-        for name, want in X86_RULES.items():
-            self.assertNotIn(want["alert"], chronic, name)
+            self.assertTrue(coverage.cel_matches(cel, want["alert"], "warning"), f"{name} no casa con {want['alert']}")
 
     def test_no_overlap_with_critical_safety_net(self):
         # The families arrive as `warning`, and the safety net only captures
@@ -146,3 +119,19 @@ class X86CorrelationRulesTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class OneIncidentPerAlertTests(unittest.TestCase):
+    """INFRA-882: Keep no prioriza reglas; una alerta que casa con dos abre dos incidentes
+    (SynapseWorkflowFailed abría SYNC y SYNW a la vez)."""
+
+    def test_every_vmrule_alert_matches_at_most_one_rule(self):
+        _, rules = load()
+        for path in sorted((REPO / "manifests").glob("*.yaml")):
+            for doc in yaml.safe_load_all(path.read_text()):
+                if not doc or doc.get("kind") != "VMRule":
+                    continue
+                for rule in (r for g in doc["spec"]["groups"] for r in g["rules"] if "alert" in r):
+                    sev = rule.get("labels", {}).get("severity", "warning")
+                    hits = [n for n, r in rules.items() if coverage.cel_matches(r["celQuery"], rule["alert"], sev)]
+                    self.assertLessEqual(len(hits), 1, f"{path.name}: {rule['alert']} casa con {hits}")

@@ -2,14 +2,13 @@
 
 Two workflows are pinned here, both as Helm values rather than Python:
 
-* ``aurora-investigate`` — the critical+warning dispatch lane (29-09-2026: the
-  sre-devops agent of Hermes is fed only through Keep -> Aurora), one dispatch
+* ``aurora-investigate`` — the critical-only dispatch lane (INFRA-882, 16-10-2026), one dispatch
   per Keep incident (contract v1.3, INFRA-406: PK ``keep_incident_id``,
   ``fingerprint`` = token ``substr(md5(incident),1,16)``, 6 h cooldown per
   ``alert_fingerprint``; behaviour is exercised in
   ``test_keep_aurora_claim_behavior.py``): the SQL claim
-  must reject info/low incidents before writing the claim, the webhook
-  action must also require critical or warning severity, and the payload must carry
+  must reject non-critical incidents before writing the claim, the webhook
+  action must also require critical severity, and the payload must carry
   ``generatorURL`` (Aurora stores it as ``alert_metadata.alertUrl`` and renders
   it as "View Alert"; the ``keep_url`` annotation is discarded by tasks.py).
 
@@ -72,11 +71,10 @@ class KeepAuroraDispatchContractTests(unittest.TestCase):
         self.assertRegex(
             self.block,
             r"AS severity\s+-- Defensa antes del claim:[\s\S]*?"
-            r"WHERE '\{\{ incident\.severity \}\}' IN \('critical', 'warning'\)",
+            r"WHERE '\{\{ incident\.severity \}\}' = 'critical'",
         )
         self.assertIn(
-            "if: \"('{{ incident.severity }}' == 'critical' or "
-            "'{{ incident.severity }}' == 'warning') and "
+            "if: \"'{{ incident.severity }}' == 'critical' and "
             "'{{ steps.claim-dispatch.results.0.0 }}' != ''\"",
             self.block,
         )
@@ -136,12 +134,9 @@ class KeepAuroraDispatchContractTests(unittest.TestCase):
             'rearmed_from: "{{ steps.claim-dispatch.results.0.1 }}"', self.block
         )
 
-    def test_dispatch_lane_is_critical_and_warning(self):
-        self.assertNotIn("= 'critical'\n", self.block)
-        self.assertIn(
-            "WHERE '{{ incident.severity }}' IN ('critical', 'warning')",
-            self.block,
-        )
+    def test_dispatch_lane_is_critical_only(self):
+        self.assertNotIn("'warning'", self.block)
+        self.assertIn("WHERE '{{ incident.severity }}' = 'critical'", self.block)
 
     def test_report_back_workflow_is_not_part_of_dispatch_contract(self):
         self.assertNotIn("aurora-report-back", self.block)

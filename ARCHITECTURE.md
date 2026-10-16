@@ -34,7 +34,7 @@ multi-source: chart upstream + `values` de este repo, salvo indicación):
   de ese repo deja de admitir al `vmagent` de `monitoring` en el 5000, `FrigateCaido` salta** aunque Frigate esté sano.
 - **Dependen de él** — dashboard de control-nexus (`PROMETHEUS_URL` → `vmsingle-vm-victoria-metrics-k8s-stack.monitoring.svc:8428`),
   Grafana (`grafana.e-dani.com`), todos los repos que publican `VMServiceScrape/VMRule`; contrato **Keep↔Aurora**
-  (`docs/keep-aurora-contract.md` v1.3: despacho a Aurora por `keep_incident_id`; función SECURITY DEFINER `keep_bridge.aurora_rca_coverage()`).
+  (`docs/keep-aurora-contract.md` v1.4: despacho a Aurora por `keep_incident_id`, solo critical; función SECURITY DEFINER `keep_bridge.aurora_rca_coverage()`).
 - **Tronco**: `main`.
 
 ## 3. Stack
@@ -57,7 +57,7 @@ multi-source: chart upstream + `values` de este repo, salvo indicación):
 | Alerta de caída del MCP de Atlassian (SC-1728/H5) | `VMRule AtlassianMcpToolDown` + regla de correlación homónima | `manifests/atlassian-mcp-rules.yaml`, `keep/rules/correlation-rules.yaml` | sonda `atlassian-mcp-probe` (SC-1834); `ops-watch` (x86-host-runtime) por `rule_name` == `company_requests.REGLAS_CAIDA_JIRA` — renombrar = entrada nueva junto a la vieja |
 | Reglas ARC / cola de CI (INFRA-550) | `VMRule pocharlies-arc-ci` (cola >20 min, label sin pool, runner sin progreso >10 min, pool saturado, ceguera del exporter) + scrape `gha_*`/`ci_queue_*` | `manifests/arc-rules.yaml`, `manifests/arc-scrape.yaml`; casos en `tests/promtool/arc-rules.test.yaml`, correlación en `tests/test_infra550_ci_queue_correlation.py` | Keep → topic Infra 1248: Alertmanager las lleva a `keep` (catch-all, sin allowlist) y la regla de correlación `ci-queue-degraded` (`keep/rules/correlation-rules.yaml`, prefijo `CIQ`) las convierte en incidente — sin regla una `warning` queda registrada y calla; fuente de «label sin pool» = exporter `ci-queue-exporter` (gitops), no `gha_*` |
 | Reglas de Frigate (INFRA-712) | `VMRule pocharlies-frigate` (`FrigateCaido`, `FrigateDetectorLento` >100 ms, `FrigateCamaraSinFps` de `c8w`/`hp7`, `FrigateAlmacenamientoLleno` de `frigate-media` <8 % 15 min) + scrape `frigate_*` | `manifests/frigate-rules.yaml`, `manifests/frigate-scrape.yaml`; casos en `tests/promtool/frigate-rules.test.yaml`, correlación en `tests/test_infra712_frigate_correlation.py` | Keep → topic Infra 1248, como las de ARC: el catch-all de Alertmanager las lleva a `keep` (**no hay ruta por alertname ni blackhole de warnings**) y la regla de correlación `frigate-vigilancia` (prefijo `FRG`, `Frigate*`) las convierte en incidente. El `/` del nodo `ubuntu` no se duplica: lo cubre `NodeRootDiskLowOrFilling` |
-| Claim de despacho a Aurora (una vez por incidente de Keep, cooldown 6 h) | step `claim-dispatch` del workflow `aurora-investigate` | `keep/values.yaml` | Keep → Aurora; lectores `rca-datos`, `link-datos`, `mark-linked`, `aurora_rca_coverage()` (cruzan por `fingerprint`) |
+| Claim de despacho a Aurora (solo critical, una vez por incidente de Keep, cooldown 6 h) | step `claim-dispatch` del workflow `aurora-investigate` | `keep/values.yaml` | Keep → Aurora; lectores `rca-datos`, `link-datos`, `mark-linked`, `aurora_rca_coverage()` (cruzan por `fingerprint`) |
 | Alerta de disco raíz del nodo ubuntu (INFRA-623): <20 % libre o llena en 3 días | `VMRule NodeRootDiskLowOrFilling` (`pocharlies-node-disk`) + test promtool | `manifests/rules.yaml`, `tests/promtool/node-disk.test.yaml` | los defaults del chart (`NodeFilesystem*`) no saltaron el 07-10: el kubelet desaloja a <5 % libre |
 | Dashboards | `manifests/dashboards.yaml`, `grafana-company-dashboard.yaml`, `grafana-keep.yaml` | ídem | Grafana |
 | Modelo LLM de Aurora y Keep | nombre directo `qwen38-flash-next` (residente único del perfil `llm-tp`; fallback y allowlist en LiteLLM) | `aurora/values.yaml`, `keep/values.yaml` | Aurora, Keep |
@@ -90,6 +90,21 @@ igual). Necesita Postgres: sin `AURORA_TEST_PG_DSN` se salta en local y **falla 
   prueba que llegue a Keep y a Synapse, Loki devolviendo logs recientes de `sauvage`. Synced ≠ funcionando. Pendiente de ejecutar.
 
 ## 8. Decisiones y trampas
+
+- `2026-10-16` · INFRA-882: **sin capa crónica**. Se borran la lista `chronic`, la regla `chronic-debt` y su expansión
+  (apply-job, verify-notification-coverage, `alert_routing.py chronic`): tapaba alertas reales (el gmail de Synapse,
+  3 h sin consumidor). Una alerta que suena siempre es algo roto (incidente acknowledged con su ticket) o una regla
+  mala (se corrige). `synapse-pipeline` agrupa por `[alertname, queue]`: con `[]` una cola nueva se unía al incidente
+  abierto de otra y no avisaba. Corregidas: `BlackboxProbeDown` 10m, `RabbitmqDlqGrowth` >= 5 en 6 h,
+  `SynapseWorkflowFailed` (engine) >= 2 en 30m.
+
+- `2026-10-16` · INFRA-882 (Dani: «Keep a cero, solo lo que pide acción»). `severity=info` e `InfoInhibitor` van al
+  `blackhole` de Alertmanager; `TrunkCIFailed`/`UpdateWatchFailed` ya no entran (ops-watch dejó de empujarlos y sus
+  reglas se borraron; las ya creadas en Keep se borran a mano, el apply-job no borra). **Trampa del reaper**: resolvía
+  también lo empujado por ops-watch (nunca está en AM), ops-watch lo volvía a disparar y Keep abría otro incidente:
+  ~300 incidentes por causa en 7 días y una alerta con nombre-UUID por replay. Ahora el reaper ignora `source: x86`;
+  ArgoCD sigue pasando por él porque no emite `resolved`. `K8sCronJobFailed` agrega por CronJob (`owner_name`), no por
+  Job, y el explicador de k8sgpt quita el sufijo de ejecución de CronJob de su huella (cada pod gastaba cupo).
 
 - `2026-10-05` · INFRA-378: la regla `cron-job-failed` agrupa por `[namespace, alertname]` y su nombre lleva el
   `alertname` — agrupando sólo por namespace, el incidente viejo CRON absorbía las alertas nuevas sin emitir

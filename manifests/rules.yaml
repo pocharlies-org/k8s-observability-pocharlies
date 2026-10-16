@@ -9,13 +9,15 @@ spec:
       rules:
         - alert: BlackboxProbeDown
           expr: probe_success{job=~"k8s-.*"} == 0
-          for: 2m
+          # 10m, no 2m (INFRA-882): 14 probes con cortes de 3-9 min la tenían
+          # disparada sin que hubiera nada que hacer.
+          for: 10m
           labels:
             severity: warning
             area: availability
           annotations:
             summary: "Endpoint probe is failing"
-            description: "{{ $labels.instance }} has failed blackbox probes for more than 2 minutes."
+            description: "{{ $labels.instance }} has failed blackbox probes for more than 10 minutes."
         - alert: CertificateExpiresSoon
           expr: |
             certmanager_certificate_not_after_timestamp_seconds{issuer_name!="letsencrypt-staging"}
@@ -675,7 +677,10 @@ spec:
         # severity=critical → telegram-backup route (which would duplicate the
         # alert in the General topic without LLM analysis).
         - alert: K8sCronJobFailed
+          # Una huella por CronJob, no por Job (INFRA-882): con `job_name` en la
+          # serie cada ejecución era una alerta nueva (1.609 huellas en 7 días).
           expr: |
+            max by (namespace, owner_name) (
             (
               (
                 max by (namespace, job_name) (kube_job_failed{condition="true"} == 1)
@@ -720,6 +725,7 @@ spec:
                   max by (namespace, job_name, owner_name) (kube_job_owner{owner_kind="CronJob"})
               )
             )
+            )
           # Give frequent CronJobs one natural retry window before paging. A
           # newer success still clears the expression immediately via the
           # `unless` above; persistent failures continue to alert.
@@ -730,7 +736,7 @@ spec:
             domain: crons
           annotations:
             summary: "CronJob {{ $labels.namespace }}/{{ $labels.owner_name }} failed"
-            description: "Job {{ $labels.job_name }} owned by CronJob {{ $labels.namespace }}/{{ $labels.owner_name }} has failed. Keep groups the alert into a CRON incident and notifies the Infra topic (1248) of Pocharlies Operations, with root-cause analysis via Aurora."
+            description: "The latest Job of CronJob {{ $labels.namespace }}/{{ $labels.owner_name }} has failed (kubectl -n {{ $labels.namespace }} get jobs). Keep groups the alert into a CRON incident and notifies the Infra topic (1248) of Pocharlies Operations, with root-cause analysis via Aurora."
     - name: pocharlies.backup-freshness
       rules:
         # Kubernetes es autoritativo sobre si el backup COMPLETO, mismo criterio
@@ -967,7 +973,9 @@ spec:
           # forever. Motivation: 19 dead-lettered expense commands sat FIVE
           # days unalerted (2026-07-16..21, publisher-channel outage) because
           # every queue alert above excludes dlq.* by design.
-          expr: (rabbitmq_detailed_queue_messages_ready{vhost="/synapse",queue=~"dlq\\..+"} - (rabbitmq_detailed_queue_messages_ready{vhost="/synapse",queue=~"dlq\\..+"} offset 6h)) > 0
+          # >= 5, no > 0 (INFRA-882): un mensaje suelto ya lo avisa SynapseWorkflowFailed
+          # (pata DLQ) y el ops-explainer; esto es el manejador que falla en bucle.
+          expr: (rabbitmq_detailed_queue_messages_ready{vhost="/synapse",queue=~"dlq\\..+"} - (rabbitmq_detailed_queue_messages_ready{vhost="/synapse",queue=~"dlq\\..+"} offset 6h)) >= 5
           for: 30m
           labels:
             severity: warning
@@ -1585,10 +1593,12 @@ spec:
           # vmsingle): status ∈ {completed, failed}, más `workflow` y `tenant`.
           # Validada con control positivo (>= 0 devuelve las 2 series activas) y
           # negativo (> 0 no devuelve nada porque ahora no hay fallos recientes).
+          # >= 2 en 30m (INFRA-882): un fallo suelto ya lo explica el ops-explainer en
+          # el topic Infra; aquí, el workflow que falla de forma repetida.
           expr: |
             sum by (workflow, tenant) (
-              increase(synapse_engine_workflow_instance_duration_seconds_count{status="failed"}[10m])
-            ) > 0
+              increase(synapse_engine_workflow_instance_duration_seconds_count{status="failed"}[30m])
+            ) >= 2
           for: 2m
           labels:
             severity: warning
@@ -1597,8 +1607,8 @@ spec:
             summary: "Workflow de Synapse fallido: {{ $labels.workflow }}"
             description: >-
               El engine ha finalizado con error el workflow
-              {{ $labels.workflow }} (tenant {{ $labels.tenant }}) en los últimos
-              10 minutos. Detalle en la UI de Synapse; el RCA lo produce Aurora.
+              {{ $labels.workflow }} (tenant {{ $labels.tenant }}) al menos dos veces
+              en los últimos 30 minutos. Detalle en la UI de Synapse; el RCA lo produce Aurora.
         - alert: SynapseWorkflowFailed
           # Pata DLQ/unroutable: la métrica del engine (alerta de arriba) no ve
           # fallos que nunca corrieron en el engine — dead-letters y publishes
@@ -1607,9 +1617,12 @@ spec:
           # dlq-monitor cuenta lo que drena — como cualquier workload. Cualquier
           # incremento es un contrato roto o un mensaje envenenado, y entra en
           # la misma familia de incidentes SYNW.
+          # Ventana de 1h (INFRA-882): con 10m, `email.<tenant>.classified` sin
+          # consumidor (SKIRM-169) la abría y cerraba con cada correo, un incidente
+          # nuevo cada vez. Volver a 10m cuando SKIRM-169 esté arreglado.
           expr: |
             sum by (tenant, kind) (
-              increase(synapse_dlq_messages_total[10m])
+              increase(synapse_dlq_messages_total[1h])
             ) > 0
           for: 1m
           labels:
@@ -1617,7 +1630,7 @@ spec:
             area: synapse
           annotations:
             summary: "Mensajes {{ $labels.kind }} de {{ $labels.tenant }} entrando en la red de seguridad"
-            description: "El dlq-monitor drenó mensajes nuevos ({{ $labels.kind }}) en los últimos 10m — dead-letter o routing key sin binding. El detalle está en la tarjeta del ops-explainer y en synapse.dlq_archive."
+            description: "El dlq-monitor drenó mensajes nuevos ({{ $labels.kind }}) en la última hora — dead-letter o routing key sin binding. El detalle está en la tarjeta del ops-explainer y en synapse.dlq_archive."
         - alert: AlertmanagerTelegramDeliveryFailed
           # Vivía en cron-alert-analyzer.yaml, que se retira. La descripción
           # anterior decía "se entrega por el webhook Synapse" — esa ruta ya no
@@ -2474,6 +2487,31 @@ spec:
               Salta con menos del 20 % libre o si al ritmo de las últimas 6 h se llena en menos de 3 días.
               Por debajo del 5 % el kubelet entra en disk-pressure y desaloja pods (el 07-10: AdGuard, el DNS de la LAN).
               Mirar qué crece (du por directorio: /var/lib/longhorn, /home, /srv, /tmp) y liberar caché.
+        - alert: NodeDiskPressure
+          # INFRA-849. Backstop independiente del exporter del nodo que se llena.
+          # El 07-10 el node-exporter de ubuntu murió con el disco y NodeRootDiskLowOrFilling
+          # (que casa con ese exporter vía kube_pod_info) se quedó ciega justo cuando hacía
+          # falta; KubeNodePressure (la del chart, que sí sobrevive porque la calcula
+          # kube-state-metrics en el control plan) lleva severity: info y Keep sólo manda a
+          # Telegram incidentes críticos → el taint disk-pressure real acabó sin destinatario.
+          # Ésta: condición DiskPressure del kubelet vista por kube-state-metrics (corre en
+          # ks5-cp-3, no en el nodo afectado), cualquier nodo, severity critical. El nombre
+          # empieza por "Node" → cae en la regla node-degraded de Keep (correlation-rules.yaml)
+          # → incidente + Telegram. La de arriba queda como complementaria (aviso temprano al
+          # 20 % libre, antes de que el kubelet alcance su umbral de desalojo).
+          expr: |
+            kube_node_status_condition{job="kube-state-metrics",condition="DiskPressure",status="true"} == 1
+          for: 5m
+          labels:
+            severity: critical
+            area: capacity
+          annotations:
+            summary: "Nodo {{ $labels.node }} en disk-pressure (taint del kubelet)"
+            description: >-
+              El kubelet del nodo {{ $labels.node }} lleva más de 5 min con la condición DiskPressure=true
+              (umbral de desalojo alcanzado: está podando pods). La señal la trae kube-state-metrics,
+              no el node-exporter del nodo afectado: dispara aunque el exporter esté muerto (07-10).
+              Mirar `df -h /` en el nodo, qué crece (du por directorio) y liberar espacio.
 ---
 apiVersion: operator.victoriametrics.com/v1beta1
 kind: VMRule
