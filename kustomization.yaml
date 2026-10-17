@@ -2,7 +2,6 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
   - manifests/aurora-namespace.yaml
-  - manifests/k8sgpt-namespace.yaml
   - apps/victoria-metrics.yaml
   - apps/loki.yaml
   - apps/blackbox-exporter.yaml
@@ -10,19 +9,12 @@ resources:
   - apps/keep.yaml
   - apps/aurora.yaml
   - apps/aurora-kubectl-agent.yaml
-  - apps/k8sgpt.yaml
   - manifests/ingressroutes.yaml
   - manifests/alertmanager-secrets.yaml
   - manifests/keep-secrets.yaml
   - manifests/aurora-secrets.yaml
   - manifests/aurora-kubectl-agent.yaml
-  - manifests/k8sgpt-secrets.yaml
-  - manifests/k8sgpt-config.yaml
-  - manifests/k8sgpt-explainer.yaml
-  - manifests/k8sgpt-scrape.yaml
-  - manifests/k8sgpt-rules.yaml
   - manifests/backup-alert-reports.yaml
-  - manifests/k8sgpt-tolerations-policy.yaml
   - manifests/aurora-storage.yaml
   - manifests/aurora-frontend-models-policy.yaml
   # SearXNG propio para Aurora con el brain como motor extra. Va fuera del chart
@@ -97,12 +89,6 @@ configMapGenerator:
     namespace: aurora
     files:
       - brain-kb-memory.md=aurora/brain-kb-memory.md
-  # Código auditable del explicador idempotente. El estado/caché NO se genera
-  # aquí: lo crea el worker para que ArgoCD nunca lo restaure a vacío.
-  - name: k8sgpt-explainer-code
-    namespace: k8sgpt
-    files:
-      - explainer.py=k8sgpt-explainer/explainer.py
 generatorOptions:
   # El Job referencia el nombre literal, sin sufijo de hash. Se recrea en cada
   # sync (hook PostSync + BeforeHookCreation), así que siempre lee la versión
