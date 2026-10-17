@@ -10,7 +10,7 @@
 #
 # Dos capas:
 #
-#   con regla  -> regla de dominio -> incidente -> Telegram
+#   con regla  -> regla de dominio -> incidente -> Request (ops-watch)
 #   sin regla  -> sólo registro auditable en Keep
 #
 # No hay capa «crónica» (INFRA-882, 16-10): una alerta que suena siempre es algo
@@ -282,9 +282,9 @@ rules:
       confianza en todo lo demás.
 
   # Salud del propio hub. Aparte de monitoring-degraded porque la respuesta es
-  # distinta: si esto salta, el resto de Keep no es de fiar. Contrastar con lo que
-  # haya llegado por la lane directa de Telegram, que no depende de Keep
-  # (manifests/alertmanager-config.yaml).
+  # distinta: si esto salta, el resto de Keep no es de fiar. No hay lane directa
+  # que contrastar: INFRA-912 retiró backstop-telegram junto con las alertas
+  # por Telegram, así que este dominio es la única vía de aviso del hub.
   - ruleName: keep-hub-degraded
     celQuery: 'name.startsWith("Keep") || name.startsWith("Alertmanager")'
     sqlQuery:
@@ -716,7 +716,7 @@ rules:
     incidentNameTemplate: "Pipeline de etiquetas degradado"
     groupDescription: >-
       Valkey de labels, generación y deep-monitor. Aquí viven 5 de las 9 alertas
-      `page` del clúster, que hoy NO llegan a Telegram.
+      `page` del clúster.
 
   - ruleName: mcp-degraded
     celQuery: 'name.startsWith("MCP")'
@@ -845,4 +845,4 @@ rules:
     groupDescription: >-
       El CronJob skirmshop/shopify-picqer-order-audit (diario 02:30) encuentra
       descuadres Shopify/Picqer o completa sin emitir telemetría. Mismo patrón
-      que sii-cronjobs: familia de nombre -> un incidente -> Telegram tema 34494.
+      que sii-cronjobs: familia de nombre -> un incidente.

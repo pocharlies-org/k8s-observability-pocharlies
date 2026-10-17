@@ -1,6 +1,7 @@
 # dgx-cluster-health-watcher — twice-daily cluster check. Full reports stay in
-# Job logs; Telegram posting is disabled so real paging can be routed through
-# Alertmanager/Synapse with OpenClaw actions instead of bypassing alert hygiene.
+# Job logs. INFRA-912 (2026-10-17) retiró el envío a Telegram: las alertas por
+# Telegram no existen; el estado del clúster se lee en el panel de DGX Dashboard
+# y lo que pide acción llega como Request vía Alertmanager/Keep/ops-watch.
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -49,8 +50,6 @@ data:
     set +e
     STATE_DIR="${STATE_DIR:-/state}"
     mkdir -p "$STATE_DIR"
-    POST_MODE="${POST_MODE:-actionable}"  # actionable, always, never
-    DEDUP_FILE="$STATE_DIR/last-telegram-issue-fingerprint"
 
     # SSH from inside the pod: the mounted /root/.ssh files are owned by
     # uid 1000 (host's dibanez user), so OpenSSH refuses the config and key
@@ -259,69 +258,8 @@ data:
     FULL=$(printf "%s\n\n%s" "$HEADER" "$REPORT")
     FULL="${FULL:0:4000}"
 
-    ISSUE_LINES=$(printf "%s\n" "$REPORT" | grep -E '🔴|❌|⚠️|🟡' || true)
-    ISSUE_FINGERPRINT=""
-    if [ -n "$ISSUE_LINES" ]; then
-      ISSUE_FINGERPRINT=$(printf "%s" "$ISSUE_LINES" | sha256sum | awk '{print $1}')
-    fi
-
     echo "================ REPORT ================"
     echo "$FULL"
-
-    if [ "$POST_MODE" = "never" ]; then
-      echo "================ TELEGRAM RESPONSE ================"
-      echo "skipped: POST_MODE=never"
-      exit 0
-    fi
-
-    TELEGRAM_TEXT="$FULL"
-    if [ "$POST_MODE" = "actionable" ]; then
-      if [ -z "$ISSUE_LINES" ]; then
-        rm -f "$DEDUP_FILE" 2>/dev/null || true
-        echo "================ TELEGRAM RESPONSE ================"
-        echo "skipped: no actionable issue lines"
-        exit 0
-      fi
-      PRIOR_FINGERPRINT=$(cat "$DEDUP_FILE" 2>/dev/null || true)
-      if [ "$ISSUE_FINGERPRINT" = "$PRIOR_FINGERPRINT" ]; then
-        echo "================ TELEGRAM RESPONSE ================"
-        echo "skipped: duplicate actionable fingerprint $ISSUE_FINGERPRINT"
-        exit 0
-      fi
-      TELEGRAM_TEXT=$(printf "%s\n\n%s\n\n(full report is in the Kubernetes job logs)" "$HEADER" "$ISSUE_LINES")
-      TELEGRAM_TEXT="${TELEGRAM_TEXT:0:4000}"
-    elif [ "$POST_MODE" != "always" ]; then
-      echo "================ TELEGRAM RESPONSE ================"
-      echo "skipped: invalid POST_MODE=$POST_MODE"
-      exit 0
-    fi
-
-    if [ "${TELEGRAM_DRY_RUN:-false}" = "true" ]; then
-      echo "================ TELEGRAM RESPONSE ================"
-      echo "dry-run: would send"
-      echo "$TELEGRAM_TEXT"
-      exit 0
-    fi
-
-    PAYLOAD=$(jq -n --arg chat "$TELEGRAM_CHAT_ID" --arg topic "$TELEGRAM_TOPIC_ID" --arg text "$TELEGRAM_TEXT" \
-      '{chat_id: ($chat|tonumber), message_thread_id: ($topic|tonumber), text: $text}')
-
-    RESPONSE=$(curl -sS -m 30 -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-      -H "Content-Type: application/json" -d "$PAYLOAD")
-
-    OK=$(echo "$RESPONSE" | jq -r '.ok // false')
-    echo "================ TELEGRAM RESPONSE ================"
-    echo "ok=$OK"
-    echo "$RESPONSE" | jq -r '.description // ""'
-
-    if [ "$OK" = "true" ]; then
-      if [ "$POST_MODE" = "actionable" ] && [ -n "$ISSUE_FINGERPRINT" ]; then
-        echo "$ISSUE_FINGERPRINT" > "$DEDUP_FILE"
-      fi
-      exit 0
-    else
-      exit 1
-    fi
 ---
 apiVersion: batch/v1
 kind: CronJob
@@ -370,19 +308,8 @@ spec:
                   apk add --no-cache openssh-client >/dev/null 2>&1 || true
                   exec bash /scripts/health-check.sh
               env:
-                - name: TELEGRAM_BOT_TOKEN
-                  valueFrom:
-                    secretKeyRef:
-                      name: alertmanager-telegram-backup
-                      key: bot_token
-                - name: TELEGRAM_CHAT_ID
-                  value: "-1003984393379"
-                - name: TELEGRAM_TOPIC_ID
-                  value: "584"
                 - name: STATE_DIR
                   value: /state
-                - name: POST_MODE
-                  value: never
               volumeMounts:
                 - name: ssh-keys
                   mountPath: /root/.ssh

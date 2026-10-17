@@ -6,6 +6,11 @@ matching de Alertmanager sobre `VMAlertmanagerConfig monitoring/synapse-webhook`
 
 **No editar a mano.** Regenerar con el script tras cualquier cambio de rutas o reglas.
 
+> INFRA-912 (2026-10-17) retiró el receiver `backstop-telegram` de
+> `manifests/alertmanager-config.yaml`: las filas «backstop-telegram + keep» de
+> esta foto (generada contra el clúster vivo, aún no desplegado el cambio) pasan
+> a ser sólo `keep`. Regenerar tras el despliegue.
+
 **Semántica que hace falta entender:** Alertmanager entrega al receiver propio de
 una ruta sólo cuando *ninguna hija encaja*.
 La última hija del árbol es un catch-all (`receiver: keep`, sin

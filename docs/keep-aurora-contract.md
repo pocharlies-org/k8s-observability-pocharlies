@@ -82,7 +82,7 @@ tablas recreadas vía `claim-dispatch` nacen ya completas; sobre una BBDD viva
 los cambios de esquema van con ALTER a mano, nunca en el camino caliente del
 dispatch (lock exclusivo).
 
-### `keep_bridge.reported` — marca de «publicado en Telegram»
+### `keep_bridge.reported` — marca de «RCA procesado» (antes: «publicado en Telegram», INFRA-912)
 
 ```sql
 CREATE SCHEMA IF NOT EXISTS keep_bridge;
@@ -255,8 +255,9 @@ series no cambian de nombre.
 ## 3. Los dos formatos de deep-link
 
 - Aurora: `https://aurora.e-dani.com/incidents/<uuid-id-de-Aurora>` — es el
-  `incident_url` del badge «External incident» y el enlace del mensaje de
-  Telegram de `aurora-report-back`. El `FRONTEND_URL` de Aurora es
+  `incident_url` del badge «External incident». Desde INFRA-912 el RCA de
+  `aurora-report-back` no se publica en ningún canal; el enlace vive en la
+  ficha de Keep/Aurora. El `FRONTEND_URL` de Aurora es
   **`aurora.e-dani.com`**, no `aurora.lan`.
 - Keep: `https://keep.e-dani.com/incidents/<uuid-id-de-Keep>` — es la
   `generatorURL` del dispatch, que Aurora expone como `alert.metadata.alertUrl`
@@ -309,8 +310,9 @@ series no cambian de nombre.
   alimentado por `generatorURL` del dispatch. Dueño: el propio registro de
   Aurora; no escribimos en tablas de un tercero. **Solo despachos nuevos**: los
   anteriores a este cambio no se rellenan.
-- **`keep_bridge.reported` es de `aurora-report-back` y significa «enviado al
-  tema 1248 de Telegram», NO «RCA listo».**
+- **`keep_bridge.reported` es de `aurora-report-back` y significa «RCA
+  procesado y marcado» — desde INFRA-912 (2026-10-17) ya no implica
+  publicación alguna.**
 - **Nadie escribe en `public.*` de Aurora** desde Keep: el esquema propio de
   Aurora es territorio de sus migraciones (tercero).
 - **Nada de vistas sobre `incidents`**: bloquearían las migraciones de Aurora.
@@ -362,12 +364,13 @@ claim, y solo las de las últimas 72 h con `aurora_incident_id IS NULL`.
   `critical` a propósito: con
   `critical` la regla `critical-safety-net` las convertiría en incidente y
   `aurora-investigate` despacharía «Aurora está rota» a la propia Aurora.
-- Enrutado: matcher «FALLOS SILENCIOSOS DE PROCESAMIENTO» de Alertmanager
-  (Telegram `backstop-telegram`, sin pasar por Keep) + Keep con regla de
-  correlación `name.startsWith("Aurora")`. La evaluación no puede morir con
-  Keep: la hace vmalert y la entrega Alertmanager.
+- Enrutado: Keep con regla de correlación `name.startsWith("Aurora")`
+  (el matcher «FALLOS SILENCIOSOS DE PROCESAMIENTO» de Alertmanager, que
+  salía también por Telegram directo, se retiró con INFRA-912). La
+  evaluación no puede morir con Keep: la hace vmalert y la entrega
+  Alertmanager.
 
-## 8. Provisiones para la futura épica del canal Telegram (no se construye aquí)
+## 8. Provisiones para un futuro canal de notificación (Telegram fue retirado en INFRA-912; no se construye aquí)
 
 - **T1.** La unidad de ciclo de vida es `keep_incident_id`. El mapa
   topic↔incidente vive en el almacén del adapter (synapse), no en
@@ -381,5 +384,6 @@ claim, y solo las de las últimas 72 h con `aurora_incident_id IS NULL`.
   versionado.
 - **T4.** «RCA listo» hoy solo se sabe consultando la BBDD. Un evento sería una
   entrada nueva `.v1` en `CONTRACTS.yaml` de synapse.
-- **T5.** El RCA que escribe report-back no se guarda en ningún sitio: solo va
-  a Telegram. El botón de sesión necesitará persistirlo en su propio almacén.
+- **T5.** El RCA que escribe report-back no se guarda en ningún sitio: desde
+  INFRA-912 no se publica. El botón de sesión necesitará persistirlo en su
+  propio almacén.

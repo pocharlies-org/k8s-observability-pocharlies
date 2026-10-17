@@ -393,10 +393,9 @@ spec:
         # --- critical: control-plane singletons ---------------------------
         # Either singleton missing from scrape (pod gone / crashloop before
         # the metrics server binds) OR present-but-down. absent() covers the
-        # "series vanished" case that a bare `== 0` cannot see. Routed to the
-        # direct emergency-telegram leg (see alertmanager-config.yaml): the
-        # engine/dispatcher being down degrades the very pipeline that would
-        # otherwise render the alert card, so delivery must not depend on it.
+        # "series vanished" case that a bare `== 0` cannot see. (The direct
+        # emergency-Telegram leg that used to bypass Keep for this was retired
+        # with the rest of the Telegram alerts — INFRA-912, 2026-10-17.)
         - alert: SynapseCoreAbsent
           expr: |
             absent(up{job="synapse-engine"})
@@ -417,8 +416,7 @@ spec:
         # synapse_outbox_unpublished_rows is an in-process dispatcher gauge and
         # DISAPPEARS on a dispatcher restart until the next outbox sweep
         # repopulates it (observed 2026-07-22): when absent the right operand
-        # is empty and the whole expr is empty — fail-safe, no false page. Also
-        # routed to emergency-telegram (a stuck outbox blocks event delivery).
+        # is empty and the whole expr is empty — fail-safe, no false page.
         - alert: SynapseDispatcherNotPublishing
           expr: |
             sum(rate(synapse_dispatcher_published_total[15m])) == 0
@@ -669,13 +667,9 @@ spec:
         # false positives where a Job has a failed pod attempt, is still
         # retrying, or the next scheduled run has already recovered.
         #
-        # The cron-alert-analyzer receives the webhook, fetches the pod logs via
-        # the k8s API, runs an LLM root-cause analysis via LiteLLM,
-        # and posts the report to the Telegram "Crons" topic with a deep-link
-        # to the dashboard and Telegram action buttons.
-        # severity:warning (NOT critical) so this does NOT also fire the
-        # severity=critical → telegram-backup route (which would duplicate the
-        # alert in the General topic without LLM analysis).
+        # INFRA-912 (2026-10-17): cron-alert-analyzer y su publicación al topic
+        # "Crons" de Telegram se retiraron. La alerta entra en Keep como todas;
+        # el resumen por alerta lo consume ops-watch como Request.
         - alert: K8sCronJobFailed
           # Una huella por CronJob, no por Job (INFRA-882): con `job_name` en la
           # serie cada ejecución era una alerta nueva (1.609 huellas en 7 días).
@@ -1631,22 +1625,6 @@ spec:
           annotations:
             summary: "Mensajes {{ $labels.kind }} de {{ $labels.tenant }} entrando en la red de seguridad"
             description: "El dlq-monitor drenó mensajes nuevos ({{ $labels.kind }}) en la última hora — dead-letter o routing key sin binding. El detalle está en la tarjeta del ops-explainer y en synapse.dlq_archive."
-        - alert: AlertmanagerTelegramDeliveryFailed
-          # Vivía en cron-alert-analyzer.yaml, que se retira. La descripción
-          # anterior decía "se entrega por el webhook Synapse" — esa ruta ya no
-          # existe: hoy sale por el mismo Keep que vigila, así que si Keep
-          # también está roto, quien avisa es el dead-man's switch.
-          expr: sum by (reason) (increase(alertmanager_notifications_failed_total{integration="telegram"}[10m])) > 0
-          for: 1m
-          labels:
-            severity: warning
-            area: alerting
-          annotations:
-            summary: "Alertmanager no pudo entregar por Telegram"
-            description: >-
-              Fallos de entrega Telegram en los últimos 10 minutos. Afecta al
-              dead-man's switch (backstop-telegram), que es la única vía que no
-              depende de Keep: si esto falla, el backstop no protege.
         - alert: AlertmanagerWebhookDeliveryFailed
           # OJO: esta alerta CAMBIÓ DE SIGNIFICADO con el cutover a Keep.
           # `integration="webhook"` ya no es Synapse — es KEEP. O sea que esto
@@ -1663,7 +1641,8 @@ spec:
             description: >-
               Fallos del webhook en los últimos 10 minutos. El webhook es la
               ingesta de Keep: mientras dure, las alertas no se están
-              registrando. Sale por Telegram directo (backstop), no por Keep.
+              registrando. Sin lane directa (INFRA-912), no hay aviso alternativo:
+              el dead-man's switch `KeepIngestionSilent` es el que avisa.
         - alert: KeepBackendAbsent
           # OJO con lo que se mide aquí. La primera versión usaba
           #   absent(up{namespace="monitoring", pod=~"keep-backend-.*"})
@@ -1689,9 +1668,9 @@ spec:
           annotations:
             summary: "Keep backend caído — no hay ingesta de alertas"
             description: >-
-              El hub de alertas no está disponible. Alertmanager sigue
-              entregando por la lane directa de Telegram sólo para las 5 alertas
-              del backstop; todo lo demás se está perdiendo.
+              El hub de alertas no está disponible. No hay lane directa que la
+              sustituya (INFRA-912 retiró backstop-telegram): mientras dure, las
+              alertas no se registran ni se notifican.
         - alert: KeepIngestionDown
           # Alertmanager contabiliza aquí los fallos de entrega del webhook. Si
           # sube, Keep está arriba pero rechazando o no respondiendo — el caso
@@ -1975,8 +1954,8 @@ spec:
 # valor 0 - la forma la fija el contrato de SC-389, no cambiar los nombres.
 # Copiada la forma de las reglas SII de este fichero: vmalert evalua con
 # queryStep de 5 min y la metrica es diaria, de ahi las ventanas anchas
-# last_over_time/absent_over_time. severity=warning viaja Keep -> Telegram
-# tema 34494 (docs/alert-routing-matrix.md), no el chat principal.
+# last_over_time/absent_over_time. severity=warning viaja a Keep (INFRA-912:
+# ya no hay entrega por Telegram).
 apiVersion: operator.victoriametrics.com/v1beta1
 kind: VMRule
 metadata:
@@ -2227,10 +2206,10 @@ spec:
 #
 # SEVERIDAD warning y NUNCA critical: `critical-safety-net` la convertiría en
 # incidente y el workflow `aurora-investigate` despacharía "Aurora está rota"
-# a la propia Aurora. Las dos van además al matcher FALLOS SILENCIOSOS DE
-# PROCESAMIENTO de manifests/alertmanager-config.yaml (backstop-telegram,
-# sobrevive a Keep) y a la regla aurora-rca-degraded de
-# keep/rules/correlation-rules.yaml (incidente en el tablero).
+# a la propia Aurora. Las dos van además a la regla aurora-rca-degraded de
+# keep/rules/correlation-rules.yaml (incidente en el tablero). El matcher
+# FALLOS SILENCIOSOS de alertmanager-config.yaml (backstop-telegram) se
+# retiró con las alertas por Telegram — INFRA-912, 2026-10-17.
 apiVersion: operator.victoriametrics.com/v1beta1
 kind: VMRule
 metadata:
@@ -2414,7 +2393,7 @@ spec:
 ---
 # SC-1872 (05-10-2026): la compañía pasó 6,5 h parada y nada avisó. Si el supervisor muere, nadie lo ve: esta alerta
 # sale de sus métricas (job company-supervisor, x86 :19911, contrato http.metrics de x86-host-runtime) y va a
-# backstop-telegram + Keep, sin depender de Hermes. SC-2374 quitó el buzón y los encargos, y con ellos sus dos alertas.
+# Keep (INFRA-912 retiró el backstop-telegram), sin depender de Hermes. SC-2374 quitó el buzón y los encargos, y con ellos sus dos alertas.
 apiVersion: operator.victoriametrics.com/v1beta1
 kind: VMRule
 metadata:
@@ -2492,12 +2471,12 @@ spec:
           # El 07-10 el node-exporter de ubuntu murió con el disco y NodeRootDiskLowOrFilling
           # (que casa con ese exporter vía kube_pod_info) se quedó ciega justo cuando hacía
           # falta; KubeNodePressure (la del chart, que sí sobrevive porque la calcula
-          # kube-state-metrics en el control plan) lleva severity: info y Keep sólo manda a
-          # Telegram incidentes críticos → el taint disk-pressure real acabó sin destinatario.
+          # kube-state-metrics en el control plan) lleva severity: info y no notifica
+          # → el taint disk-pressure real acabó sin destinatario.
           # Ésta: condición DiskPressure del kubelet vista por kube-state-metrics (corre en
           # ks5-cp-3, no en el nodo afectado), cualquier nodo, severity critical. El nombre
           # empieza por "Node" → cae en la regla node-degraded de Keep (correlation-rules.yaml)
-          # → incidente + Telegram. La de arriba queda como complementaria (aviso temprano al
+          # → incidente (y Request vía ops-watch). La de arriba queda como complementaria (aviso temprano al
           # 20 % libre, antes de que el kubelet alcance su umbral de desalojo).
           expr: |
             kube_node_status_condition{job="kube-state-metrics",condition="DiskPressure",status="true"} == 1

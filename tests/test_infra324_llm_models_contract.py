@@ -139,16 +139,16 @@ EXPECTED_KEEP_MODEL = "qwen38-flash-next"
 class KeepModelsContract(unittest.TestCase):
     def test_llm_steps_name_the_resident(self):
         """Every ``model:`` of the LLM steps in keep/values.yaml is
-        qwen38-flash-next — the two steps of the contract are ``llm-rca``
-        (aurora-report-back) and ``llm-summary`` (incident-summary, disabled
-        but the literal changes too, architect's condition 1)."""
+        qwen38-flash-next — the only step left after INFRA-912 retired the
+        Telegram lanes is ``llm-rca`` (aurora-report-back); ``llm-summary``
+        (incident-summary) went with them."""
         models = re.findall(
             r"^\s+model:\s*(\S+)\s*$",
             KEEP_VALUES.read_text(encoding="utf-8"),
             re.MULTILINE,
         )
         self.assertEqual(
-            len(models), 2, f"expected the two LLM steps, found {models}"
+            len(models), 1, f"expected the single LLM step, found {models}"
         )
         for model in models:
             self.assertEqual(
@@ -191,8 +191,9 @@ class KeepModelsContract(unittest.TestCase):
 
     def test_aurora_report_back_has_no_hermes_rca(self):
         """C5 / SC-1432: the second RCA path (the ``hermes-rca`` action that
-        POSTed to the sre-devops webhook) must not come back — the only RCA
-        publisher of this workflow is the Telegram action."""
+        POSTed to the sre-devops webhook) must not come back. Since INFRA-912
+        the workflow publishes nothing either way: the RCA stays in the
+        execution and in Aurora."""
         block = workflow_block(KEEP_VALUES.read_text(encoding="utf-8"), "aurora-report-back")
         self.assertNotIn("hermes-rca", block)
 
