@@ -60,7 +60,7 @@ rules:
   # real con un LEFT JOIN de alert contra lastalerttoincident. La más sangrante
   # era KubePodCrashLooping con 158 eventos — un pod en crashloop no avisaba a
   # nadie — y LitellmNotReady, que es la pasarela de la que dependen los resúmenes
-  # de Keep, los RCA de Aurora y k8sgpt.
+  # de Keep y los RCA de Aurora.
   #
   # No se tocan las que deben seguir calladas: InfoInhibitor (4073) y Watchdog son
   # fontanería de Alertmanager, y CPUThrottlingHigh (1181, info) es ruido crónico.
@@ -96,7 +96,7 @@ rules:
     incidentNameTemplate: "Plano LLM degradado"
     groupDescription: >-
       La pasarela LiteLLM y el arbitraje de GPU. Es infraestructura de la que
-      dependen los resúmenes de Keep, los RCA de Aurora y k8sgpt: si cae, las
+      dependen los resúmenes de Keep y los RCA de Aurora: si cae, las
       alertas siguen llegando pero llegan sin contexto.
 
   - ruleName: imagestudio-degraded
@@ -478,55 +478,17 @@ rules:
     incidentNameTemplate: "Sonda de la cadena de alertas"
     groupDescription: Prueba manual de la cadena de alertas hasta el agente sre-devops.
 
-  # Salud del analizador del clúster (k8sgpt). Va junto a monitoring-degraded y
-  # keep-hub-degraded porque comparte su naturaleza: no avisa de que algo del
-  # clúster esté roto, sino de que la HERRAMIENTA que mira el clúster lo está.
-  #
-  # Sin esta regla las K8sGpt* quedaban sólo registradas y calladas (la tercera
-  # capa), verificado en los logs de Keep: "Rule ... on event
-  # K8sGptBackendAiFailing is not relevant". Y sin incidente tampoco llegan a
-  # Aurora, que consume incidentes.
-  #
-  # NO se excluye del critical-safety-net a propósito, y no rompe la
-  # INVARIANTE 1: ese safety-net sólo captura `severity == "critical"` o
-  # `labels.severity == "page"`, y las tres alertas de k8sgpt son `warning`
-  # (manifests/k8sgpt-rules.yaml). No hay solape posible hoy. Si alguna pasara a
-  # critical, habría que añadir el prefijo a su lista de exclusión — el fallo
-  # sería notificar dos veces, que es el lado correcto por el que fallar.
-  #
-  # 1800s como monitoring-degraded: el ciclo de análisis no es instantáneo y
-  # agrupar media hora evita un incidente por cada reintento del operador.
-  - ruleName: k8sgpt-degraded
-    celQuery: 'name.startsWith("K8sGpt")'
-    sqlQuery:
-      sql: "((name like :name_1))"
-      params:
-        name_1: K8sGpt%
-    timeframeInSeconds: 1800
-    timeUnit: minutes
-    groupingCriteria: []
-    createOn: any
-    resolveOn: all_resolved
-    incidentPrefix: GPT
-    incidentNameTemplate: "Análisis del clúster degradado"
-    groupDescription: >-
-      k8sgpt no puede analizar el clúster, o sus hallazgos se han disparado de
-      golpe. Ojo con la primera: el RPC Analyze es todo-o-nada, así que un fallo
-      del LLM deja el análisis a CERO con el operador aparentemente sano. El
-      detalle de cada hallazgo no viaja en la alerta (las métricas sólo llevan
-      conteos) — está en los CR Result: kubectl -n k8sgpt get results
-
   # Cobertura del RCA de Aurora (INFRA-230, criterio C3 de INFRA-217). Mismo
-  # patrón que k8sgpt-degraded: no avisa de que algo del clúster esté roto,
+  # patrón que monitoring-degraded: no avisa de que algo del clúster esté roto,
   # sino de que la HERRAMIENTA que investiga los fallos no está cumpliendo —
   # Aurora arriba y devolviendo cero RCA es el mes de 403 (26-08..21-09: 159
   # despachos sin análisis completo, mudo). Sin esta regla las AuroraRcaCoverage*
   # quedarían registradas y calladas; con ella aparecen como incidente en el
   # tablero. Las dos alertas son `warning` (manifests/rules.yaml, grupo
-  # aurora.rca-coverage), así que no solapan con critical-safety-net — igual
-  # que K8sGpt, y por el mismo motivo no se la excluye de su lista.
+  # aurora.rca-coverage), así que no solapan con critical-safety-net, y por
+  # eso no se la excluye de su lista.
   #
-  # 1800s como k8sgpt-degraded: un reintento del worker no debe abrir
+  # 1800s como monitoring-degraded: un reintento del worker no debe abrir
   # incidente nuevo cada pocos minutos.
   - ruleName: aurora-rca-degraded
     celQuery: 'name.startsWith("Aurora")'
@@ -825,8 +787,8 @@ rules:
   # da el nombre. Sin criterios de agrupación: los dos modos de fallo del mismo
   # CronJob (hallazgos > 0 / telemetría ciega) son UN incidente de auditoría.
   #
-  # NO se excluye del critical-safety-net, y no rompe la INVARIANTE 1 por la
-  # misma razón que `k8sgpt-degraded`: ese safety-net sólo captura
+  # NO se excluye del critical-safety-net, y no rompe la INVARIANTE 1: ese
+  # safety-net sólo captura
   # `severity == "critical"` o `labels.severity == "page"`, y las dos alertas de
   # auditoría son `warning`. Sin solape posible hoy.
   - ruleName: shopify-picqer-audit
