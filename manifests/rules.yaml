@@ -1617,12 +1617,9 @@ spec:
           # dlq-monitor cuenta lo que drena — como cualquier workload. Cualquier
           # incremento es un contrato roto o un mensaje envenenado, y entra en
           # la misma familia de incidentes SYNW.
-          # Ventana de 1h (INFRA-882): con 10m, `email.<tenant>.classified` sin
-          # consumidor (SKIRM-169) la abría y cerraba con cada correo, un incidente
-          # nuevo cada vez. Volver a 10m cuando SKIRM-169 esté arreglado.
           expr: |
             sum by (tenant, kind) (
-              increase(synapse_dlq_messages_total[1h])
+              increase(synapse_dlq_messages_total[10m])
             ) > 0
           for: 1m
           labels:
@@ -1630,7 +1627,7 @@ spec:
             area: synapse
           annotations:
             summary: "Mensajes {{ $labels.kind }} de {{ $labels.tenant }} entrando en la red de seguridad"
-            description: "El dlq-monitor drenó mensajes nuevos ({{ $labels.kind }}) en la última hora — dead-letter o routing key sin binding. El detalle está en la tarjeta del ops-explainer y en synapse.dlq_archive."
+            description: "El dlq-monitor drenó mensajes nuevos ({{ $labels.kind }}) en los últimos 10m — dead-letter o routing key sin binding. El detalle está en la tarjeta del ops-explainer y en synapse.dlq_archive."
         - alert: AlertmanagerTelegramDeliveryFailed
           # Vivía en cron-alert-analyzer.yaml, que se retira. La descripción
           # anterior decía "se entrega por el webhook Synapse" — esa ruta ya no
