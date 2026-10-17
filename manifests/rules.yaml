@@ -1025,12 +1025,22 @@ spec:
           # consumers==0 y el backlog del día > 0: la alerta disparaba cada
           # noche por diseño, no por fallo. Su señal de fallo real es
           # RabbitmqContactSyncBacklogAfterWindow, justo debajo.
+          #
+          # adapter.expenses.* EXCLUIDAS (2026-10-17, SC-2555): mismo caso. Su
+          # consumidor es el Deployment synapse-adapter-expenses, gestionado por
+          # el KEDA ScaledObject keda-synapse-adapter-expenses (trigger cron
+          # 03:30-07:30 Europe/Madrid, minReplicas 0). Fuera de la ventana hay
+          # SIEMPRE consumers==0 en adapter.expenses.process, .assert_recorded y
+          # .compose_report; un mensaje publicado de día dispara la alerta hasta
+          # la ventana siguiente (medido 16-10: 4 mensajes de ~12:00Z drenados
+          # a las 01:40Z del día siguiente). Su señal de fallo real es
+          # RabbitmqExpensesBacklogAfterWindow, tras la de contact-sync.
           expr: |
             (
               max by (vhost, queue) (
                 rabbitmq_detailed_queue_consumers{
                   vhost="/synapse",
-                  queue!~"dlq\\..+|archive\\..+|adapter\\.[^.]+|adapter\\.messaging\\.whatsapp_contact_sync"
+                  queue!~"dlq\\..+|archive\\..+|adapter\\.[^.]+|adapter\\.messaging\\.whatsapp_contact_sync|adapter\\.expenses(\\..+)?"
                 }
               ) == 0
             )
@@ -1039,7 +1049,7 @@ spec:
               max by (vhost, queue) (
                 rabbitmq_detailed_queue_messages_ready{
                   vhost="/synapse",
-                  queue!~"dlq\\..+|archive\\..+|adapter\\.[^.]+|adapter\\.messaging\\.whatsapp_contact_sync"
+                  queue!~"dlq\\..+|archive\\..+|adapter\\.[^.]+|adapter\\.messaging\\.whatsapp_contact_sync|adapter\\.expenses(\\..+)?"
                 }
               ) > 0
             )
@@ -1078,6 +1088,36 @@ spec:
           annotations:
             summary: "whatsapp_contact_sync backlog survived its cron window"
             description: "Queue adapter.messaging.whatsapp_contact_sync still has ready messages after the 03:30-07:30 Europe/Madrid cron window. Check `kubectl -n synapse get scaledobject keda-synapse-adapter-messaging-contact-sync` and the pod logs from the window; the consumer is KEDA-cronned, its absence outside the window is by design."
+
+        - alert: RabbitmqExpensesBacklogAfterWindow
+          # Fallo del consumidor cron del adaptador de expenses (añadida
+          # 2026-10-17, SC-2555, junto a la exclusión de adapter.expenses.* de
+          # RabbitmqFunctionalQueueNoConsumer): mismo patrón que la de
+          # contact-sync — el consumidor es el Deployment
+          # synapse-adapter-expenses, escalado 0→1 por el ScaledObject
+          # keda-synapse-adapter-expenses (cron 03:30-07:30 Europe/Madrid).
+          # Si al final de la ventana (05:00-06:59 UTC, cubre el fin del drain
+          # en invierno y verano) queda ready en cualquiera de sus colas
+          # funcionales, la ventana de esta mañana no drenó: KEDA no escaló,
+          # el pod murió al arrancar o el adaptador no consume.
+          expr: |
+            (
+              max by (vhost, queue) (
+                rabbitmq_detailed_queue_messages_ready{
+                  vhost="/synapse",
+                  queue=~"adapter\\.expenses\\..+"
+                }
+              ) > 0
+            )
+            and on() (hour() >= 5 and hour() < 7)
+          for: 15m
+          labels:
+            severity: warning
+            area: messaging
+            component: shared-rabbitmq
+          annotations:
+            summary: "expenses adapter backlog survived its cron window ({{ $labels.queue }})"
+            description: "Queue {{ $labels.queue }} still has ready messages after the 03:30-07:30 Europe/Madrid cron window of the expenses adapter. Check `kubectl -n synapse get scaledobject keda-synapse-adapter-expenses` and the pod logs from the window; the consumer is KEDA-cronned, its absence outside the window is by design."
 
         # --- critical: cluster membership / partition ----------------------
         # Added after the 2026-07-10 01:08Z split-brain (P1): a Tailscale flap
