@@ -53,13 +53,13 @@ multi-source: chart upstream + `values` de este repo, salvo indicación):
 | Reglas de enrutado de alertas | matriz | `docs/alert-routing-matrix.md`, `keep/rules/` | toda alerta del estate |
 | Contrato Keep↔Aurora | `docs/keep-aurora-contract.md` | ídem | Keep, Aurora |
 | Alerta de caída del MCP de Atlassian (SC-1728/H5) | `VMRule AtlassianMcpToolDown` + regla de correlación homónima | `manifests/atlassian-mcp-rules.yaml`, `keep/rules/correlation-rules.yaml` | sonda `atlassian-mcp-probe` (SC-1834); `ops-watch` (x86-host-runtime) por `rule_name` == `company_requests.REGLAS_CAIDA_JIRA` — renombrar = entrada nueva junto a la vieja |
-| Reglas ARC / cola de CI (INFRA-550) | `VMRule pocharlies-arc-ci` (cola >20 min, label sin pool, runner sin progreso >10 min, pool saturado, ceguera del exporter) + scrape `gha_*`/`ci_queue_*` | `manifests/arc-rules.yaml`, `manifests/arc-scrape.yaml`; casos en `tests/promtool/arc-rules.test.yaml`, correlación en `tests/test_infra550_ci_queue_correlation.py` | Keep → topic Infra 1248: Alertmanager las lleva a `keep` (catch-all, sin allowlist) y la regla de correlación `ci-queue-degraded` (`keep/rules/correlation-rules.yaml`, prefijo `CIQ`) las convierte en incidente — sin regla una `warning` queda registrada y calla; fuente de «label sin pool» = exporter `ci-queue-exporter` (gitops), no `gha_*` |
-| Reglas de Frigate (INFRA-712) | `VMRule pocharlies-frigate` (`FrigateCaido`, `FrigateDetectorLento` >100 ms, `FrigateCamaraSinFps` de `c8w`/`hp7`, `FrigateAlmacenamientoLleno` de `frigate-media` <8 % 15 min) + scrape `frigate_*` | `manifests/frigate-rules.yaml`, `manifests/frigate-scrape.yaml`; casos en `tests/promtool/frigate-rules.test.yaml`, correlación en `tests/test_infra712_frigate_correlation.py` | Keep → topic Infra 1248, como las de ARC: el catch-all de Alertmanager las lleva a `keep` (**no hay ruta por alertname ni blackhole de warnings**) y la regla de correlación `frigate-vigilancia` (prefijo `FRG`, `Frigate*`) las convierte en incidente. El `/` del nodo `ubuntu` no se duplica: lo cubre `NodeRootDiskLowOrFilling` |
+| Reglas ARC / cola de CI (INFRA-550) | `VMRule pocharlies-arc-ci` (cola >20 min, label sin pool, runner sin progreso >10 min, pool saturado, ceguera del exporter) + scrape `gha_*`/`ci_queue_*` | `manifests/arc-rules.yaml`, `manifests/arc-scrape.yaml`; casos en `tests/promtool/arc-rules.test.yaml`, correlación en `tests/test_infra550_ci_queue_correlation.py` | Keep → incidente (Request vía ops-watch): Alertmanager las lleva a `keep` (catch-all, sin allowlist) y la regla de correlación `ci-queue-degraded` (`keep/rules/correlation-rules.yaml`, prefijo `CIQ`) las convierte en incidente — sin regla una `warning` queda registrada y calla; fuente de «label sin pool» = exporter `ci-queue-exporter` (gitops), no `gha_*` |
+| Reglas de Frigate (INFRA-712) | `VMRule pocharlies-frigate` (`FrigateCaido`, `FrigateDetectorLento` >100 ms, `FrigateCamaraSinFps` de `c8w`/`hp7`, `FrigateAlmacenamientoLleno` de `frigate-media` <8 % 15 min) + scrape `frigate_*` | `manifests/frigate-rules.yaml`, `manifests/frigate-scrape.yaml`; casos en `tests/promtool/frigate-rules.test.yaml`, correlación en `tests/test_infra712_frigate_correlation.py` | Keep → incidente, como las de ARC: el catch-all de Alertmanager las lleva a `keep` (**no hay ruta por alertname ni blackhole de warnings**) y la regla de correlación `frigate-vigilancia` (prefijo `FRG`, `Frigate*`) las convierte en incidente. El `/` del nodo `ubuntu` no se duplica: lo cubre `NodeRootDiskLowOrFilling` |
 | Claim de despacho a Aurora (solo critical, una vez por incidente de Keep, cooldown 6 h) | step `claim-dispatch` del workflow `aurora-investigate` | `keep/values.yaml` | Keep → Aurora; lectores `rca-datos`, `link-datos`, `mark-linked`, `aurora_rca_coverage()` (cruzan por `fingerprint`) |
 | Alerta de disco raíz del nodo ubuntu (INFRA-623): <20 % libre o llena en 3 días | `VMRule NodeRootDiskLowOrFilling` (`pocharlies-node-disk`) + test promtool | `manifests/rules.yaml`, `tests/promtool/node-disk.test.yaml` | los defaults del chart (`NodeFilesystem*`) no saltaron el 07-10: el kubelet desaloja a <5 % libre |
 | Dashboards | `manifests/dashboards.yaml`, `grafana-company-dashboard.yaml`, `grafana-keep.yaml` | ídem | Grafana |
 | Modelo LLM de Aurora y Keep | nombre directo `qwen38-flash-next` (residente único del perfil `llm-tp`; fallback y allowlist en LiteLLM) | `aurora/values.yaml`, `keep/values.yaml` | Aurora, Keep |
-| Avisos de incidente a Telegram | workflows `notify-incident`, `notify-incident-critical` (título, `[created]`) y `notify-alert-summary` (resúmenes por alerta, `type: alert`) | `keep/values.yaml` | topic 1248 de Pocharlies Operations; reglas de `keep/rules/correlation-rules.yaml` |
+| Notificación de incidentes | el incidente de Keep ES la notificación; `ops-watch` (x86-host-runtime) lo convierte en Request | `keep/rules/correlation-rules.yaml`; `docs/keep-aurora-contract.md` | INFRA-912 (2026-10-17): retirados los workflows de aviso por Telegram (`notify-incident*`, `notify-alert-summary`, `incident-summary`) y el receiver `backstop-telegram` de Alertmanager |
 
 ## 5. Cómo se construye aquí
 
@@ -88,6 +88,15 @@ igual). Necesita Postgres: sin `AURORA_TEST_PG_DSN` se salta en local y **falla 
 
 ## 8. Decisiones y trampas
 
+- `2026-10-17` · INFRA-912 (Dani: «las alertas en Telegram son inútiles; borra todos los topics de alertas»). Fuera
+  TODO envío a Telegram del repo: los cuatro workflows de aviso de `keep/values.yaml`, la action `telegram-rca` de
+  `aurora-report-back` (el RCA queda en la ejecución y en Aurora; dejarlo como comentario en la Request no es trivial
+  desde Keep — no hay provider Jira — y queda anotado), el receiver `backstop-telegram` con sus tres rutas de
+  Alertmanager (las alertas quedan sólo en Keep), `manifests/backup-alert-reports.yaml`, el ExternalSecret
+  `alertmanager-telegram-backup`, el provider `telegram_ops` de `keep-secrets.yaml` y el bloque de envío del
+  `dgx-cluster-health-watcher`. Consecuencia asumida: ya no hay vía de aviso que no pase por Keep — si el hub cae,
+  no hay backstop directo. Pines: `tests/test_infra912_no_telegram_emitters.py`,
+  `tests/test_infra378_keep_notify_contract.py`.
 - `2026-10-17` · INFRA-910 (Dani): **fuera k8sgpt** (operador, explainer y regla `k8sgpt-degraded`). Lo que detectaba
   (crashloop, Deployments degradados, CronJobs fallidos) ya lo cubren `deployment-degraded`, `workload-degraded` y
   `cron-job-failed`; su IA estaba apagada y el explainer con tope de 24 llamadas al día.

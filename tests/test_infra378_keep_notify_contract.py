@@ -1,20 +1,17 @@
-"""Contract for the Keep Telegram alert-summary notify path (INFRA-378).
+"""Contract for the cron-job-failed grouping (INFRA-378) — and its INFRA-912 half.
 
-Pins two things the epic depends on:
+Pins:
 
 1. The `cron-job-failed` correlation rule groups by [namespace, alertname] and
    its incident name carries the alertname, so a BrainIngestConsecutiveFailures
    alert can no longer be absorbed silently into an old CRON incident opened by
    K8sCronJobFailed (incident 9d403a3e suppressed every re-alert for 9 days).
-2. The alert summaries reach Telegram through the `notify-alert-summary`
-   workflow: `type: alert` with `only_on_change: [status]`, no steps (a failing
-   step = zero notifications in Keep 0.52.1), no parse_mode (summaries can
-   carry `<`, `>`, `&` and Telegram answers 400 on html), topic 1248 and the
-   same on-failure retry as the incident lanes.
 
-`notify-incident` / `notify-incident-critical` must stay `events: [created]`:
-Alertmanager re-sends every minute, and notifying on `updated` would turn that
-into one message per minute.
+2. INFRA-912 (2026-10-17, Dani: «las alertas en Telegram son inútiles»): the
+   Telegram notify lanes (`notify-incident`, `notify-incident-critical`,
+   `notify-alert-summary`, `incident-summary`) are GONE from keep/values.yaml.
+   Nothing in the Keep provisioning talks to Telegram any more; the incident is
+   the notification and ops-watch turns it into a Request.
 """
 
 from pathlib import Path
@@ -55,46 +52,21 @@ class CronJobFailedGroupingTest(unittest.TestCase):
         self.assertIn("BrainIngestConsecutiveFailures", cel)
 
 
-class IncidentNotifyLanesUnchangedTest(unittest.TestCase):
-    def test_notify_incident_lanes_stay_created_only(self):
+class TelegramNotifyLanesRetiredTest(unittest.TestCase):
+    """INFRA-912: los workflows de aviso por Telegram no deben volver."""
+
+    def test_notify_workflows_are_gone(self):
         wf = workflows()
-        for wf_id in ("notify-incident", "notify-incident-critical"):
-            triggers = wf[wf_id]["triggers"]
-            self.assertEqual([t["events"] for t in triggers], [["created"]], wf_id)
+        for wf_id in ("notify-incident", "notify-incident-critical",
+                      "notify-alert-summary", "incident-summary"):
+            self.assertNotIn(wf_id, wf)
 
-
-class NotifyAlertSummaryTest(unittest.TestCase):
-    def setUp(self):
-        self.wf = workflows()["notify-alert-summary"]
-
-    def test_is_alert_triggered_with_status_only_change(self):
-        (trigger,) = self.wf["triggers"]
-        self.assertEqual(trigger["type"], "alert")
-        self.assertEqual(trigger["only_on_change"], ["status"])
-        for alert in ("BrainIngestConsecutiveFailures", "K8sCronJobFailed"):
-            self.assertIn(alert, trigger["cel"])
-
-    def test_has_no_steps(self):
-        # Un step que falla = cero avisos (Keep 0.52.1): el aviso debe salir
-        # siempre, así que este workflow vive de sus acciones, sin steps.
-        self.assertNotIn("steps", self.wf)
-
-    def test_action_targets_topic_1248_without_parse_mode(self):
-        (action,) = self.wf["actions"]
-        self.assertEqual(action["name"], "telegram-alert-summary")
-        with_ = action["provider"]["with"]
-        self.assertEqual(with_["chat_id"], "-1004409526898")
-        self.assertEqual(with_["topic_id"], 1248)
-        self.assertNotIn("parse_mode", with_)
-        self.assertNotIn("message_thread_id", with_)
-
-    def test_action_carries_retry(self):
-        (action,) = self.wf["actions"]
-        self.assertEqual(action["on-failure"]["retry"], {"count": 3, "interval": 15})
-
-    def test_message_carries_the_alert_summary(self):
-        (action,) = self.wf["actions"]
-        self.assertIn("{{ alert.annotations.summary }}", action["provider"]["with"]["message"])
+    def test_parsed_values_have_no_telegram_data(self):
+        # Los comentarios históricos pueden nombrar Telegram; el DATO no.
+        import json
+        data = json.dumps(yaml.safe_load(VALUES.read_text()), ensure_ascii=False)
+        self.assertNotIn("telegram", data.lower())
+        self.assertNotIn("-1004409526898", data)
 
 
 if __name__ == "__main__":

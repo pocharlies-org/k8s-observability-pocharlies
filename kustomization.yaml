@@ -10,11 +10,9 @@ resources:
   - apps/aurora.yaml
   - apps/aurora-kubectl-agent.yaml
   - manifests/ingressroutes.yaml
-  - manifests/alertmanager-secrets.yaml
   - manifests/keep-secrets.yaml
   - manifests/aurora-secrets.yaml
   - manifests/aurora-kubectl-agent.yaml
-  - manifests/backup-alert-reports.yaml
   - manifests/aurora-storage.yaml
   - manifests/aurora-frontend-models-policy.yaml
   # SearXNG propio para Aurora con el brain como motor extra. Va fuera del chart

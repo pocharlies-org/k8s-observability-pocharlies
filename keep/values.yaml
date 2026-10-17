@@ -41,9 +41,9 @@ backend:
   # muerte de un pod, pero no a la del nodo — que es el fallo del que protegía la
   # segunda réplica. Mantener 2 seria pagar el doble por una HA que ya no existe.
   #
-  # Lo que SÍ sigue cubriendo el fallo de nodo es la lane directa de Telegram de
-  # Alertmanager (`backstop-telegram` en manifests/alertmanager-config.yaml), que
-  # no pasa por Keep: si sauvage cae, KeepBackendAbsent sale por ahí.
+  # INFRA-912 (2026-10-17): la lane directa de Telegram (`backstop-telegram`)
+  # se retiró con las alertas por Telegram; ya no hay vía de aviso que no pase
+  # por Keep.
   replicaCount: 1
 
   # La DB es externa y ya está sana; el init container de espera asume MySQL local.
@@ -57,7 +57,7 @@ backend:
 
   provision:
     # Los providers NO van aquí: el chart los renderiza a un Secret desde values,
-    # lo que dejaría el bot_token de Telegram en git. Llegan por KEEP_PROVIDERS
+    # lo que dejaría los secretos de los providers en git. Llegan por KEEP_PROVIDERS
     # desde el ExternalSecret keepsvc-provisioning (manifests/keep-secrets.yaml).
     providers: {}
 
@@ -76,7 +76,7 @@ backend:
     #
     #   alerta ingerida      -> siempre: registro auditable en Keep
     #   regla de correlación -> convierte un patrón de alertas en 1 incidente
-    #   incidente creado     -> Telegram + Aurora
+    #   incidente creado     -> Aurora + Request (ops-watch)
     #
     # Consecuencia buscada: una alerta que no encaja en ninguna regla queda
     # REGISTRADA Y CALLADA. Las 116 series que hoy caen al blackhole entran así
@@ -112,301 +112,14 @@ backend:
     # -------------------------------------------------------------------
     workflows:
       # ---------------------------------------------------------------------
-      # EL RESUMEN LLM VIVE EN SU PROPIO WORKFLOW (`incident-summary`), y no es
-      # una preferencia de estilo: en Keep 0.52.1 NO EXISTE ninguna forma de que
-      # un `step` que falla deje correr las acciones.
+      # LA VUELTA DEL BUCLE: el análisis de Aurora vuelve a Keep.
       #
-      # `incident.generated_summary` no se puede llenar en la versión OSS: el
-      # generador vivía en ee/experimental/generative_utils.py, borrado del repo
-      # público en el commit bdc8e52d (2024-11-25), y la tarea que lo invocaba
-      # (`process_summary_generation`) no tiene worker ni pool ARQ. Ni
-      # EE_ENABLED=true lo resucita. Además, los incidentes que crea el motor de
-      # correlación nunca pasan por ahí: create_incident_for_grouping_rule sólo
-      # escribe user_generated_name. Por eso el resumen lo generamos nosotros.
-      #
-      # CORRECCIÓN 2026-08-05 — aquí ponía que `continue_on_error: true` protegía
-      # el envío, "verificado en workflow.py:97 / step.py:49". Es FALSO, y costó
-      # 62 avisos perdidos en 7 días. Los hechos, leídos en el 0.52.1 que corre
-      # en producción y reproducidos contra ese mismo código:
-      #
-      #   1. `continue_on_error` NO EXISTE en Keep 0.52.1. Un grep del paquete
-      #      entero no lo encuentra. Step.__init__ (step.py:45-48) sólo lee
-      #      `on-failure.retry` y `continue`; cualquier otra clave cae en
-      #      self.config y no la mira nadie. Era decorativa desde que se puso.
-      #   2. Step.run() (step.py:78-88) envuelve CUALQUIER excepción en
-      #      ActionError. Pero run_steps() (workflow.py:96) y Workflow.run()
-      #      (workflow.py:174) sólo capturan StepError, y ActionError NO hereda
-      #      de StepError — issubclass(ActionError, StepError) es False. O sea
-      #      que la excepción ni siquiera "se relanza": se escapa de todos los
-      #      manejadores y desenrolla por encima de run_actions()
-      #      (workflow.py:182), que nunca llega a ejecutarse.
-      #
-      # Consecuencia: un step que falla = CERO notificaciones, para TODOS los
-      # incidentes, críticos incluidos, y justo cuando el clúster va mal. Medido
-      # el 2026-08-05 sobre 7 días: 78 ejecuciones de notificación en error de
-      # 656 (12%), de las cuales 62 eran este step de LLM (34 de conexión a
-      # LiteLLM + 28 de 400 por rotación de alias del backend-sync).
-      #
-      # Por eso los dos workflows de aviso de aquí abajo NO TIENEN `steps:`. Un
-      # workflow sin steps no puede abortar antes de notificar: run_steps()
-      # itera sobre una lista vacía y cae directo en run_actions(). Las acciones
-      # sí están aisladas entre sí — run_action() (workflow.py:129) captura
-      # Exception, la registra y run_actions() continúa con la siguiente.
-      #
-      # NO vuelvas a meter aquí un `step:` "que no falla nunca". No existe tal
-      # cosa en 0.52.1.
-      # ---------------------------------------------------------------------
-      - id: notify-incident-critical
-        name: Telegram — incidentes críticos
-        description: >-
-          Aviso urgente al chat principal, con resumen del LLM local. Reemplaza
-          la lane emergency-telegram del VMAlertmanagerConfig.
-        triggers:
-          - type: incident
-            events: [created]
-            cel: severity == "critical"
-        actions:
-          - name: telegram-critical
-            # Ver el comentario del trigger: `cel` no filtra en incidentes, `if` si.
-            if: "'{{ incident.severity }}' == 'critical'"
-            # REINTENTO ANTE EL RATE LIMIT DE TELEGRAM (fallo del 2026-08-05,
-            # incidente GPT-1372): la API contestó "Flood control exceeded.
-            # Retry in 10 seconds" y el mensaje se descartó sin más. El provider
-            # de Telegram de Keep no reintenta nada — _notify llama a
-            # send_message y deja subir la excepción (telegram_provider.py). El
-            # reintento lo pone Keep a nivel de step/acción: step.py:337-371
-            # hace range(count+1) intentos durmiendo `interval` entre ellos, o
-            # sea 4 envíos como mucho. 15 s cubre de sobra los "Retry in 10".
-            on-failure:
-              retry:
-                count: 3
-                interval: 15
-            provider:
-              type: telegram
-              config: "{{ providers.telegram_ops }}"
-              with:
-                chat_id: "-1004409526898"
-                # Infra=1248 en Pocharlies Operations (antes caía al grupo
-                # general del monitor por no llevar topic).
-                topic_id: 1248
-                parse_mode: html
-                message: |
-                  🔴 <b>{{#fn.na}}{{ incident.user_generated_name }}{{/fn.na}}</b>
-                  {{ incident.alerts_count }} alertas · {{ incident.services }}
-                  https://keep.e-dani.com/incidents/{{ incident.id }}
-
-      - id: notify-incident
-        name: Telegram — incidentes al tema alertas
-        description: >-
-          Resto de incidentes al topic Infra (1248) de Pocharlies Operations
-          (antes: tema 34494 del grupo Synapse del ops-explainer). Un mensaje
-          por incidente, no por alerta.
-        triggers:
-          - type: incident
-            events: [created]
-            cel: severity != "critical"
-        actions:
-          - name: telegram-incident
-            # Complementario del anterior: sin esto ambos workflows notifican todo.
-            if: "'{{ incident.severity }}' != 'critical'"
-            # Mismo reintento que en la lane crítica; ver allí el porqué.
-            on-failure:
-              retry:
-                count: 3
-                interval: 15
-            provider:
-              type: telegram
-              config: "{{ providers.telegram_ops }}"
-              with:
-                chat_id: "-1004409526898"
-                # `topic_id`, NO `message_thread_id`. Esto estuvo mal desde el
-                # cutover: el _notify del provider de telegram declara `topic_id`
-                # (telegram_provider.py:55-64) y cualquier otro nombre cae en
-                # **kwargs y se DESCARTA sin error. Consecuencia medida el
-                # 2026-08-05 leyendo el grupo: los mensajes de incidente salían
-                # con topicId=null, o sea al grupo general, no al tema 34494 donde
-                # publicaba el ops-explainer. Se detectó al comparar contra el
-                # workflow aurora-report-back, que sí usa topic_id y sí aparece
-                # dentro del tema.
-                topic_id: 1248
-                parse_mode: html
-                message: |
-                  ⚠️ <b>{{#fn.na}}{{ incident.user_generated_name }}{{/fn.na}}</b>
-                  {{ incident.alerts_count }} alertas · {{ incident.services }}
-                  https://keep.e-dani.com/incidents/{{ incident.id }}
-
-      # ---------------------------------------------------------------------
-      # INFRA-378 — LOS RESÚMENES DE LAS ALERTAS, POR SU PROPIO WORKFLOW. Los
-      # `notify-incident*` son `type: incident` y sólo llevan el título: el
-      # cuerpo del incidente (`incident.alerts`) NO se puede volcar en una
-      # plantilla, renderiza el repr de Python (no hay `incident.alerts_
-      # description` en la OSS). Un workflow `type: alert` sí expone
-      # `alert.annotations.summary` por alerta, y de ahí sale el resumen.
-      #
-      # `only_on_change: [status]` (patrón de `severity-drift-guard`):
-      # Alertmanager reenvía cada minuto (pass-through) y sin esto esto sería un
-      # mensaje por minuto, la misma trampa que deja `notify-incident*` en
-      # `[created]`. Coste aceptado: una alerta ya en firing que sólo cambia el
-      # texto del summary (p. ej. un job nuevo dentro de la regla) no re-avisa;
-      # sí cada alerta nueva, que resuelve o re-dispara.
-      #
-      # SIN `steps:` — un step que falla = cero avisos (ver el comentario de
-      # `notify-incident`). SIN `parse_mode` — el summary puede traer `<`, `>`,
-      # `&` y Telegram da 400 con html (misma razón que `incident-summary`).
-      #
-      # Alcance deliberado: las dos alertas de la regla `cron-job-failed`
-      # (keep/rules/correlation-rules.yaml). Ampliarlo a más familias es otro
-      # ticket. `notify-incident` y `notify-incident-critical` NO se tocan.
-      - id: notify-alert-summary
-        name: Telegram — resúmenes de alertas al tema alertas
-        description: >-
-          Lleva el summary de cada alerta de la regla cron-job-failed al topic
-          1248, además del título del incidente que manda notify-incident.
-        triggers:
-          - type: alert
-            only_on_change: [status]
-            cel: >-
-              name == "BrainIngestConsecutiveFailures" || name == "K8sCronJobFailed"
-        actions:
-          - name: telegram-alert-summary
-            # Mismo reintento que en la lane de incidentes; ver allí el porqué.
-            on-failure:
-              retry:
-                count: 3
-                interval: 15
-            provider:
-              type: telegram
-              config: "{{ providers.telegram_ops }}"
-              with:
-                chat_id: "-1004409526898"
-                # `topic_id`, NO `message_thread_id` (ver notify-incident).
-                topic_id: 1248
-                message: |
-                  🧾 {{ alert.name }} · {{ alert.status }}
-                  {{ alert.annotations.summary }}
-                  namespace: {{ alert.labels.namespace }}
-
-      # ---------------------------------------------------------------------
-      # EL RESUMEN, AISLADO. Este workflow SÍ puede abortar — ése es justamente
-      # el sentido de haberlo separado. Si LiteLLM está caído o la allowlist de
-      # la key deja de incluir el modelo pedido (INFRA-431),
-      # `llm-summary` revienta, esta ejecución queda en `error` y no sale el
-      # segundo mensaje; el aviso del incidente ya salió por su cuenta, porque
-      # su workflow no tiene steps que puedan tumbarlo. El fallo sigue siendo
-      # visible en el panel de Grafana `keep-hub`, que grafica ejecuciones por
-      # estado, así que no se pierde en silencio.
-      #
-      # Sin `cel` en el trigger a propósito: cubre críticos y no críticos, y son
-      # las dos acciones las que enrutan por severidad, igual que arriba. Las
-      # acciones están aisladas entre sí, así que un fallo de una no impide la
-      # otra (que de todas formas no aplicaría por el `if`).
-      #
-      # SIN parse_mode, A PROPÓSITO. El cuerpo lo escribe un LLM y con
-      # `parse_mode: html` Telegram devuelve 400 ante cualquier `<`, `>` o `&`
-      # suelto: el provider no escapa nada y la plantilla mustache tampoco. Ésa
-      # es la razón de que aurora-report-back escape en SQL, truco que aquí no
-      # sirve porque el texto no sale de una consulta. En texto plano no hay
-      # nada que parsear y el 400 no puede ocurrir. Telegram autoenlaza la URL
-      # igualmente.
-      #
-      # `model: qwen38-flash-next` (INFRA-327): nombre directo del residente
-      # único del perfil llm-tp. La indirección por alias (`tooling`) se retiró
-      # porque solo queda un perfil: el nivel de pensamiento lo fija LiteLLM
-      # (THINKING_TIERS: low) y el fallback (alibaba-q38-flash) vive en el
-      # router de LiteLLM, no aquí. Que la key `keep-hub` pueda pedir este
-      # modelo es la allowlist de la BBDD de LiteLLM (INFRA-431), no un
-      # mecanismo en Keep.
-      # ---------------------------------------------------------------------
-      - id: incident-summary
-        name: Telegram — resumen LLM del incidente
-        # 2026-08-10: desactivado en GitOps tras el bucle Keep → Aurora → LLM.
-        # Los avisos Telegram sin LLM siguen activos en los workflows anteriores.
-        disabled: true
-        description: >-
-          Segundo mensaje con el resumen del LLM local. Va aparte del aviso a
-          propósito: si el LLM falla se pierde el resumen, nunca el aviso.
-        triggers:
-          - type: incident
-            events: [created]
-        steps:
-          - name: llm-summary
-            # Los 400 por alias rotado no los arregla un reintento inmediato,
-            # pero los de conexión (los más numerosos) sí caen dentro de una
-            # ventana corta. Dos reintentos y a otra cosa: este workflow puede
-            # fallar sin consecuencias, no merece bloquear un hilo más tiempo.
-            on-failure:
-              retry:
-                count: 2
-                interval: 10
-            provider:
-              type: litellm
-              config: "{{ providers.llm }}"
-              with:
-                model: qwen38-flash-next
-                temperature: 0.1
-                # 1500, no 400 (INFRA-327): el tier low de THINKING_TIERS
-                # gasta razonamiento DENTRO de este presupuesto — medido en
-                # `llm-rca` (workflow aurora-report-back, abajo), mismo motor.
-                max_tokens: 1500
-                prompt: |
-                  Eres un SRE veterano. En 2-3 frases y en español, di qué está
-                  pasando y qué mirar primero. No inventes causas: si los datos
-                  no bastan, dilo y señala qué haría falta.
-
-                  Incidente: {{ incident.user_generated_name }}
-                  Severidad: {{ incident.severity }}
-                  Alertas: {{ incident.alerts_count }}
-                  Servicios: {{ incident.services }}
-                  Regla de correlación: {{ incident.rule_name }}
-        actions:
-          - name: summary-critical
-            if: "'{{ incident.severity }}' == 'critical'"
-            on-failure:
-              retry:
-                count: 3
-                interval: 15
-            provider:
-              type: telegram
-              config: "{{ providers.telegram_ops }}"
-              with:
-                chat_id: "-1004409526898"
-                # Infra=1248: el resumen del incidente crítico viaja con su
-                # incidente, no al grupo general.
-                topic_id: 1248
-                message: |
-                  🧠 Resumen — {{#fn.na}}{{ incident.user_generated_name }}{{/fn.na}}
-
-                  {{ steps.llm-summary.results.response }}
-
-                  https://keep.e-dani.com/incidents/{{ incident.id }}
-
-          - name: summary-incident
-            if: "'{{ incident.severity }}' != 'critical'"
-            on-failure:
-              retry:
-                count: 3
-                interval: 15
-            provider:
-              type: telegram
-              config: "{{ providers.telegram_ops }}"
-              with:
-                chat_id: "-1004409526898"
-                # `topic_id`, NO `message_thread_id`. Ver el comentario de
-                # telegram-incident: cualquier otro nombre cae en **kwargs y se
-                # descarta sin error, y el mensaje acaba en el grupo general.
-                topic_id: 1248
-                message: |
-                  🧠 Resumen — {{#fn.na}}{{ incident.user_generated_name }}{{/fn.na}}
-
-                  {{ steps.llm-summary.results.response }}
-
-                  https://keep.e-dani.com/incidents/{{ incident.id }}
-
-      # ---------------------------------------------------------------------
-      # LA VUELTA DEL BUCLE: el análisis de Aurora regresa al grupo.
-      #
-      # Hasta ahora la cadena era de ida solamente — Keep notificaba y despachaba
-      # a Aurora, y el RCA se quedaba en la UI de Aurora, donde nadie lo miraba.
+      # Hasta 2026-10-17 este workflow publicaba el RCA en el topic de alertas
+      # de Telegram (action `telegram-rca`). INFRA-912 retiró las alertas por
+      # Telegram: el RCA queda en la ejecución del workflow (panel `keep-hub`)
+      # y en la UI de Aurora, y `ops-watch` abre la Request que enlaza el
+      # incidente. Lo que sigue siendo la gracia del diseño es la máquina de
+      # no-perder-duplicados: SQL lee, el LLM escribe, la action marca.
       #
       # POR QUÉ SQL Y NO LA API DE AURORA. Su API exige DOS cabeceras:
       # `X-Internal-Secret` (main_compute.py:254) y `X-User-ID`
@@ -424,53 +137,17 @@ backend:
       # porque psycopg2 las ejecuta ambas y `fetchall()` devuelve el último
       # resultado, que es el SELECT.
       #
-      # POR QUÉ EL ESCAPADO VA EN SQL. parse_mode HTML hace que Telegram rechace
-      # con 400 cualquier mensaje con `<`, `>` o `&` sueltos, y el resumen lo
-      # escribe un LLM: antes o después mete uno. Escapar en SQL es la única capa
-      # que lo garantiza — el provider no escapa nada y la plantilla mustache
-      # tampoco.
+      # IDEMPOTENCIA POR MARCA, no por ventana temporal (corregido 2026-08-05). La
+      # marca vive en `keep_bridge.reported`, un esquema APARTE dentro de la BBDD de
+      # Aurora: Aurora es de un tercero y sus migraciones no deben chocar con esto,
+      # y sólo dentro de SU base de datos el join cabe en una consulta (son dos
+      # bases distintas del mismo clúster y no hay dblink). El reclamo es ATÓMICO:
+      # el CTE hace INSERT ... ON CONFLICT DO NOTHING RETURNING, así que sólo salen
+      # las filas que ESTA pasada ha conseguido marcar.
       #
-      # IDEMPOTENCIA POR MARCA, no por ventana temporal (corregido 2026-08-05).
-      #
-      # Antes esto filtraba por `analyzed_at > now() - 6 minutes` con intervalo de
-      # 5. Funcionaba mientras los RCA duraban ~45 s. En cuanto Aurora empezó a
-      # investigar de verdad —el kubectl-agent pasó de 0 comandos a 79 en una
-      # hora— un RCA pasó a tardar 1634 s, o sea 27 minutos: MUCHO fuera de la
-      # ventana. Esos análisis se perdían en silencio, que es el peor fallo
-      # posible aquí porque no deja rastro. Ensanchar la ventana no vale: para
-      # cubrir 27 min habría que ponerla en ~30, y entonces cada pasada de 5 min
-      # reenviaría el mismo análisis seis veces.
-      #
-      # La marca vive en `keep_bridge.reported`, un esquema APARTE dentro de la
-      # BBDD de Aurora. Aparte a propósito: Aurora es de un tercero y sus
-      # migraciones no deben chocar con esto. Y dentro de SU base de datos, no de
-      # la de Keep, porque sólo así el join cabe en una consulta — son dos bases
-      # distintas del mismo clúster y no hay dblink.
-      #
-      # El reclamo es ATÓMICO: el CTE hace INSERT ... ON CONFLICT DO NOTHING
-      # RETURNING, así que sólo salen las filas que ESTA pasada ha conseguido
-      # marcar. Dos ejecuciones simultáneas no pueden publicar el mismo análisis.
-      #
-      # Contrapartida asumida: es at-most-once. El reclamo ya está hecho cuando
-      # se envía, así que un envío que agote los reintentos NO se republica. La
-      # acción lleva `on-failure.retry` (4 envíos, ver allí) para que un fallo
-      # transitorio de Telegram no baste para perderlo, pero eso reduce la
-      # probabilidad, no cambia la garantía: sigue siendo at-most-once. Se acepta
-      # porque el fallo queda registrado como ejecución errónea del workflow
-      # —visible en el panel de Grafana `keep-hub`, que grafica ejecuciones por
-      # estado— mientras que un duplicado no avisa de nada. La ventana de 24 h
-      # del reclamo es el margen para RCA lentos, no un filtro de frescura.
-      #
-      # DDL DE BOOTSTRAP — el esquema NO lo crea nadie automáticamente.
-      #
-      # Este workflow hace `INSERT INTO keep_bridge.reported` en la BBDD de
-      # Aurora, pero ni Keep ni Aurora tienen migración que cree ese esquema:
-      # Keep migra lo suyo en SU base, y las migraciones de Aurora son de un
-      # tercero y no pueden tocar esto (ver arriba, es la razón de que el
-      # esquema sea aparte). Si la tabla no existe, cada pasada falla entera y
-      # NINGÚN análisis se publica. Lo aplica una persona a mano contra la BBDD
-      # `aurora`, igual que el pre-hook de las migraciones de Synapse, y hay que
-      # rehacerlo si la BBDD se recrea desde cero.
+      # DDL DE BOOTSTRAP — el esquema NO lo crea nadie automáticamente. Si la tabla
+      # no existe, cada pasada falla entera. Lo aplica una persona a mano contra la
+      # BBDD `aurora`, y hay que rehacerlo si la BBDD se recrea desde cero:
       #
       #   -- psql -d aurora, como el rol `aurora` (es el owner y es el mismo
       #   -- usuario con el que se autentica el provider `aurora_db`, así que no
@@ -481,65 +158,22 @@ backend:
       #     reported_at timestamptz NOT NULL DEFAULT now()
       #   );
       #
-      # `fingerprint` es PK porque ES la marca: el ON CONFLICT depende de ese
-      # índice único. `reported_at` no la lee nadie hoy; está para poder
-      # auditar/purgar a mano. Contrastado contra la tabla viva
-      # (`\d keep_bridge.reported` en postgres-shared, 2026-08-06): coincide.
+      # EL STEP SÓLO LEE, LA ACTION SÍ ESCRIBE — y no es una preferencia de
+      # estilo. PostgresProvider._query() (lo que ejecuta un step) hace
+      # `conn.close()` SIN commit; psycopg2 hace ROLLBACK al cerrar. Un INSERT en
+      # un step NUNCA persiste. Cuando la reclamación vivía en un step, cada pasada
+      # re-seleccionaba EL MISMO lote de ~100 RCA cada 2 minutos: 429 de flood
+      # control, keep-backend OOMKilled 15 veces en 16 h y la ingesta de alertas
+      # parada (medido 06/07-08-2026). Por eso la marca es una action
+      # (`mark-reported`): _notify sí commitea.
       #
-      # =====================================================================
-      # POR QUÉ ESTE WORKFLOW TUMBÓ EL SISTEMA DE ALERTAS ENTERO (06/07-08-2026)
-      #
-      # El diseño anterior reclamaba y leía en la MISMA sentencia, dentro de un
-      # `step`, con `WITH reclamados AS (INSERT ... RETURNING)`. Eso no funciona,
-      # y el motivo está en el código del provider, no en la query:
-      #
-      #   PostgresProvider._query()   <- lo que ejecuta un STEP
-      #       cur.execute(query); results = cur.fetchall(); conn.close()
-      #                                                     ^^^^^^^^^^^ SIN commit
-      #   PostgresProvider._notify()  <- lo que ejecuta una ACTION
-      #       cur.execute(query); conn.commit(); conn.close()
-      #                           ^^^^^^^^^^^^^ aquí sí
-      #
-      # psycopg2 hace ROLLBACK al cerrar. O sea: **un INSERT en un `step` nunca
-      # persiste**. La reclamación se deshacía en cada pasada y el workflow
-      # re-seleccionaba EL MISMO lote de ~100 RCA cada vez.
-      #
-      # Lo que vino después, medido: `keep_bridge.reported` congelada en 250
-      # filas desde el 2026-08-05 20:43:50 con 107 RCA elegibles esperando; un
-      # `foreach` de ~100 envíos simultáneos cada 2 minutos; Telegram
-      # respondiendo 429 (>7.000 "Flood control exceeded" + 4.327 "Timed out" en
-      # 24 h); 57 ejecuciones atascadas en `in_progress` a la vez; keep-backend
-      # OOMKilled 15 veces en 16 h; y con Keep muerto, Alertmanager sin poder
-      # entregar (3.139 contextDeadlineExceeded) — la ingesta de alertas parada.
-      #
-      # Y el flood control de Telegram es POR CHAT, no por bot: la lane de
-      # emergencia `backstop-telegram` del Alertmanager, que usa otro bot
-      # precisamente para sobrevivir a la caída de Keep, también comía 429 y
-      # necesitaba 9-10 intentos por mensaje. El bucle ahogó hasta la red de
-      # seguridad.
-      #
-      # TRES CAMBIOS, y ninguno es cosmético:
-      #
-      # 1. La reclamación pasa a ser una ACTION (`mark-reported`), que es lo
-      #    único que commitea. El `step` sólo LEE.
-      # 2. `mark-reported` va ANTES de `telegram-rca`. Perder un mensaje es
-      #    barato; reenviar el mismo lote cada 2 minutos costó el sistema de
-      #    alertas entero. El RCA sigue siendo legible en la UI de Aurora.
-      # 3. `LIMIT 5` por pasada. Telegram admite ~20 msg/min por grupo y este
-      #    grupo lo comparten los avisos de incidente. 5 cada 5 min deja sitio.
-      #
-      # Y se cae el `parse_mode: html`. El escape de `&<>` en SQL era inútil:
-      # el IOHandler de Keep hace `rendered = html.unescape(rendered)`
-      # (iohandler.py:673) JUSTO antes de entregar al provider, así que
-      # `&lt;pod-name&gt;` volvía a ser `<pod-name>` y Telegram lo rechazaba con
-      # "unsupported start tag". 9 de 363 resúmenes de Aurora traen literales de
-      # ese tipo (`<pod-name>`, `<namespace>`, `<node-name>`) y generaron 740
-      # fallos — porque el lote se repetía ~82 veces. Texto plano no puede
-      # fallar al parsear; el `regexp_replace` de abajo es el cinturón además
-      # de los tirantes.
+      # Los `regexp_replace` del SQL de abajo (`<[^>]*>` -> '') son higiene del
+      # prompt del LLM. Lo que sigue siendo crítico y está documentado en el step:
+      # `keep.` -> `Keep.` (el escáner de IOHandler) y `{{`/`}}` -> `{ {`/`} }`
+      # (INFRA-833, re-renderizado de chevron).
       # ---------------------------------------------------------------------
       - id: aurora-report-back
-        name: Aurora — análisis de vuelta al grupo
+        name: Aurora — análisis de vuelta a Keep
         # 2026-08-13: REACTIVADO. Se apagó el 2026-08-10 (31f82ae) creyendo que
         # el problema era el bucle LLM; el bucle era el síntoma. La causa era la
         # plantilla de telegram-rca, que desde el 2026-08-07 06:46 pedía una
@@ -552,7 +186,7 @@ backend:
         description: >-
           Cada pasada coge UN incidente analizado por Aurora, escribe su RCA
           con el LLM local a partir de la evidencia real que dejó el agente en
-          execution_steps, y lo publica en el grupo.
+          execution_steps, y lo deja en la ejecución del workflow y en Aurora.
         triggers:
           - type: interval
             value: 300
@@ -634,7 +268,7 @@ backend:
                 # revienta antes de llamar al LLM. Medido en la cola del día:
                 # 7 de 11 candidatos traían `keep.` — el 64% no habría salido
                 # nunca. Se desinfectan también título y respaldo por el mismo
-                # motivo; el mensaje de Telegram los renderiza igual.
+                # motivo; el prompt del LLM los renderiza igual.
                 #
                 # SÓLO CAMBIA LA MAYÚSCULA, y ésa es toda la gracia. El escáner
                 # compara `text[i:i+5] == "keep."` — sensible a mayúsculas
@@ -667,7 +301,7 @@ backend:
                 # el incidente salió de la ventana de 24 h. Se neutraliza
                 # DESPUÉS del left(...,600) (es el corte lo que abre la
                 # pareja) y en título y respaldo igual: los renderiza el
-                # telegram-rca y el `if` de las actions.
+                # `if` de las actions y el prompt del LLM.
                 #
                 # Orden de preferencia: primero los pasos que llevan un comando
                 # real, luego el resto. Sin esto, un incidente con 114
@@ -812,84 +446,23 @@ backend:
                   EVIDENCIA:
                   {{ steps.rca-datos.results.0.4 }}
         actions:
-          # PRIMERO PUBLICAR, LUEGO MARCAR — invertido el 2026-08-13.
-          #
-          # El orden anterior se apoyaba en "si mark-reported falla, el workflow
-          # aborta y telegram-rca no llega a correr". Es FALSO contra Keep
-          # 0.52.1: run_actions() (workflow.py:140-156) recorre las actions sin
-          # `break` y sólo para con action_stop, así que un fallo de ENVÍO nunca
-          # impidió la MARCA. Medido en la BBDD: entre el 2026-08-07 06:46 y el
-          # 2026-08-10 12:55 telegram-rca falló 198 veces al renderizar y
-          # `keep_bridge.reported` acumuló 193 fingerprints marcados que no se
-          # enviaron jamás. El NOT EXISTS de la SELECT los excluye para siempre
-          # y no hay rearme: cada fallo era una pérdida permanente.
-          #
-          # Con el orden invertido, un fallo de envío deja el fingerprint SIN
-          # marcar y la pasada siguiente lo reintenta. El riesgo simétrico
-          # (enviar y que falle el INSERT => repetido) está acotado por LIMIT 1
-          # e interval 300: como mucho un mensaje repetido cada 5 minutos.
+          # INFRA-912 (2026-10-17): fuera la action `telegram-rca` (el envío del
+          # RCA al topic de alertas). Queda sólo la marca. Si el LLM agota los
+          # reintentos, `mark-reported` no corre y la pasada siguiente reintenta
+          # el mismo incidente.
           #
           # El `if` es el guard de "no hay nada pendiente": con 0 filas,
           # {{ …results.0.0 }} renderiza cadena vacía (comprobado contra el
-          # chevron del propio pod), y sin él se insertaría un fingerprint
-          # vacío y se enviaría un mensaje en blanco cada dos minutos.
-          - name: telegram-rca
-            if: "'{{ steps.rca-datos.results.0.0 }}' != ''"
-            on-failure:
-              retry:
-                count: 2
-                interval: 30
-            provider:
-              type: telegram
-              config: "{{ providers.telegram_ops }}"
-              with:
-                chat_id: "-1004409526898"
-                # `topic_id`, NO `message_thread_id`: el _notify del provider
-                # declara topic_id, y cualquier otro nombre cae en **kwargs y se
-                # descarta sin avisar.
-                topic_id: 1248
-                # Sin parse_mode a propósito: con `html` el unescape del
-                # IOHandler (iohandler.py:673) resucita los `<pod-name>` que
-                # escribe el LLM y Telegram devuelve 400.
-                #
-                # `results.response`, SIN el `.0.` — ÉSTA es la regresión que
-                # tuvo el bucle callado tres días. LitellmProvider._query
-                # devuelve un DICT (`{"response": texto}`,
-                # litellm_provider.py:110-112) y el ContextManager lo guarda tal
-                # cual cuando no hay foreach (contextmanager.py:269-272), así
-                # que `.0.` NO existe en el contexto de render. La columna
-                # workflowexecution.results SÍ guarda una lista, y mirar ahí fue
-                # lo que llevó a d7305d6 a "arreglarlo" al revés el 2026-08-07.
-                # Verificado en el pod: `.0.response` lanza RenderException,
-                # `.response` renderiza.
-                #
-                # El cuerpo NO depende del LLM para ser válido: título,
-                # severidad y enlace se renderizan siempre, así que un `content`
-                # vacío degrada el mensaje pero no lo hace fallar en Telegram.
-                # Un mensaje vacío daría 400 y sería la otra vía de perder el
-                # incidente.
-                #
-                # El enlace va a AURORA, no a Keep: la SELECT devuelve el
-                # fingerprint de 16 hex y los ids de incidente de Keep son UUID
-                # (0 de 2515 coincidían), así que el enlace anterior era un 404
-                # garantizado en todos los mensajes. La columna 5 es el id de
-                # Aurora y su UI sirve /incidents/[id].
-                message: |
-                  🔍 Aurora — {{ steps.rca-datos.results.0.1 }}
-
-                  {{ steps.llm-rca.results.response }}
-
-                  Severidad: {{ steps.rca-datos.results.0.2 }}
-                  Análisis en Aurora: https://aurora.e-dani.com/incidents/{{ steps.rca-datos.results.0.5 }}
+          # chevron del propio pod), y sin él se insertaría un fingerprint vacío.
           # 01-10-2026 (SC-1422/SC-1432): el POST del RCA al webhook del perfil
           # sre-devops queda FUERA: cada POST abría una sesión suelta sin clave en
           # el perfil (criterio C1: 0 sesiones sin ticket). El camino ahora: la
           # misma alerta de Alertmanager la ve `ops-watch` (x86) como hallazgo, le
           # abre/busca su Request de IT (etiqueta `it-request`), y el supervisor da
           # el único turno al bot en `epica-<request>` — con el diagnóstico de
-          # Aurora a un clic (la Request enlaza el incidente). La acción
-          # `telegram-rca` de arriba sigue avisando al topic de ops, y el RCA
-          # queda guardado en Aurora/Keep. La ruta `rca` del chart sigue viva
+          # Aurora a un clic (la Request enlaza el incidente). El RCA queda
+          # guardado en Aurora/Keep (INFRA-912 retiró el aviso a Telegram). La
+          # ruta `rca` del chart sigue viva
           # como fallback sin clave (provider `hermes_sre` conservado).
           - name: mark-reported
             if: "'{{ steps.rca-datos.results.0.0 }}' != ''"
@@ -1131,7 +704,7 @@ backend:
       #
       # Restricción dura del diseño: el step SOLO LEE. Escribir dentro de un
       # step es lo que tumbó el sistema de alertas en julio (el workflow de
-      # reporte a Telegram lo documenta en su cabecera): los steps no commitean.
+      # reporte lo documenta en su cabecera): los steps no commitean.
       # Las dos escrituras son actions: `link-incident` (enrich nativo vía
       # EnrichmentsBl in-process) y `mark-linked` (postgres, que sí commitea en
       # _notify).

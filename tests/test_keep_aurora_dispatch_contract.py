@@ -296,7 +296,7 @@ class KeepAuroraLinkContractTests(unittest.TestCase):
         self.assertIn("steps.link-datos.results.0.0", if_line)
 
     def test_report_back_workflow_is_untouched_by_the_link(self):
-        # aurora-report-back (Telegram) must not gain any of the link machinery:
+        # aurora-report-back must not gain any of the link machinery:
         # the link lives in its own interval workflow, not in the one that took
         # down alerting in July.
         text = VALUES.read_text()
