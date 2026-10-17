@@ -1,6 +1,6 @@
 # ARCHITECTURE.md — k8s-observability-pocharlies
 
-> Plano de observabilidad del cluster: VictoriaMetrics, Loki, Alloy, blackbox, Keep (alertas), Aurora (RCA), K8sGPT.
+> Plano de observabilidad del cluster: VictoriaMetrics, Loki, Alloy, blackbox, Keep (alertas) y Aurora (RCA).
 > Fuente principal de métricas/logs/alertas (el Docker Compose viejo de sauvage ya no es el plano). Escrito por
 > `architect` (SC-1426).
 
@@ -19,12 +19,11 @@ multi-source: chart upstream + `values` de este repo, salvo indicación):
 | `keep` | chart `keep` | 0.1.96 |
 | `aurora` | chart `aurora-oss` (Arvo-AI, gh-pages) | 1.2.16 |
 | `aurora-kubectl-agent` | **repo upstream** `Arvo-AI/aurora` path `kubectl-agent/chart` | pinneado al SHA `8d3c5462…` |
-| `k8sgpt` | chart `k8sgpt-operator` | 0.2.27 |
 
 ## 2. Dependencias, en ambos sentidos
 
 - **Depende de** — todos los nodos (Alloy/scrapes), Postgres compartido (Keep/Aurora, esquema `keep_bridge`), LiteLLM (RCA de
-  Aurora, K8sGPT), Synapse/OpenClaw (webhook de VMAlertmanager), 1Password/ExternalSecrets (`*-secrets.yaml`), Kyverno (excepciones),
+  Aurora), Synapse/OpenClaw (webhook de VMAlertmanager), 1Password/ExternalSecrets (`*-secrets.yaml`), Kyverno (excepciones),
   Keycloak + AgentGateway (sonda `atlassian-mcp-probe`: client `atlassian-mcp-probe` y ruta `/atlassian-probe`, SC-1834).
   Desde INFRA-550 también es **consumidor de las métricas `gha_*`** del listener/controller ARC 0.14.1 (scrape en
   `manifests/arc-scrape.yaml`; las publica `k8s-gitops-pocharlies` `infra/arc.yaml`, puerto `metrics` :8080 de los pods
@@ -44,8 +43,7 @@ multi-source: chart upstream + `values` de este repo, salvo indicación):
 | VictoriaMetrics k8s stack | 0.79.0 | métricas, vmalert, vmalertmanager | Prometheus/cAdvisor en docker (retirados) |
 | Loki + Alloy | 7.0.0 / 1.8.1 | logs | Promtail |
 | Keep + Aurora | 0.1.96 / 1.2.16 | correlación y RCA de alertas | Alertmanager a pelo |
-| K8sGPT (solo detección determinista cada 15 min) | operator 0.2.27 | diagnóstico sin bucles LLM; analyzers `ReplicaSet/Service/Job` excluidos | análisis LLM continuo |
-| Python 3.12 (`k8sgpt-explainer/explainer.py`) + promtool | CI | explicador y test de reglas (INFRA-376) | — |
+| promtool | CI | test de reglas (INFRA-376) | — |
 | `atlassian-mcp-probe` (Deployment, script stdlib en ConfigMap) | python 3.12 | sonda funcional del MCP de Atlassian: cada 60 s un `tools/call jira_get_issue` real vía AgentGateway `/atlassian-probe`; métrica `atlassian_mcp_tool_up` (SC-1834, H4 SC-1728) | blackbox `VMProbe` (no hace sesión MCP), `/readyz` (verde con PoolTimeout) |
 
 ## 4. Componentes compartidos
@@ -66,13 +64,12 @@ multi-source: chart upstream + `values` de este repo, salvo indicación):
 ## 5. Cómo se construye aquí
 
 Un componente = `<comp>/values.yaml` + `apps/<comp>.yaml` (registrado en `k8s-gitops-pocharlies`) + manifiestos crudos en
-`manifests/`. Reglas de alerta como `VMRule` junto al servicio que vigilan o en `manifests/*-rules.yaml`. Ningún LLM en bucle
-(coste: ver README K8sGPT). Las superficies del contrato Keep↔Aurora **no se cambian sin versionar** el documento.
+`manifests/`. Reglas de alerta como `VMRule` junto al servicio que vigilan o en `manifests/*-rules.yaml`. Ningún LLM en bucle.
+Las superficies del contrato Keep↔Aurora **no se cambian sin versionar** el documento.
 
 ## 6. Tests y validaciones
 
 ```sh
-python3 -m unittest discover -s k8sgpt-explainer/tests -p 'test_*.py'    # 7 tests del explicador
 AURORA_TEST_PG_DSN=postgresql://… python3 -m pytest tests/ -q             # claim de Aurora contra Postgres desechable (INFRA-406)
 promtool test rules …                                                    # test de regla INFRA-376 (ver ci.yml)
 python3 scripts/verify-notification-coverage.py                          # red del cutover a Keep: ninguna serie que hoy notifica se queda muda (exit 0)
@@ -91,6 +88,9 @@ igual). Necesita Postgres: sin `AURORA_TEST_PG_DSN` se salta en local y **falla 
 
 ## 8. Decisiones y trampas
 
+- `2026-10-17` · INFRA-910 (Dani): **fuera k8sgpt** (operador, explainer y regla `k8sgpt-degraded`). Lo que detectaba
+  (crashloop, Deployments degradados, CronJobs fallidos) ya lo cubren `deployment-degraded`, `workload-degraded` y
+  `cron-job-failed`; su IA estaba apagada y el explainer con tope de 24 llamadas al día.
 - `2026-10-16` · INFRA-882: **sin capa crónica**. Se borran la lista `chronic`, la regla `chronic-debt` y su expansión
   (apply-job, verify-notification-coverage, `alert_routing.py chronic`): tapaba alertas reales (el gmail de Synapse,
   3 h sin consumidor). Una alerta que suena siempre es algo roto (incidente acknowledged con su ticket) o una regla
@@ -126,7 +126,6 @@ igual). Necesita Postgres: sin `AURORA_TEST_PG_DSN` se salta en local y **falla 
   `substr(md5(incidente),1,16)`, cooldown 6 h por `alert_fingerprint`); la migración es expand → deploy → contract y la ejecuta devops.
 - `2026-09-23` · Keep↔Aurora v1.2 (INFRA-217): se retira el GRANT/policy sobre `public.incidents` de v1.1 por la función
   `aurora_rca_coverage()` (revisión del architect).
-- K8sGPT excluyó `ReplicaSet/Service/Job` porque concentraban ~2.746 hallazgos y disparaban bucles LLM.
 - `2026-10-03` · Aurora y Keep piden `qwen38-flash-next` por nombre (residente único `llm-tp`); allowlist de keys solo en
   BBDD de LiteLLM (`keep-hub`, `aurorasvc-llm` — virtual key alias `aurora-rca`). Revierte la de 15-08 de un solo alias
   `tooling` (INFRA-324/325/327; test `tests/test_infra324_llm_models_contract.py`). No se migran `k8sgpt-explainer` ni

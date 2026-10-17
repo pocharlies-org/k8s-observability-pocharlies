@@ -441,9 +441,6 @@ despiertan a nadie pese a llamarse `page`.
 | `IndexDBRecordsDrop` | `critical` | keep |  |
 | `InfoInhibitor` | `none` | keep | 4 |
 | `K8sCronJobFailed` | `warning` | keep | 2 |
-| `K8sGptExplainerUnavailable` | `warning` | keep |  |
-| `K8sGptFindingsSpike` | `warning` | keep |  |
-| `K8sGptOperatorAbsent` | `warning` | keep |  |
 | `KeepBackendAbsent` | `critical` | backstop-telegram + keep |  |
 | `KeepBackendNotSpread` | `warning` | keep |  |
 | `KeepIngestionDown` | `critical` | backstop-telegram + keep |  |
