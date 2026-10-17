@@ -8,9 +8,9 @@ tests:
   # Una cola funcional con mensajes y 0 consumidores: DEBE avisar (10m de for).
   - interval: 1m
     input_series:
-      - series: 'rabbitmq_detailed_queue_consumers{vhost="/synapse",queue="adapter.expenses.process",job="shared-rabbitmq"}'
+      - series: 'rabbitmq_detailed_queue_consumers{vhost="/synapse",queue="adapter.gmail.webhooks",job="shared-rabbitmq"}'
         values: '0+0x15'
-      - series: 'rabbitmq_detailed_queue_messages_ready{vhost="/synapse",queue="adapter.expenses.process",job="shared-rabbitmq"}'
+      - series: 'rabbitmq_detailed_queue_messages_ready{vhost="/synapse",queue="adapter.gmail.webhooks",job="shared-rabbitmq"}'
         values: '4+0x15'
     alert_rule_test:
       - eval_time: 9m
@@ -24,10 +24,10 @@ tests:
               area: messaging
               component: shared-rabbitmq
               vhost: /synapse
-              queue: adapter.expenses.process
+              queue: adapter.gmail.webhooks
             exp_annotations:
-              summary: "RabbitMQ queue adapter.expenses.process has messages but no consumer"
-              description: "Queue adapter.expenses.process (vhost /synapse) has ready messages with zero consumers for 10m. The handler is dead or disconnected — messages will sit until a consumer reattaches."
+              summary: "RabbitMQ queue adapter.gmail.webhooks has messages but no consumer"
+              description: "Queue adapter.gmail.webhooks (vhost /synapse) has ready messages with zero consumers for 10m. The handler is dead or disconnected — messages will sit until a consumer reattaches."
 
   # synapse.unroutable: sin consumidor POR DISEÑO (SynapseUnroutableMessages es
   # su señal) — excluida (INFRA-878). Con mensajes no debe disparar.

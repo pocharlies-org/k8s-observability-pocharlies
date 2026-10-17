@@ -53,8 +53,10 @@ SEV_NORM = {
     "": "info",
 }
 KEEP_DEST = {
-    "critical": "Keep → Telegram (sin tema) + Incident + Aurora",
-    "warning": "Keep → Telegram tema 34494 + Incident + Aurora",
+    # INFRA-912 (2026-10-17): sin Telegram; la notificación es el incidente y
+    # su Request (ops-watch).
+    "critical": "Keep → Incidente + Aurora",
+    "warning": "Keep → Incidente + Aurora",
     "info": "Keep → sólo registro (sin notificación)",
 }
 # No deben notificar nunca, pero sí llegar a Keep: son la señal de que la ingesta vive.
@@ -287,8 +289,8 @@ def cmd_matrix(_args) -> None:
     w("   llegar a Keep: son la señal de que la ingesta sigue viva.")
     w("")
     page = sorted(r["name"] for r in rows if r["sev"] == "page")
-    w(f"2. **Las {len(page)} alertas `severity: page` no llegan a Telegram.** `page` es la")
-    w("   convención más urgente del repo, y hoy salen sólo por el webhook de Synapse:")
+    w(f"2. **Las {len(page)} alertas `severity: page` no notifican.** `page` es la")
+    w("   convención más urgente del repo:")
     for name in page:
         w(f"   - `{name}`")
     w("")

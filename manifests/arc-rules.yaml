@@ -17,8 +17,9 @@
 # Enrutado, en dos pasos y los dos hacen falta:
 #   1. Alertmanager: el catch-all `receiver: keep` las entrega a Keep
 #      (`python3 scripts/alert_routing.py matrix`: 0 en blackhole).
-#   2. Keep solo notifica INCIDENTES (workflow notify-incident, topic Infra
-#      1248) y una `warning` sin regla de correlación queda registrada y CALLA:
+#   2. Keep solo notifica INCIDENTES (INFRA-912: sin Telegram; el aviso es el
+#      incidente y su Request vía ops-watch) y una `warning` sin regla de
+#      correlación queda registrada y CALLA:
 #      la regla `ci-queue-degraded` de keep/rules/correlation-rules.yaml (prefijo
 #      CIQ) las convierte en incidente. Una alerta nueva de este grupo con
 #      nombre fuera de CIQueue*/CIRunner*/CIPoolSaturated no suena hasta que se

@@ -79,133 +79,22 @@ spec:
         receiver: blackhole
 
       # ---------------------------------------------------------------------
-      # DEAD-MAN'S SWITCH
-      #
-      # Estas alertas notifican por Telegram SIN pasar por Keep, porque su modo
-      # de fallo puede además romper Keep: si el hub está caído o el nodo que lo
-      # aloja no responde, un aviso que dependa del hub no llega.
-      #
-      # `continue: true` es deliberado: la alerta se notifica por aquí Y sigue a
-      # Keep para quedar registrada. No es la doble notificación que este
-      # rediseño elimina — son 5 alertname que sólo disparan cuando el propio
-      # sistema de alertas está roto.
-      #
-      # Antes de dar el cutover por bueno hay que probarlo de verdad:
-      #   kubectl -n monitoring scale deploy/keep-backend --replicas=0
-      # esperar KeepBackendAbsent, confirmar el mensaje, y restaurar.
+      # INFRA-912 (2026-10-17): fuera la lane `backstop-telegram` — las tres
+      # rutas directas (dead-man's switch, fallos silenciosos, shared-valkey)
+      # y su receiver. Era la única vía que no pasaba por Keep; con las alertas
+      # por Telegram retiradas (decisión de Dani), si Keep cae ya no hay aviso
+      # directo: las alertas del hub siguen registrándose en Keep al volver y
+      # la cobertura sin Telegram la llevan el panel de DGX Dashboard y las
+      # Requests de ops-watch.
       # ---------------------------------------------------------------------
-      - matchers:
-          # SC-1872: CompaniaSupervisorSinMetricas. Si el supervisor de la compañía muere, este es el único aviso que llega.
-          # INFRA-690: SparkGpuClockStuckLow (VMRule `spark-gpu` de dgx-infra). Un Spark con la GPU cargada y el reloj < 1000 MHz
-          # (USB-PD en modo seguro; ~611 MHz en vez de ~2190) no cae ni da error: sigue sirviendo, más lento, y solo se ve a ojo.
-          # Es `warning` y sin regla de correlación Keep la registra y calla; por aquí además llega a Telegram.
-          - 'alertname =~ "KeepBackendAbsent|KeepIngestionDown|KeepIngestionSilent|AlertmanagerWebhookDeliveryFailed|KubeNodeNotReady|KubeNodeUnreachable|CompaniaSupervisorSinMetricas|SparkGpuClockStuckLow"'
-        receiver: backstop-telegram
-        continue: true
-        group_by:
-          - alertname
-        group_wait: 30s
-        group_interval: 5m
-        repeat_interval: 30m
-
-      # ---------------------------------------------------------------------
-      # FALLOS SILENCIOSOS DE PROCESAMIENTO (2026-08-04)
-      #
-      # Estas siete NO son un dead-man's switch: Keep las recibe igual (de ahí
-      # el `continue: true`, igual que arriba). Van también por Telegram porque
-      # su modo de fallo es invisible por definición y ya ha costado caro tres
-      # veces: el consumidor de RabbitMQ muere, el pod sigue vivo, las probes
-      # siguen en verde y NADA se cae — así que ningún aviso de salud dispara.
-      #
-      # SkirmbooksInvoicingChainStalled (INFRA-214, 21-09) es el cuarto caso y
-      # un escalón más sutil: ni siquiera el consumidor muere — la cadena de
-      # ingesta de facturas dejó de publicar ocr.extract, con consumers=1 y
-      # colas vacías, parada del 17 al 21-09 descubierta a mano.
-      #
-      # AuroraRcaCoverageLow/Absent (INFRA-230, 23-09) son el quinto: el RCA de
-      # Aurora lleva meses pudiendo morir en silencio (26-08..21-09: 159
-      # despachos sin análisis completo, nadie se enteró). Su modo de fallo es
-      # invisible por definición — Aurora "está arriba" — y por eso viajan por
-      # el backstop igual que las demás, además de entrar a Keep.
-      #
-      # El caso que motivó esto: el 31-07 el adapter de gmail perdió su canal
-      # tras un reinicio del broker y estuvo 9,5 h sin procesar correo, con 588
-      # mensajes encolados. RabbitmqFunctionalQueueNoConsumer detectó el estado
-      # correctamente; nadie lo miró. Antes ya había pasado con whatsapp
-      # (19-21 jul) y expenses (16-21 jul).
-      #
-      # Son de bajo ruido por construcción: las siete llevan `for` de 10-30m y
-      # excluyen los buffers sin consumidor legítimo, así que un rollout normal
-      # (hueco de segundos) no las activa. Medido el 04-08: 0 series activas en
-      # estado estable.
-      #
-      # Si alguna se vuelve ruidosa, la respuesta correcta es arreglar la cola o
-      # afinar SU expresión — no sacarla de aquí y volver a quedarse ciego.
-      # ---------------------------------------------------------------------
-      - matchers:
-          - 'alertname =~ "RabbitmqFunctionalQueueNoConsumer|RabbitmqUnackedStuck|RabbitmqHeadMessageStale|SynapseUnroutableMessages|SkirmbooksInvoicingChainStalled|AuroraRcaCoverageLow|AuroraRcaCoverageAbsent"'
-        receiver: backstop-telegram
-        continue: true
-        group_by:
-          - alertname
-          - queue
-        group_wait: 30s
-        group_interval: 5m
-        repeat_interval: 1h
-
-      # ---------------------------------------------------------------------
-      # SYNAPSE: CRASHLOOP Y CRONJOBS SIGUEN AVISANDO (INFRA-878, 17-10)
-      #
-      # El crashloop de synapse-adapter-voicelab avisó una sola vez (al crear el
-      # incidente agrupado WORK de Keep) y calló 6 días mientras seguía firing;
-      # `notify-incident` es `on: create` y el ack de Keep silencia el hallazgo
-      # en ops-watch. En este ns un pod en crashloop o un CronJob roto es un
-      # consumidor de colas muerto (el caso gmail de SKIRM-161: 3 h sin nadie).
-      # El backstop repite mientras la alerta siga disparada (repeat_interval),
-      # que es justo lo que la ruta agrupada no da. `continue: true`: Keep las
-      # registra igual (WORK/CRON siguen su camino).
-      # ---------------------------------------------------------------------
-      - matchers:
-          - 'alertname =~ "KubePodCrashLooping|K8sCronJobFailed"'
-          - 'namespace = "synapse"'
-        receiver: backstop-telegram
-        continue: true
-        group_by:
-          - alertname
-          - namespace
-        group_wait: 30s
-        group_interval: 5m
-        repeat_interval: 1h
-
-      # ---------------------------------------------------------------------
-      # SHARED-VALKEY CRÍTICAS (INFRA-859, 16-10)
-      #
-      # El 10-10 la caché compartida quedó sin master (replicación circular tras
-      # el reinicio del nodo, problema INFRA-822). `SharedValkeyMasterCountInvalid`
-      # estaba disparada — evidencia en el índice de VM (ventaja de la serie
-      # ALERTS sobre el incidente, con los datos ya borrados por la retention de
-      # 48 h) — y nadie actuó: la ruta de estas alertas era sólo Keep, y Keep no
-      # retuvo el aviso. Van también por Telegram (mismo patrón que las dos rutas
-      # de arriba: `continue: true`, Keep las registra igual).
-      # ---------------------------------------------------------------------
-      - matchers:
-          - 'alertname =~ "SharedValkeyMasterCountInvalid|SharedValkeyMetricsMissing|SharedValkeyExporterDown|SharedValkeyReplicaCountLow|SharedValkeyRejectedConnections|SharedValkeyAofUnhealthy"'
-        receiver: backstop-telegram
-        continue: true
-        group_by:
-          - alertname
-        group_wait: 30s
-        group_interval: 5m
-        repeat_interval: 30m
-
       # ---------------------------------------------------------------------
       # CATCH-ALL EXPLÍCITO — no borrar, no es redundante
       #
       # `receiver: keep` en la ruta padre NO basta: Alertmanager usa el receiver
-      # propio de una ruta sólo cuando NINGUNA hija encaja. Sin esta hermana, las
-      # 6 alertas del backstop irían sólo a Telegram y nunca quedarían
-      # registradas en Keep — el mismo fallo de allowlist que tenía el árbol
-      # anterior, reproducido en su reemplazo.
+      # propio de una ruta sólo cuando NINGUNA hija encaja. Se queda aunque el
+      # backstop haya desaparecido: documenta el destino explícito de todo lo
+      # que no es blackhole y evita el fallo de allowlist que tenía el árbol
+      # anterior.
       #
       # Verificado con: scripts/alert_routing.py (simula el matching real).
       # ---------------------------------------------------------------------
@@ -237,26 +126,3 @@ spec:
               password:
                 name: keepsvc-alertmanager-apikey
                 key: apikey
-
-    - name: backstop-telegram
-      telegram_configs:
-        - bot_token:
-            name: alertmanager-telegram-backup
-            key: bot_token
-          # Unificación (25-09): el backstop escribe en el topic Infra (1248)
-          # de Pocharlies Operations, el mismo destino que los incidentes de
-          # Keep. El bot de este secreto (@synapse_skirmshop_bot) ya es
-          # administrador del grupo. El grupo Synapse Monitor queda sin
-          # productores y se retira.
-          chat_id: -1004409526898
-          message_thread_id: 1248
-          send_resolved: true
-          parse_mode: HTML
-          # Se identifica como vía directa para que al leerlo se sepa que Keep
-          # no ha intervenido: si llega esto y nada por el canal normal, el hub
-          # es el problema.
-          message: >-
-            {{ if eq .Status "firing" }}🆘{{ else }}✅{{ end }}
-            <b>{{ .CommonLabels.alertname }}</b> — vía Alertmanager directo
-            (Keep fuera de juego){{ range .Alerts }}
-            {{ if .Annotations.summary }}{{ .Annotations.summary }}{{ else }}{{ .Labels.alertname }}{{ end }}{{ end }}

@@ -1,6 +1,6 @@
 # ARCHITECTURE.md — k8s-observability-pocharlies
 
-> Plano de observabilidad del cluster: VictoriaMetrics, Loki, Alloy, blackbox, Keep (alertas), Aurora (RCA), K8sGPT.
+> Plano de observabilidad del cluster: VictoriaMetrics, Loki, Alloy, blackbox, Keep (alertas) y Aurora (RCA).
 > Fuente principal de métricas/logs/alertas (el Docker Compose viejo de sauvage ya no es el plano). Escrito por
 > `architect` (SC-1426).
 
@@ -19,12 +19,11 @@ multi-source: chart upstream + `values` de este repo, salvo indicación):
 | `keep` | chart `keep` | 0.1.96 |
 | `aurora` | chart `aurora-oss` (Arvo-AI, gh-pages) | 1.2.16 |
 | `aurora-kubectl-agent` | **repo upstream** `Arvo-AI/aurora` path `kubectl-agent/chart` | pinneado al SHA `8d3c5462…` |
-| `k8sgpt` | chart `k8sgpt-operator` | 0.2.27 |
 
 ## 2. Dependencias, en ambos sentidos
 
 - **Depende de** — todos los nodos (Alloy/scrapes), Postgres compartido (Keep/Aurora, esquema `keep_bridge`), LiteLLM (RCA de
-  Aurora, K8sGPT), Synapse/OpenClaw (webhook de VMAlertmanager), 1Password/ExternalSecrets (`*-secrets.yaml`), Kyverno (excepciones),
+  Aurora), Synapse/OpenClaw (webhook de VMAlertmanager), 1Password/ExternalSecrets (`*-secrets.yaml`), Kyverno (excepciones),
   Keycloak + AgentGateway (sonda `atlassian-mcp-probe`: client `atlassian-mcp-probe` y ruta `/atlassian-probe`, SC-1834).
   Desde INFRA-550 también es **consumidor de las métricas `gha_*`** del listener/controller ARC 0.14.1 (scrape en
   `manifests/arc-scrape.yaml`; las publica `k8s-gitops-pocharlies` `infra/arc.yaml`, puerto `metrics` :8080 de los pods
@@ -44,8 +43,7 @@ multi-source: chart upstream + `values` de este repo, salvo indicación):
 | VictoriaMetrics k8s stack | 0.79.0 | métricas, vmalert, vmalertmanager | Prometheus/cAdvisor en docker (retirados) |
 | Loki + Alloy | 7.0.0 / 1.8.1 | logs | Promtail |
 | Keep + Aurora | 0.1.96 / 1.2.16 | correlación y RCA de alertas | Alertmanager a pelo |
-| K8sGPT (solo detección determinista cada 15 min) | operator 0.2.27 | diagnóstico sin bucles LLM; analyzers `ReplicaSet/Service/Job` excluidos | análisis LLM continuo |
-| Python 3.12 (`k8sgpt-explainer/explainer.py`) + promtool | CI | explicador y test de reglas (INFRA-376) | — |
+| promtool | CI | test de reglas (INFRA-376) | — |
 | `atlassian-mcp-probe` (Deployment, script stdlib en ConfigMap) | python 3.12 | sonda funcional del MCP de Atlassian: cada 60 s un `tools/call jira_get_issue` real vía AgentGateway `/atlassian-probe`; métrica `atlassian_mcp_tool_up` (SC-1834, H4 SC-1728) | blackbox `VMProbe` (no hace sesión MCP), `/readyz` (verde con PoolTimeout) |
 
 ## 4. Componentes compartidos
@@ -55,24 +53,23 @@ multi-source: chart upstream + `values` de este repo, salvo indicación):
 | Reglas de enrutado de alertas | matriz | `docs/alert-routing-matrix.md`, `keep/rules/` | toda alerta del estate |
 | Contrato Keep↔Aurora | `docs/keep-aurora-contract.md` | ídem | Keep, Aurora |
 | Alerta de caída del MCP de Atlassian (SC-1728/H5) | `VMRule AtlassianMcpToolDown` + regla de correlación homónima | `manifests/atlassian-mcp-rules.yaml`, `keep/rules/correlation-rules.yaml` | sonda `atlassian-mcp-probe` (SC-1834); `ops-watch` (x86-host-runtime) por `rule_name` == `company_requests.REGLAS_CAIDA_JIRA` — renombrar = entrada nueva junto a la vieja |
-| Reglas ARC / cola de CI (INFRA-550) | `VMRule pocharlies-arc-ci` (cola >20 min, label sin pool, runner sin progreso >10 min, pool saturado, ceguera del exporter) + scrape `gha_*`/`ci_queue_*` | `manifests/arc-rules.yaml`, `manifests/arc-scrape.yaml`; casos en `tests/promtool/arc-rules.test.yaml`, correlación en `tests/test_infra550_ci_queue_correlation.py` | Keep → topic Infra 1248: Alertmanager las lleva a `keep` (catch-all, sin allowlist) y la regla de correlación `ci-queue-degraded` (`keep/rules/correlation-rules.yaml`, prefijo `CIQ`) las convierte en incidente — sin regla una `warning` queda registrada y calla; fuente de «label sin pool» = exporter `ci-queue-exporter` (gitops), no `gha_*` |
-| Reglas de Frigate (INFRA-712) | `VMRule pocharlies-frigate` (`FrigateCaido`, `FrigateDetectorLento` >100 ms, `FrigateCamaraSinFps` de `c8w`/`hp7`, `FrigateAlmacenamientoLleno` de `frigate-media` <8 % 15 min) + scrape `frigate_*` | `manifests/frigate-rules.yaml`, `manifests/frigate-scrape.yaml`; casos en `tests/promtool/frigate-rules.test.yaml`, correlación en `tests/test_infra712_frigate_correlation.py` | Keep → topic Infra 1248, como las de ARC: el catch-all de Alertmanager las lleva a `keep` (**no hay ruta por alertname ni blackhole de warnings**) y la regla de correlación `frigate-vigilancia` (prefijo `FRG`, `Frigate*`) las convierte en incidente. El `/` del nodo `ubuntu` no se duplica: lo cubre `NodeRootDiskLowOrFilling` |
+| Reglas ARC / cola de CI (INFRA-550) | `VMRule pocharlies-arc-ci` (cola >20 min, label sin pool, runner sin progreso >10 min, pool saturado, ceguera del exporter) + scrape `gha_*`/`ci_queue_*` | `manifests/arc-rules.yaml`, `manifests/arc-scrape.yaml`; casos en `tests/promtool/arc-rules.test.yaml`, correlación en `tests/test_infra550_ci_queue_correlation.py` | Keep → incidente (Request vía ops-watch): Alertmanager las lleva a `keep` (catch-all, sin allowlist) y la regla de correlación `ci-queue-degraded` (`keep/rules/correlation-rules.yaml`, prefijo `CIQ`) las convierte en incidente — sin regla una `warning` queda registrada y calla; fuente de «label sin pool» = exporter `ci-queue-exporter` (gitops), no `gha_*` |
+| Reglas de Frigate (INFRA-712) | `VMRule pocharlies-frigate` (`FrigateCaido`, `FrigateDetectorLento` >100 ms, `FrigateCamaraSinFps` de `c8w`/`hp7`, `FrigateAlmacenamientoLleno` de `frigate-media` <8 % 15 min) + scrape `frigate_*` | `manifests/frigate-rules.yaml`, `manifests/frigate-scrape.yaml`; casos en `tests/promtool/frigate-rules.test.yaml`, correlación en `tests/test_infra712_frigate_correlation.py` | Keep → incidente, como las de ARC: el catch-all de Alertmanager las lleva a `keep` (**no hay ruta por alertname ni blackhole de warnings**) y la regla de correlación `frigate-vigilancia` (prefijo `FRG`, `Frigate*`) las convierte en incidente. El `/` del nodo `ubuntu` no se duplica: lo cubre `NodeRootDiskLowOrFilling` |
 | Claim de despacho a Aurora (solo critical, una vez por incidente de Keep, cooldown 6 h) | step `claim-dispatch` del workflow `aurora-investigate` | `keep/values.yaml` | Keep → Aurora; lectores `rca-datos`, `link-datos`, `mark-linked`, `aurora_rca_coverage()` (cruzan por `fingerprint`) |
 | Alerta de disco raíz del nodo ubuntu (INFRA-623): <20 % libre o llena en 3 días | `VMRule NodeRootDiskLowOrFilling` (`pocharlies-node-disk`) + test promtool | `manifests/rules.yaml`, `tests/promtool/node-disk.test.yaml` | los defaults del chart (`NodeFilesystem*`) no saltaron el 07-10: el kubelet desaloja a <5 % libre |
 | Dashboards | `manifests/dashboards.yaml`, `grafana-company-dashboard.yaml`, `grafana-keep.yaml` | ídem | Grafana |
 | Modelo LLM de Aurora y Keep | nombre directo `qwen38-flash-next` (residente único del perfil `llm-tp`; fallback y allowlist en LiteLLM) | `aurora/values.yaml`, `keep/values.yaml` | Aurora, Keep |
-| Avisos de incidente a Telegram | workflows `notify-incident`, `notify-incident-critical` (título, `[created]`) y `notify-alert-summary` (resúmenes por alerta, `type: alert`) | `keep/values.yaml` | topic 1248 de Pocharlies Operations; reglas de `keep/rules/correlation-rules.yaml` |
+| Notificación de incidentes | el incidente de Keep ES la notificación; `ops-watch` (x86-host-runtime) lo convierte en Request | `keep/rules/correlation-rules.yaml`; `docs/keep-aurora-contract.md` | INFRA-912 (2026-10-17): retirados los workflows de aviso por Telegram (`notify-incident*`, `notify-alert-summary`, `incident-summary`) y el receiver `backstop-telegram` de Alertmanager |
 
 ## 5. Cómo se construye aquí
 
 Un componente = `<comp>/values.yaml` + `apps/<comp>.yaml` (registrado en `k8s-gitops-pocharlies`) + manifiestos crudos en
-`manifests/`. Reglas de alerta como `VMRule` junto al servicio que vigilan o en `manifests/*-rules.yaml`. Ningún LLM en bucle
-(coste: ver README K8sGPT). Las superficies del contrato Keep↔Aurora **no se cambian sin versionar** el documento.
+`manifests/`. Reglas de alerta como `VMRule` junto al servicio que vigilan o en `manifests/*-rules.yaml`. Ningún LLM en bucle.
+Las superficies del contrato Keep↔Aurora **no se cambian sin versionar** el documento.
 
 ## 6. Tests y validaciones
 
 ```sh
-python3 -m unittest discover -s k8sgpt-explainer/tests -p 'test_*.py'    # 7 tests del explicador
 AURORA_TEST_PG_DSN=postgresql://… python3 -m pytest tests/ -q             # claim de Aurora contra Postgres desechable (INFRA-406)
 promtool test rules …                                                    # test de regla INFRA-376 (ver ci.yml)
 python3 scripts/verify-notification-coverage.py                          # red del cutover a Keep: ninguna serie que hoy notifica se queda muda (exit 0)
@@ -91,6 +88,18 @@ igual). Necesita Postgres: sin `AURORA_TEST_PG_DSN` se salta en local y **falla 
 
 ## 8. Decisiones y trampas
 
+- `2026-10-17` · INFRA-912 (Dani: «las alertas en Telegram son inútiles; borra todos los topics de alertas»). Fuera
+  TODO envío a Telegram del repo: los cuatro workflows de aviso de `keep/values.yaml`, la action `telegram-rca` de
+  `aurora-report-back` (el RCA queda en la ejecución y en Aurora; dejarlo como comentario en la Request no es trivial
+  desde Keep — no hay provider Jira — y queda anotado), el receiver `backstop-telegram` con sus tres rutas de
+  Alertmanager (las alertas quedan sólo en Keep), `manifests/backup-alert-reports.yaml`, el ExternalSecret
+  `alertmanager-telegram-backup`, el provider `telegram_ops` de `keep-secrets.yaml` y el bloque de envío del
+  `dgx-cluster-health-watcher`. Consecuencia asumida: ya no hay vía de aviso que no pase por Keep — si el hub cae,
+  no hay backstop directo. Pines: `tests/test_infra912_no_telegram_emitters.py`,
+  `tests/test_infra378_keep_notify_contract.py`.
+- `2026-10-17` · INFRA-910 (Dani): **fuera k8sgpt** (operador, explainer y regla `k8sgpt-degraded`). Lo que detectaba
+  (crashloop, Deployments degradados, CronJobs fallidos) ya lo cubren `deployment-degraded`, `workload-degraded` y
+  `cron-job-failed`; su IA estaba apagada y el explainer con tope de 24 llamadas al día.
 - `2026-10-16` · INFRA-882: **sin capa crónica**. Se borran la lista `chronic`, la regla `chronic-debt` y su expansión
   (apply-job, verify-notification-coverage, `alert_routing.py chronic`): tapaba alertas reales (el gmail de Synapse,
   3 h sin consumidor). Una alerta que suena siempre es algo roto (incidente acknowledged con su ticket) o una regla
@@ -126,7 +135,6 @@ igual). Necesita Postgres: sin `AURORA_TEST_PG_DSN` se salta en local y **falla 
   `substr(md5(incidente),1,16)`, cooldown 6 h por `alert_fingerprint`); la migración es expand → deploy → contract y la ejecuta devops.
 - `2026-09-23` · Keep↔Aurora v1.2 (INFRA-217): se retira el GRANT/policy sobre `public.incidents` de v1.1 por la función
   `aurora_rca_coverage()` (revisión del architect).
-- K8sGPT excluyó `ReplicaSet/Service/Job` porque concentraban ~2.746 hallazgos y disparaban bucles LLM.
 - `2026-10-03` · Aurora y Keep piden `qwen38-flash-next` por nombre (residente único `llm-tp`); allowlist de keys solo en
   BBDD de LiteLLM (`keep-hub`, `aurorasvc-llm` — virtual key alias `aurora-rca`). Revierte la de 15-08 de un solo alias
   `tooling` (INFRA-324/325/327; test `tests/test_infra324_llm_models_contract.py`). No se migran `k8sgpt-explainer` ni
