@@ -68,7 +68,7 @@ vmsingle:
       storageClassName: longhorn
       resources:
         requests:
-          storage: 50Gi
+          storage: 100Gi
     nodeSelector:
       node-pool: ks5-nvme
       kubernetes.io/arch: amd64
