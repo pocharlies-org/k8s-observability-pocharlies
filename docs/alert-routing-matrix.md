@@ -403,7 +403,6 @@ despiertan a nadie pese a llamarse `page`.
 | `AtlassianMcpToolDown` | `critical` | keep |  |
 | `AuroraRcaCoverageAbsent` | `warning` | keep |  |
 | `AuroraRcaCoverageLow` | `warning` | keep |  |
-| `BackupDailyDumpStale` | `critical` | keep |  |
 | `BackupRecoveryKitStale` | `critical` | keep |  |
 | `BackupWeeklySnapshotStale` | `critical` | keep |  |
 | `BgePoolLatencyAboveGate` | `critical` | keep |  |
