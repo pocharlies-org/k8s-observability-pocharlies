@@ -298,6 +298,30 @@ spec:
         #     en quietud la expresion sigue emitiendo ambas series (un pool
         #     realmente lento, con peticiones interactivas lentas y
         #     texts/peticion ~1, dispara igual que antes).
+        #   - recurrencia 20-10/26-10 (SC-1608): dos caminos fuera de la
+        #     ventana de ingesta, ambos contencion legitima de la RTX 3080 Ti
+        #     compartida (embedder + reranker + comfyui-rtx + frigate,
+        #     time-slicing rtx-timeslice-4), sin degradacion real:
+        #       * 20-10 01:35-01:45: p99 embedder 2.4-3.65 s mientras el
+        #         reranker ocupaba la GPU al 37-84 % (consolidacion nocturna
+        #         de hindsight, cron 00:00Z).
+        #       * 26-10 01:55-02:05: p99 embedder 2.26-2.48 s con reranker
+        #         idle (0.0 s de proceso/s), GPU al 9-26 % y frigate
+        #         aparcada aqui (12-21 %): stalls de context-switch con
+        #         rafaga del propio embedder (1 -> 4 req/s, ratio 1.7-2).
+        #     En el segundo, medido: p50 0.09 s y media 0.10-0.23 s, es
+        #     decir la cola esta sana y solo la cola de la distribucion
+        #     sufre el time-slicing. Los dos incidentes reales que esta
+        #     regla tiene que cazar (14-08: reranker en CPU con timeouts;
+        #     vectores truncados) suben TAMBIEN la mediana. Cambio:
+        #     (a) el gate exige ademas p50 > 0.5 s embedder / > 1 s
+        #         reranker (baselines medidos 0.09 s y ~0.1-0.3 s), y
+        #     (b) el gate del embedder se anula mientras el reranker esta
+        #         saturado (> 0.2 s de proceso por segundo; su trafico
+        #         normal es ~0.003), el vecino conocido del 20-10. Un
+        #     embedder realmente degradado con el reranker ocupado queda
+        #     cubierto por LlmPoolCapabilityUnavailable y por el gate del
+        #     propio reranker.
         - alert: BgePoolLatencyAboveGate
           expr: |
             histogram_quantile(0.99, sum by (le, service) (
@@ -310,6 +334,15 @@ spec:
             and on(service) (
               sum by (service) (rate(tei_request_duration_seconds_count{namespace="llm",service=~"bge-m3-embedding|bge-reranker"}[15m])) > 0.003
             )
+            and on(service) (
+              histogram_quantile(0.5, sum by (le, service) (
+                rate(tei_request_duration_seconds_bucket{namespace="llm",service=~"bge-m3-embedding|bge-reranker"}[15m])
+              )) > on(service) (
+                label_replace(vector(0.5), "service", "bge-m3-embedding", "", "")
+                or
+                label_replace(vector(1), "service", "bge-reranker", "", "")
+              )
+            )
             unless on(service) (
               (
                 sum by (service) (rate(tei_texts_total{namespace="llm",service=~"bge-m3-embedding|bge-reranker"}[15m]))
@@ -319,6 +352,12 @@ spec:
                 label_replace(vector(5), "service", "bge-m3-embedding", "", "")
                 or
                 label_replace(vector(60), "service", "bge-reranker", "", "")
+              )
+            )
+            unless on(service) (
+              label_replace(
+                sum(rate(tei_request_duration_seconds_sum{namespace="llm",service="bge-reranker"}[15m])) > 0.2,
+                "service", "bge-m3-embedding", "", ""
               )
             )
           for: 10m
@@ -332,9 +371,11 @@ spec:
             summary: "Pool BGE {{ $labels.service }}: p99 por encima del gate"
             description: >-
               El p99 de {{ $labels.service }} es {{ $value | humanizeDuration }}
-              sostenido 10 minutos (gate: 2 s embedder, 3 s reranker; anulado
-              durante ingesta masiva: >=5 textos/peticion embedder, >=60
-              reranker). Comprueba el residente real detras del Service:
+              sostenido 10 minutos CON la mediana tambien elevada (p50 > 0.5 s
+              embedder / > 1 s reranker; gate: 2 s embedder, 3 s reranker;
+              anulado durante ingesta masiva: >=5 textos/peticion embedder,
+              >=60 reranker, y durante saturacion del reranker en el caso del
+              embedder). Comprueba el residente real detras del Service:
               `kubectl get endpointslices -n llm | grep bge` y luego los pods
               (CPU del reranker en x86, `kubectl top pod -n llm | grep bge`).
               El incidente del 14-08 (vectores truncados a 512) se parecio a
