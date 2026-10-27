@@ -276,9 +276,17 @@ kube-state-metrics:
   resources:
     requests:
       cpu: 25m
-      memory: 64Mi
+      memory: 128Mi
     limits:
-      memory: 256Mi
+      # SC-2654 (27-10): con 256Mi el contenedor entraba en bucle de OOMKills
+      # (57 reinicios en 9 h; estable ~120 Mi, el pico va en el sync inicial de
+      # los stores, secrets/configmaps incluidos). Cada OOM deja obsoletas las
+      # series kube_daemonset_* y vmalert dispara KubeDaemonSetRolloutStuck /
+      # KubernetesDaemonSetUnavailable sobre alloy y los node-exporters → el
+      # incidente de Keep «Workloads degradados en monitoring» (WORK, regla
+      # workload-degraded) llevaba recociéndose desde el 17-10. 512Mi = 4x el
+      # steady-state.
+      memory: 512Mi
   nodeSelector:
     node-pool: ks5-nvme
   # DGX-128 — telemetría del sync 1Password -> Vault (external-secrets).
