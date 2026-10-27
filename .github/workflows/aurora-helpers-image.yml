@@ -16,6 +16,7 @@ name: aurora · helpers image (SC-2708)
 on:
   workflow_dispatch: {}
   push:
+    branches: [main]
     paths:
       - images/aurora/bridge/transformers/**
       - images/aurora/kubectl-agent/**
@@ -47,18 +48,22 @@ jobs:
             --platform linux/amd64 tcp://buildkitd-amd64.buildkit.svc.cluster.local:1234 --use
           docker buildx inspect --bootstrap
 
-      - name: Build (push solo en main)
-        # Como en aurora-bridge-image.yml: en rama solo se valida el build.
+      - name: Build y push
+        # cr.weaviate.io reparte el rate limit anónimo de Docker Hub (429
+        # "unauthenticated pull rate limit", visto en el run 40503845600): la
+        # base se re-suelve en cada runner, así que el build reintenta con
+        # backoff hasta que la ventana de pull se relaja.
         run: |
-          if [ "${GITHUB_REF}" = "refs/heads/main" ]; then
-            OUT=(--push)
-          else
-            OUT=(--output type=cacheonly)
-          fi
-          docker buildx build --platform linux/amd64 "${OUT[@]}" \
-            --tag ghcr.io/pocharlies-org/transformers-inference:sentence-transformers-all-MiniLM-L6-v2-r1 \
-            images/aurora/bridge/transformers
-          docker buildx build --platform linux/amd64 "${OUT[@]}" \
+          attempt=0
+          until docker buildx build --platform linux/amd64 --push \
+              --tag ghcr.io/pocharlies-org/transformers-inference:sentence-transformers-all-MiniLM-L6-v2-r1 \
+              images/aurora/bridge/transformers; do
+            attempt=$((attempt+1))
+            if [ "${attempt}" -ge 6 ]; then exit 1; fi
+            echo "429 u otro fallo de resolución; reintento ${attempt} en 120 s"
+            sleep 120
+          done
+          docker buildx build --platform linux/amd64 --push \
             --tag ghcr.io/pocharlies-org/aurora-kubectl-agent:1.0.3-r1 \
             images/aurora/kubectl-agent
 
