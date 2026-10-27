@@ -36,11 +36,14 @@ agent:
           name: aurorasvc-kubectl-agent
           key: AURORA_AGENT_TOKEN
   image:
-    # Imagen del propio vendor, verificada como pública y multi-arch
-    # (amd64 + arm64) contra el registry: manifest de 1.0.3 -> HTTP 200.
-    # No hace falta construirla ni republicarla en Harbor.
-    repository: gcr.io/sublime-flux-414616/aurora-kubectl-agent
-    tag: "1.0.3"
+    # SC-2708 (2026-10-27): la imagen del vendor en gcr.io/sublime-flux-414616
+    # ya no existe (401 anónimo; el vendor la retiró) y no quedaba en la caché
+    # de ningún nodo → ImagePullBackOff. Es la fuente upstream construida tal
+    # cual: Dockerfile, agent.py y requirements.txt del commit 8d3c5462 (el
+    # mismo que fija el Application de ArgoCD), en images/aurora/kubectl-agent/.
+    # amd64 sola: el deployment va con nodeSelector a sauvage.
+    repository: ghcr.io/pocharlies-org/aurora-kubectl-agent
+    tag: "1.0.3-r1"
     pullPolicy: IfNotPresent
 
   resources:
