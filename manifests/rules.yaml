@@ -409,6 +409,39 @@ spec:
           annotations:
             summary: "Synapse gateway unreachable at the edge — business webhooks are being lost"
             description: "synapse.e-dani.com is not answering on the gateway's webhook prefix for >2m, so Shopify / Stripe / Telegram / Gmail / WhatsApp deliveries are being dropped at the edge. Alert delivery is NOT affected: that goes to Keep in-cluster. Check deploy/synapse-gateway in the synapse namespace and the traefik-edge IngressRoute edge-synapse-legacy."
+        # ---- Gmail users.watch() expiration (INFRA-954) ------------------------
+        # Ported from skirmshop-monitoring (compose stack, retirado) where these
+        # rules existed but had no live destination: the metric is PUSHED by the
+        # CronJob synapse-gmail-watch-renew (ns synapse, every 6 days) to
+        # pushgateway.monitoring:9091 (manifests/pushgateway.yaml), and vmagent
+        # scrapes it with honorLabels so job="synapse_gmail_watch_renew" survives.
+        # The gauge is the epoch at which the current watch() binding expires;
+        # the series is continuous because pushgateway re-serves the last pushed
+        # value on every scrape (persisted on PVC across restarts).
+        - alert: SynapseGmailWatchExpired
+          expr: synapse_gmail_watch_expiration_seconds < time()
+          for: 30m
+          labels:
+            severity: critical
+            area: availability
+            component: synapse
+          annotations:
+            summary: "Gmail watch() for {{ $labels.email }} is expired"
+            description: "users.watch() binding for {{ $labels.email }} has been expired for >30 min: Gmail is no longer publishing to Pub/Sub for this account, so me@/info@ stop flowing into Synapse. The renewer CronJob (synapse/synapse-gmail-watch-renew, every 6 days) failed for this account or did not run. Check `kubectl -n synapse logs job/<ultimo>` and renew now: `kubectl -n synapse create job gmail-watch-renew-manual --from=cronjob/synapse-gmail-watch-renew`."
+        # Companion: renewer has not pushed ANY sample in 8+ days (> 7d watch TTL
+        # + buffer) — catches "timer gone" and "pushgateway link broken" for all
+        # accounts at once, which SynapseGmailWatchExpired cannot see (no series
+        # to compare against time()).
+        - alert: SynapseGmailWatchRenewerStale
+          expr: absent_over_time(synapse_gmail_watch_expiration_seconds[8d])
+          for: 30m
+          labels:
+            severity: critical
+            area: availability
+            component: synapse
+          annotations:
+            summary: "Gmail watch renewer has not pushed metrics in 8+ days"
+            description: "No synapse_gmail_watch_expiration_seconds samples for 8+ days across any account: the renewer CronJob is suspended/failing, or the pushgateway link is broken. Watches are already expired — Gmail is not publishing. Check `kubectl -n synapse get cronjob synapse-gmail-watch-renew`, its last Job logs, and `kubectl -n monitoring get pods -l app.kubernetes.io/name=pushgateway`."
 ---
 # Synapse CORE health: the two singleton control-plane pods (engine +
 # dispatcher) plus the transactional outbox and the dead-letter graveyard.
