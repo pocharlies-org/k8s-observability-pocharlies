@@ -39,6 +39,9 @@ resources:
   - manifests/alertmanager-config.yaml
   - manifests/probes.yaml
   - manifests/rules.yaml
+  # INFRA-954: destino de las métricas empujadas (push) — hoy el gauge de
+  # expiración del watch Gmail que publica el CronJob synapse-gmail-watch-renew.
+  - manifests/pushgateway.yaml
   - manifests/keep-scrape.yaml
   - manifests/grafana-keep.yaml
   - manifests/dashboards.yaml

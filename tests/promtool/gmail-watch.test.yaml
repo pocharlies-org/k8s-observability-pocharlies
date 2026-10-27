@@ -1,0 +1,61 @@
+# Casos de SynapseGmailWatchExpired y SynapseGmailWatchRenewerStale (INFRA-954,
+# promtool test rules). `rules` la genera tests/test_infra954_gmail_watch_promtool.py
+# desde la VMRule pocharlies-synapse. Gauge = epoch de expiración del watch;
+# time() en promtool cuenta desde 0.
+rule_files:
+  - gmail-watch.rules.yaml
+evaluation_interval: 1m
+tests:
+  - interval: 1m
+    name: watch ya vencido -> SynapseGmailWatchExpired dispara tras el for
+    input_series:
+      - series: 'synapse_gmail_watch_expiration_seconds{email="me@e-dani.com"}'
+        values: '100x300'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: SynapseGmailWatchExpired
+        exp_alerts: []
+      - eval_time: 2h
+        alertname: SynapseGmailWatchExpired
+        exp_alerts:
+          - exp_labels: {severity: critical, area: availability, component: synapse, email: me@e-dani.com}
+            exp_annotations:
+              summary: "Gmail watch() for me@e-dani.com is expired"
+              description: "users.watch() binding for me@e-dani.com has been expired for >30 min: Gmail is no longer publishing to Pub/Sub for this account, so me@/info@ stop flowing into Synapse. The renewer CronJob (synapse/synapse-gmail-watch-renew, every 6 days) failed for this account or did not run. Check `kubectl -n synapse logs job/<ultimo>` and renew now: `kubectl -n synapse create job gmail-watch-renew-manual --from=cronjob/synapse-gmail-watch-renew`."
+  - interval: 1m
+    name: watch vigente (vence a los 10 días) -> no dispara
+    input_series:
+      - series: 'synapse_gmail_watch_expiration_seconds{email="info@e-dani.com"}'
+        values: '864000x300'
+    alert_rule_test:
+      - eval_time: 4h
+        alertname: SynapseGmailWatchExpired
+        exp_alerts: []
+  # El renewer empuja cada 6 días: un solo sample al inicio y silencio = "el
+  # renewer dejó de publicar". Interval 1 h: con 1 m promtool re-evalúa la
+  # ventana de 8 d miles de veces y revienta la memoria del motor.
+  - interval: 1h
+    name: último empuje hace 8+ días -> SynapseGmailWatchRenewerStale dispara
+    input_series:
+      - series: 'synapse_gmail_watch_expiration_seconds{email="me@e-dani.com"}'
+        values: '100x1'
+    alert_rule_test:
+      - eval_time: 7d
+        alertname: SynapseGmailWatchRenewerStale
+        exp_alerts: []
+      - eval_time: 9d
+        alertname: SynapseGmailWatchRenewerStale
+        exp_alerts:
+          - exp_labels: {severity: critical, area: availability, component: synapse}
+            exp_annotations:
+              summary: "Gmail watch renewer has not pushed metrics in 8+ days"
+              description: "No synapse_gmail_watch_expiration_seconds samples for 8+ days across any account: the renewer CronJob is suspended/failing, or the pushgateway link is broken. Watches are already expired — Gmail is not publishing. Check `kubectl -n synapse get cronjob synapse-gmail-watch-renew`, its last Job logs, and `kubectl -n monitoring get pods -l app.kubernetes.io/name=pushgateway`."
+  - interval: 1h
+    name: serie presente (renovando cada hora) -> RenewerStale no dispara
+    input_series:
+      - series: 'synapse_gmail_watch_expiration_seconds{email="me@e-dani.com"}'
+        values: '100x217'
+    alert_rule_test:
+      - eval_time: 9d
+        alertname: SynapseGmailWatchRenewerStale
+        exp_alerts: []
