@@ -6,7 +6,7 @@ name: aurora · bridge image (INFRA-326)
 # dgx-infra/.github/workflows/build-bge-embedding.yml. Runner arc-k8s (skill
 # ci-runners-arc); el job necesita docker, que el release de ARC trae por sidecar dind.
 #
-# NO pisa tags existentes: sube ghcr.io/pocharlies-org/aurora-server:sha-e35121a-p688.
+# NO pisa tags existentes: sube ghcr.io/pocharlies-org/aurora-server:sha-e35121a-p688-sc2633.
 # VER images/aurora/bridge/README.md — PLAN DE RETIRADA: este workflow se borra cuando
 # Arvo-AI/aurora#688 se fusione y se sudee a la imagen upstream.
 
@@ -51,7 +51,7 @@ jobs:
         # a INFRA-326). En main (push o dispatch) se publica el tag.
         run: |
           ARGS=(--platform linux/amd64,linux/arm64
-                --tag ghcr.io/pocharlies-org/aurora-server:sha-e35121a-p688)
+                --tag ghcr.io/pocharlies-org/aurora-server:sha-e35121a-p688-sc2633)
           if [ "${GITHUB_REF}" = "refs/heads/main" ]; then
             ARGS+=(--push)
           else
@@ -68,13 +68,13 @@ jobs:
         if: github.ref == 'refs/heads/main'
         run: |
           docker buildx imagetools create \
-            -t ghcr.io/pocharlies-org/aurora-frontend:sha-e35121a-p688 \
+            -t ghcr.io/pocharlies-org/aurora-frontend:sha-e35121a-p688-sc2633 \
             ghcr.io/pocharlies-org/aurora-frontend:sha-e35121aeb7d80293d2e4ce462fe2bc05d9adb469
 
       - name: Verificar manifiesto y digest
         if: github.ref == 'refs/heads/main'
         run: |
-          docker buildx imagetools inspect ghcr.io/pocharlies-org/aurora-server:sha-e35121a-p688 \
+          docker buildx imagetools inspect ghcr.io/pocharlies-org/aurora-server:sha-e35121a-p688-sc2633 \
             | tee /tmp/inspect.txt
           grep -q 'linux/amd64' /tmp/inspect.txt && grep -q 'linux/arm64' /tmp/inspect.txt
           echo "Digest:"; grep -m1 Digest /tmp/inspect.txt >> "$GITHUB_STEP_SUMMARY" || true

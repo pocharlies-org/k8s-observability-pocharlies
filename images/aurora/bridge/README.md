@@ -2,13 +2,23 @@
 
 ## Qué es
 
-`ghcr.io/pocharlies-org/aurora-server:sha-e35121a-p688` = la imagen desplegada
+`ghcr.io/pocharlies-org/aurora-server:sha-e35121a-p688-sc2633` = la imagen desplegada
 (`sha-e35121aeb7d80293d2e4ce462fe2bc05d9adb469`, build manual del 20-08 registrado en
 `15a52db` = `arvo-ai/aurora@e35121a` + los 3 commits del tool-output no mergeados aguas
 arriba) **más el parche de [Arvo-AI/aurora#688](https://github.com/Arvo-AI/aurora/pull/688)**
 (hacer configurable el timeout del juez de guardarraíles vía `GUARDRAILS_LLM_TIMEOUT_SECONDS`,
 default 10, fail-closed intacto). Aprobado por el CTO el 2026-10-03 como puente hasta que
 #688 se fusione (decisión registrada en INFRA-326).
+
+El tag `-p688` (las dos capas de arriba, sin SC-2633) queda como estaba: no se pisa.
+La capa **SC-2633** añade `files/task.py` = `server/chat/background/task.py` del main de
+`pocharlies-org/aurora` (pocharlies-org/aurora#5): el limpiador periódico gana la rama que
+saca los incidentes clavados en `aurora_status='summarizing'` (re-encolo de la tarea de
+resumen, `error` tras 2 intentos perdidos, telemetría `summary_requeued`/`summary_errors`).
+Produción tenía 132 incidentes clavados el 2026-10-28 (el más antiguo, 83 días). El
+`task.py` de la imagen base es byte a byte el de `e35121a` y el de `main` (sha256
+`e50e5a00…`, verificado extrayéndolo de la imagen el 2026-10-28), así que esta capa no
+pisa cambios del tool-output sobre ese fichero.
 
 Por qué un puente: el juez caducaba a los 10 s hardcodeados de `command_safety.py` y fallaba
 cerrado (279/329 `on_prem_kubectl` en 7 días; sonda INFRA-432: bloqueos a 10.0 s exactos).
@@ -17,18 +27,20 @@ este parche.
 
 ## Por qué `files/*.py` y no `patch` en el Dockerfile
 
-La imagen base no tiene `patch` ni `git`. Los dos ficheros de `files/` son los de
-`e35121a` con el diff de #688 aplicado (ambos ficheros son idénticos entre `e35121a` y el
-main de upstream — verificado el 2026-10-03), y se `COPY`an tal cual. Sin pasos `RUN`: la
-capa es idéntica por arquitectura y el build multi-arch no necesita ejecutar nada.
+La imagen base no tiene `patch` ni `git`. Los dos ficheros de seguridad de `files/` son los
+de `e35121a` con el diff de #688 aplicado (ambos ficheros son idénticos entre `e35121a` y el
+main de upstream — verificado el 2026-10-03), y se `COPY`an tal cual; `files/task.py` es el
+fichero tal cual del main del fork (capa SC-2633). Sin pasos `RUN`: la capa es idéntica por
+arquitectura y el build multi-arch no necesita ejecutar nada.
 
-## Auditoría (hashes SHA-256, 2026-10-03)
+## Auditoría (hashes SHA-256)
 
 | fichero | sha256 |
 |---|---|
 | `Arvo-AI-aurora-PR688.diff` (diff íntegro de #688, rama base = main de upstream) | `a6fbc9b67765f9944025193362e98d4e2fc9f5cf8b360e6b6158670d67a10116` |
 | `files/config.py` (e35121a + #688) | `cb0327fdb0eaaeb74780bb7c57e05f34b57c94db8fa8add590219d8b63c267a6` |
 | `files/command_safety.py` (e35121a + #688) | `bc237bfd7914ecff0cb98993100ce2e707dda9a6230e55b5fbc0fbf1b68e31f3` |
+| `files/task.py` (main de pocharlies-org/aurora, pocharlies-org/aurora#5, 2026-10-28) | `e7638d8eec018bc2dfeadb724024fdad383c777adadbc65a55107a309c6c60a4` |
 
 Aplicación reproducible desde cero:
 
@@ -46,13 +58,14 @@ Workflow `.github/workflows/aurora-bridge-image.yml` (este repo): `arc-k8s` + lo
 `buildkitd-{amd64,arm64}` del namespace `buildkit` (mismo patrón multi-arch nativo que
 `dgx-infra/build-bge-embedding.yml`, sin QEMU). Se dispara solo al cambiar
 `images/aurora/bridge/**` o a mano («Run workflow»). No pisa ningún tag existente: sube
-`sha-e35121a-p688`.
+`sha-e35121a-p688-sc2633` (el anterior, `sha-e35121a-p688`, se queda intacto como
+reversión).
 
-El workflow crea además el tag espejo `aurora-frontend:sha-e35121a-p688` con
+El workflow crea además el tag espejo `aurora-frontend:sha-e35121a-p688-sc2633` con
 `docker buildx imagetools create` (mismo digest que el frontend desplegado, sin rebuild):
 el chart compone `aurora-frontend:{image.tag}` del mismo tag global
 (`templates/frontend-deployment.yaml`, sin override por componente) y sin ese espejo el
-frontend entraría en ImagePullBackOff. La retirada borra ambos tags `-p688`.
+frontend entraría en ImagePullBackOff. La retirada borra los tags `-p688*`.
 
 En `pull_request` el workflow **no publica** (`--output type=cacheonly`: valida el
 build multi-arch sin exportar — `type=oci` no soporta builder multi-nodo):
@@ -73,3 +86,8 @@ los paquetes GHCR `aurora-server`/`aurora-frontend` están vinculados al repo
    original vivo como estado permanente mientras tanto.
 3. Si #688 sigue OPEN 30 días después de este puente (2026-11-02), escalar al CTO en el
    hito mensual — el puente no se reconvierte en fork permanente.
+4. La capa SC-2633 (`files/task.py`) es código del main de `pocharlies-org/aurora`
+   (pocharlies-org/aurora#5), no mergeado aguas arriba: el bump de retirada debe incluir
+   ese commit (imagen del fork, o re-aplicar la capa), si no el clavado de `summarizing`
+   vuelve. Antes del bump, comprobar: `SELECT count(*) FROM incidents WHERE
+   aurora_status='summarizing' AND updated_at < NOW() - interval '15 minutes'` = 0.
