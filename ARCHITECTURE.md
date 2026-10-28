@@ -154,9 +154,14 @@ igual). Necesita Postgres: sin `AURORA_TEST_PG_DSN` se salta en local y **falla 
   imagen + el parche de Arvo-AI/aurora#688 (diff `a6fbc9b6…10116`; `config.py` `cb0327fd…`, `command_safety.py`
   `bc237bfd…`), construido en GitOps por `.github/workflows/aurora-bridge-image.yml` (`arc-k8s` + buildkitd remotos,
   multi-arch sin QEMU; espeja también `aurora-frontend:…-p688`, que el chart compone del mismo tag). Base, hashes y
-  aplicación reproducible: `images/aurora/bridge/README.md`. **Retirada obligatoria** al fusionarse #688: bump upstream
-  + borrar `images/aurora/bridge/`, esta entrada y los tags `-p688`; en ese bump se decide la pata tool-output
-  (knobs `TOOL_OUTPUT_*` vs cap fijo 40 k). Si #688 sigue OPEN el 2026-11-02, escalar al CTO — no se reconvierte en
+  aplicación reproducible: `images/aurora/bridge/README.md`. **Capa SC-2633** (28-10): tag
+  `sha-e35121a-p688-sc2633` = puente + `files/task.py` (`e7638d8e…`), el `task.py` del main de
+  `pocharlies-org/aurora` (pocharlies-org/aurora#5: barrido de incidentes clavados en
+  `aurora_status='summarizing'`, 132 en producción el 28-10); el `-p688` queda intacto como
+  reversión. **Retirada obligatoria** al fusionarse #688: bump upstream
+  + borrar `images/aurora/bridge/`, esta entrada y los tags `-p688*`; en ese bump se decide la pata tool-output
+  (knobs `TOOL_OUTPUT_*` vs cap fijo 40 k) y el bump debe incluir el commit de SC-2633 (no está
+  aguas arriba, ver README §retirada). Si #688 sigue OPEN el 2026-11-02, escalar al CTO — no se reconvierte en
   fork permanente.
 
 Última verificación contra el código: 2026-10-03 · 09373a7 (origin/main)

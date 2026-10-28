@@ -48,16 +48,19 @@ fullnameOverride: aurora
 # upstream e35121a + los 3 commits del tool-output aún no mergeados aguas
 # arriba) + el parche de Arvo-AI/aurora#688 (timeout del juez de guardarraíles
 # configurable; sin él `GUARDRAILS_LLM_TIMEOUT_SECONDS` de abajo es inerte y el
-# juez caduca a 10 s hardcodeados). Base, parche, hashes y PLAN DE RETIRADA:
-# images/aurora/bridge/README.md. Al fusionarse #688 aguas arriba: retirar el
-# puente, sudar a la imagen upstream y decidir ahí los knobs TOOL_OUTPUT_*.
+# juez caduca a 10 s hardcodeados) + la capa SC-2633 (task.py del main del fork:
+# barrido de incidentes clavados en aurora_status='summarizing'; sin ella los
+# clavados se quedan para siempre — 132 medidos el 28-10). Base, parche, hashes y
+# PLAN DE RETIRADA: images/aurora/bridge/README.md. Al fusionarse #688 aguas
+# arriba: retirar el puente, sudar a la imagen upstream (incluyendo el commit de
+# SC-2633, ver README) y decidir ahí los knobs TOOL_OUTPUT_*.
 #
 # Al subir la versión del chart en apps/aurora.yaml, revisar el puente (puede
 # que el bump limpio ya esté disponible).
 # ---------------------------------------------------------------------------
 image:
   registry: ghcr.io/pocharlies-org
-  tag: "sha-e35121a-p688"
+  tag: "sha-e35121a-p688-sc2633"
 
 # ---------------------------------------------------------------------------
 # Infra compartida en vez de la del chart. Ahorra ~4GB y evita duplicar bases de
