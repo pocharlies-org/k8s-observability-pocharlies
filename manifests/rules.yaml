@@ -1540,11 +1540,14 @@ spec:
         # Edge-triggered: last termination was OOMKilled AND a restart happened in
         # the last 15m, so it auto-resolves instead of staying stuck for the pod's
         # whole life. Primary historical failure mode (heap grew to the limit).
+        # Scoped to affiliate-app pods (SC-2671): unscoped it fired for ANY
+        # skirmshop pod with container "app" under the affiliate name — the
+        # 2026-10-17 spike was collections-tree-app, not affiliate.
         - alert: AffiliateAppOOMKilled
           expr: |
-            (kube_pod_container_status_last_terminated_reason{namespace="skirmshop",container="app",reason="OOMKilled"} == 1)
+            (kube_pod_container_status_last_terminated_reason{namespace="skirmshop",container="app",pod=~"affiliate-app.*",reason="OOMKilled"} == 1)
             and on (namespace,pod,container)
-            (increase(kube_pod_container_status_restarts_total{namespace="skirmshop",container="app"}[15m]) > 0)
+            (increase(kube_pod_container_status_restarts_total{namespace="skirmshop",container="app",pod=~"affiliate-app.*"}[15m]) > 0)
           for: 1m
           labels:
             severity: critical
@@ -1568,7 +1571,7 @@ spec:
             summary: "Affiliate app memory >85% of limit"
             description: "{{ $labels.pod }} working set is {{ $value | humanizePercentage }} of its memory limit for >5m. OOMKill likely within ~1-2h — check heap growth (leak)."
         - alert: AffiliateAppRestartSpike
-          expr: increase(kube_pod_container_status_restarts_total{namespace="skirmshop",container="app"}[1h]) > 2
+          expr: increase(kube_pod_container_status_restarts_total{namespace="skirmshop",container="app",pod=~"affiliate-app.*"}[1h]) > 2
           for: 10m
           labels:
             severity: critical
@@ -1587,6 +1590,36 @@ spec:
           annotations:
             summary: "Affiliate app pod not Ready"
             description: "{{ $labels.pod }} not-Ready for >5m (readiness /health failing). Traefik returns 503 for affiliate.skirmshop.es."
+    # The affiliate rules above used to be unscoped (any skirmshop pod with
+    # container "app" fired them under the affiliate name — SC-2671). These
+    # generic rules keep that coverage for the rest of the namespace, named
+    # after what they actually watch. affiliate-app.* is excluded so the two
+    # sets never double-fire on the same pod.
+    - name: skirmshop-apps.runtime
+      rules:
+        - alert: SkirmshopAppRestartSpike
+          expr: increase(kube_pod_container_status_restarts_total{namespace="skirmshop",container="app",pod!~"affiliate-app.*"}[1h]) > 2
+          for: 10m
+          labels:
+            severity: critical
+            area: kubernetes
+            component: skirmshop-apps
+          annotations:
+            summary: "Skirmshop app restarting repeatedly"
+            description: "{{ $labels.pod }} restarted {{ $value }} times in 1h. Check pod events (OOM, liveness, migration/crashloop at boot): kubectl -n skirmshop describe pod {{ $labels.pod }} && kubectl -n skirmshop logs {{ $labels.pod }} --previous."
+        - alert: SkirmshopAppOOMKilled
+          expr: |
+            (kube_pod_container_status_last_terminated_reason{namespace="skirmshop",container="app",pod!~"affiliate-app.*",reason="OOMKilled"} == 1)
+            and on (namespace,pod,container)
+            (increase(kube_pod_container_status_restarts_total{namespace="skirmshop",container="app",pod!~"affiliate-app.*"}[15m]) > 0)
+          for: 1m
+          labels:
+            severity: critical
+            area: kubernetes
+            component: skirmshop-apps
+          annotations:
+            summary: "Skirmshop app OOMKilled"
+            description: "{{ $labels.namespace }}/{{ $labels.pod }} was OOMKilled and restarted. Check its memory limit vs working set and whether the limit is simply too small."
     - name: pocharlies.llm
       rules:
         - alert: VllmLaneRestartLoop
