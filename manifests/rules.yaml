@@ -2640,14 +2640,21 @@ spec:
           # (node-lifecycle, 40 s sin latido de Lease → Unknown), no el kubelet, así que
           # dispara aunque el kubelet esté muerto. Las métricas de pod de node-exporter
           # sí se quedan stale (patrón 2026-07-20) y por eso no se usan.
-          # `absent_over_time`: si la serie desaparece, KSM está mudo y también es alarma.
+          # `absent_over_time`: si la serie desaparece con KSM VIVO, el objeto nodo se
+          # ha ido y también es alarma. Con KSM caído NO: el hueco de serie es de KSM,
+          # no del x86 (SC-2850: el crash-loop OOM de KSM del 21/10–27/10 reabrió este
+          # crítico 10 veces con el nodo sano; TargetDown del chart ya cubre KSM caído).
+          # El gate `and on() up{job="kube-state-metrics"} == 1` deja la alarma de
+          # monitorización en TargetDown y la de nodo en esta.
           # Un reinicio planificado de más de 5 min también salta: es intencionado.
           expr: |
             (
               kube_node_status_condition{node="ubuntu",condition="Ready",status="true"} == 0
+              or
+              absent_over_time(kube_node_status_condition{node="ubuntu",condition="Ready"}[5m])
             )
-            or
-            absent_over_time(kube_node_status_condition{node="ubuntu",condition="Ready"}[5m])
+            and on()
+            (up{job="kube-state-metrics"} == 1)
           for: 5m
           labels:
             severity: critical
