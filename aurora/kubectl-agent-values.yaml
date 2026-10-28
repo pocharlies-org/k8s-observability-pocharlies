@@ -36,13 +36,20 @@ agent:
           name: aurorasvc-kubectl-agent
           key: AURORA_AGENT_TOKEN
   image:
-    # SC-2708 (2026-10-27): la imagen del vendor en gcr.io/sublime-flux-414616
-    # ya no existe (401 anónimo; el vendor la retiró) y no quedaba en la caché
-    # de ningún nodo → ImagePullBackOff. Es la fuente upstream construida tal
-    # cual: Dockerfile, agent.py y requirements.txt del commit 8d3c5462 (el
-    # mismo que fija el Application de ArgoCD), en images/aurora/kubectl-agent/.
-    # amd64 sola: el deployment va con nodeSelector a sauvage.
-    repository: ghcr.io/pocharlies-org/aurora-kubectl-agent
+    # INFRA-1010 (2026-10-27): la imagen del vendor en gcr.io/sublime-flux-414616
+    # ya no se puede bajar sin credenciales (el token anónimo da 403: «billing
+    # not enabled» — el proyecto de Arvo perdió el acceso público) y el pod
+    # llevaba 2 d en ImagePullBackOff. El comentario anterior estaba obsoleto.
+    #
+    # Espejo de la casa: el MISMO código del commit 8d3c5462 (el que fija el
+    # Application de ArgoCD) construido con el Dockerfile de
+    # images/aurora/kubectl-agent/ (PR #117) y publicado en el proyecto PÚBLICO
+    # de Harbor (library), que sauvage tira sin credenciales — verificado:
+    # token anónimo + manifest 200. ghcr.io/pocharlies-org NO sirve aquí: los
+    # paquetes puente se crearon privados y la API REST de visibilidad ya no
+    # existe (solo UI). homelab es privado y el nodo no tiene credenciales para
+    # él (harbor-runtime-pull no cubre el ns aurora).
+    repository: harbor.e-dani.com/library/aurora-kubectl-agent
     tag: "1.0.3-r1"
     pullPolicy: IfNotPresent
 

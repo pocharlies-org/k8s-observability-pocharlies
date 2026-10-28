@@ -16,13 +16,15 @@ modelos); no cambia contenido ni versión.
 
 ```bash
 docker build --platform linux/amd64 -t \
-  ghcr.io/pocharlies-org/transformers-inference:sentence-transformers-all-MiniLM-L6-v2-r1 .
-docker push ghcr.io/pocharlies-org/transformers-inference:sentence-transformers-all-MiniLM-L6-v2-r1
+  harbor.e-dani.com/library/transformers-inference:sentence-transformers-all-MiniLM-L6-v2-r1 .
+docker push harbor.e-dani.com/library/transformers-inference:sentence-transformers-all-MiniLM-L6-v2-r1
 ```
 
-ghcr.io/pocharlies-org es el registry de los puentes de Aurora (INFRA-326):
-público y ya accesible desde sauvage. Harbor `homelab` no sirve aquí: es
-privado y sauvage no tiene credenciales para él.
+`harbor.e-dani.com/library` es el proyecto PÚBLICO de Harbor: sauvage lo tira
+sin credenciales (verificado en INFRA-1010 con el kubectl-agent: token anónimo
++ manifest 200, y el pod corre). `ghcr.io/pocharlies-org` no sirve para
+imagen nueva: los paquetes se crean privados y la visibilidad solo se cambia
+por UI (INFRA-1010); `homelab` es privado y sauvage no tiene credenciales.
 
 ## Cómo se engancha
 
@@ -35,7 +37,7 @@ conserva la imagen del chart y ArgoCD sigue Synced.
 
 ```bash
 kubectl get pod -n aurora -l app.kubernetes.io/name=aurora-oss-t2v-transformers \
-  -o jsonpath='{.items[0].spec.containers[0].image}'   # → ghcr.io/pocharlies-org/…-r1
+  -o jsonpath='{.items[0].spec.containers[0].image}'   # → harbor.e-dani.com/library/…-r1
 kubectl logs -n aurora deploy/aurora-t2v-transformers --tail=5   # sin FileNotFoundError
 ```
 

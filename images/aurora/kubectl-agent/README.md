@@ -21,13 +21,15 @@ Hashes SHA-256:
 
 ```bash
 docker build --platform linux/amd64 -t \
-  ghcr.io/pocharlies-org/aurora-kubectl-agent:1.0.3-r1 .
-docker push ghcr.io/pocharlies-org/aurora-kubectl-agent:1.0.3-r1
+  harbor.e-dani.com/library/aurora-kubectl-agent:1.0.3-r1 .
+docker push harbor.e-dani.com/library/aurora-kubectl-agent:1.0.3-r1
 ```
 
-Consumida por `aurora/kubectl-agent-values.yaml` (`agent.image`).
+`harbor.e-dani.com/library` es el proyecto público de Harbor (pull anónimo
+verificado desde sauvage). Consumida por `aurora/kubectl-agent-values.yaml`
+(`agent.image`), desplegada en INFRA-1010.
 
 ## Retirada
 
-Si el vendor publica la imagen en un registry accesible (p. ej. ghcr.io), se
-vuelve a él y esta carpeta muere.
+Si el vendor publica la imagen en un registry accesible, se vuelve a él y esta
+carpeta muere.
