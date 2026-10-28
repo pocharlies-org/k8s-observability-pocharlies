@@ -222,6 +222,17 @@ spec:
             summary: "HPA is capped at max replicas"
             description: "{{ $labels.namespace }}/{{ $labels.horizontalpodautoscaler }} is at max replicas and Kubernetes reports ScalingLimited=True for more than 15 minutes."
         - alert: NodeDiskIOSaturation
+          # SC-1342: md3 en sauvage queda excluido. Es el RAID1 de HDDs
+          # mecanicos que aloja el hub de backups (backup-minio-0, ns
+          # backup-hub, hostPath /var/lib/backup-minio por nodeSelector): su
+          # carga de fondo (lecturas aleatorias de MinIO + el barrido
+          # skirmbooks-accounting-sweep) es estructural y perseguida, no un
+          # incidente accionable — ver INFRA-401 y SC-1342. El resto de
+          # dispositivos y nodos (md3 existe tambien en otros 4 nodos) sigue
+          # cubierto sin cambios. El join con kube_pod_info es porque las
+          # series de node-exporter no traen label de nodo (instance =
+          # podIP:9100); unless sobre el par (instance, device) para no
+          # tocar ninguna otra serie.
           expr: |
             (
               rate(node_disk_io_time_weighted_seconds_total{job="node-exporter",device=~"(/dev/)?(mmcblk.p.+|nvme.+|rbd.+|sd.+|vd.+|xvd.+|dm-.+|md.+|dasd.+)"}[5m]) > 10
@@ -229,6 +240,12 @@ spec:
             and on (instance, device)
             (
               rate(node_disk_io_time_seconds_total{job="node-exporter",device=~"(/dev/)?(mmcblk.p.+|nvme.+|rbd.+|sd.+|vd.+|xvd.+|dm-.+|md.+|dasd.+)"}[5m]) > 0.8
+            )
+            unless on (instance, device)
+            (
+              node_disk_io_time_seconds_total{job="node-exporter",device="md3"}
+              and on (pod)
+              kube_pod_info{namespace="monitoring", pod=~"vm-prometheus-node-exporter-.*", node="sauvage"}
             )
           for: 30m
           labels:
