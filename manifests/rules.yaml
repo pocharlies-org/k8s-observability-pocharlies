@@ -2587,9 +2587,20 @@ spec:
           # Dos ramas, el valor de ambas es el % libre:
           #   1. menos del 20 % libre;
           #   2. al ritmo de las últimas 6 h (predict_linear) se llenaría en 3 días.
-          # El `and on(pod)` con kube_pod_info limita la regla al nodo ubuntu (las series
-          # de node-exporter no traen label de nodo; patrón de pocharlies-node-memory).
-          # Los Sparks no entran. Para vigilar otro nodo, cambiar el matcher `node`.
+          # El `and on(pod)` con kube_pod_info limita la regla a los nodos del matcher
+          # `node` (las series de node-exporter no traen label de nodo; patrón de
+          # pocharlies-node-memory). Los Sparks no entran. Para vigilar otro nodo,
+          # añadirlo al regex.
+          # SC-2986 (25-10). El `/` de sauvage (md3, 3,9T) bajó de ~1 TB libre y sólo
+          # avisó el KubePersistentVolumeFillingUp del PVC skirmshop-drive-mirror: su
+          # estadística es el fs de atrás, o sea el `/` entero de sauvage, así que el
+          # crítico salió con el nombre de un PVC de 500Gi y sin decir el disco real.
+          # Sauvage no estaba en el matcher: NodeDiskFilling (node-capacity) avisa a
+          # >80 % usado y Sauvage estaba a ~73 %; NodeDiskPressure exige disk-pressure,
+          # que es tarde. Sauvage entra porque es el hub de backups: /srv/minio/data
+          # (velero-backups, harbor-blobs, cnpg-backups) es lo que llena ese disco.
+          # alphalink (~15 % libre el 28-10) sigue sin vigilar: añadirlo al regex es
+          # decisión de quien oiga el crítico, porque saltaría el mismo día.
           expr: |
             (
               (
@@ -2603,18 +2614,20 @@ spec:
               )
             )
             and on(pod)
-            kube_pod_info{namespace="monitoring", pod=~"vm-prometheus-node-exporter-.*", node="ubuntu"}
+            kube_pod_info{namespace="monitoring", pod=~"vm-prometheus-node-exporter-.*", node=~"ubuntu|sauvage"}
           for: 30m
           labels:
             severity: critical
             area: capacity
           annotations:
-            summary: "Disco raíz del nodo ubuntu: poco espacio libre o se llena en menos de 3 días"
+            summary: "Disco raíz del nodo ({{ $labels.pod }}): poco espacio libre o se llena en menos de 3 días"
             description: >-
               A / de {{ $labels.instance }} ({{ $labels.device }}) le queda el {{ printf "%.1f" $value }} % libre.
+              El nodo: `kubectl get pod -n monitoring {{ $labels.pod }} -o jsonpath='{.spec.nodeName}'`.
               Salta con menos del 20 % libre o si al ritmo de las últimas 6 h se llena en menos de 3 días.
               Por debajo del 5 % el kubelet entra en disk-pressure y desaloja pods (el 07-10: AdGuard, el DNS de la LAN).
               Mirar qué crece (du por directorio: /var/lib/longhorn, /home, /srv, /tmp) y liberar caché.
+              En sauvage lo que crece es /srv/minio/data (velero-backups, harbor-blobs, cnpg-backups).
         - alert: NodeDiskPressure
           # INFRA-849. Backstop independiente del exporter del nodo que se llena.
           # El 07-10 el node-exporter de ubuntu murió con el disco y NodeRootDiskLowOrFilling
