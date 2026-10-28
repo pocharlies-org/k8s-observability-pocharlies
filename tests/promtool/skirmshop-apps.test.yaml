@@ -1,0 +1,92 @@
+# Casos de AffiliateAppRestartSpike / SkirmshopAppRestartSpike y de los OOMKilled
+# (promtool test rules, SC-2671). El incidente CRIT-15306 del 2026-10-17 fue
+# collections-tree-app reinciando y salió disparado como "AffiliateApp…": las
+# reglas de affiliate no llevaban pod=~"affiliate-app.*". Estos casos fijan la
+# atribución: cada app dispara su regla y NUNCA la del otro.
+rule_files:
+  - skirmshop-apps.rules.yaml
+evaluation_interval: 5m
+tests:
+  - interval: 5m
+    name: affiliate-app sube 3 reinicios en 1h -> solo AffiliateAppRestartSpike
+    input_series:
+      - series: 'kube_pod_container_status_restarts_total{namespace="skirmshop",container="app",pod="affiliate-app-cf45d44dd-aaaaa"}'
+        values: '0x12 3x24'
+      - series: 'kube_pod_container_status_restarts_total{namespace="skirmshop",container="app",pod="collections-tree-app-6986ffc74b-fj22w"}'
+        values: '0x36'
+    alert_rule_test:
+      - eval_time: 60m
+        alertname: AffiliateAppRestartSpike
+        exp_alerts: []
+      - eval_time: 80m
+        alertname: AffiliateAppRestartSpike
+        exp_alerts:
+          - exp_labels: {severity: critical, area: kubernetes, component: affiliate, namespace: skirmshop, container: app, pod: affiliate-app-cf45d44dd-aaaaa}
+            exp_annotations:
+              summary: "Affiliate app restarting repeatedly"
+              description: "affiliate-app-cf45d44dd-aaaaa restarted 3 times in 1h. Check pod events (OOM, liveness, or prisma migrate P1001 crashloop at boot)."
+      - eval_time: 80m
+        alertname: SkirmshopAppRestartSpike
+        exp_alerts: []
+  - interval: 5m
+    name: collections-tree-app sube 3 reinicios en 1h -> solo SkirmshopAppRestartSpike (el caso real de CRIT-15306)
+    input_series:
+      - series: 'kube_pod_container_status_restarts_total{namespace="skirmshop",container="app",pod="collections-tree-app-6986ffc74b-fj22w"}'
+        values: '0x12 3x24'
+      - series: 'kube_pod_container_status_restarts_total{namespace="skirmshop",container="app",pod="affiliate-app-cf45d44dd-aaaaa"}'
+        values: '0x36'
+    alert_rule_test:
+      - eval_time: 80m
+        alertname: SkirmshopAppRestartSpike
+        exp_alerts:
+          - exp_labels: {severity: critical, area: kubernetes, component: skirmshop-apps, namespace: skirmshop, container: app, pod: collections-tree-app-6986ffc74b-fj22w}
+            exp_annotations:
+              summary: "Skirmshop app restarting repeatedly"
+              description: "collections-tree-app-6986ffc74b-fj22w restarted 3 times in 1h. Check pod events (OOM, liveness, migration/crashloop at boot): kubectl -n skirmshop describe pod collections-tree-app-6986ffc74b-fj22w && kubectl -n skirmshop logs collections-tree-app-6986ffc74b-fj22w --previous."
+      - eval_time: 80m
+        alertname: AffiliateAppRestartSpike
+        exp_alerts: []
+  - interval: 5m
+    name: collections-tree-app OOMKilled y reinicia -> solo SkirmshopAppOOMKilled
+    input_series:
+      - series: 'kube_pod_container_status_last_terminated_reason{namespace="skirmshop",container="app",pod="collections-tree-app-6986ffc74b-fj22w",reason="OOMKilled"}'
+        values: '1x24'
+      - series: 'kube_pod_container_status_restarts_total{namespace="skirmshop",container="app",pod="collections-tree-app-6986ffc74b-fj22w"}'
+        values: '0x6 1x18'
+      - series: 'kube_pod_container_status_last_terminated_reason{namespace="skirmshop",container="app",pod="affiliate-app-cf45d44dd-aaaaa",reason="OOMKilled"}'
+        values: '0x24'
+      - series: 'kube_pod_container_status_restarts_total{namespace="skirmshop",container="app",pod="affiliate-app-cf45d44dd-aaaaa"}'
+        values: '0x24'
+    alert_rule_test:
+      - eval_time: 45m
+        alertname: SkirmshopAppOOMKilled
+        exp_alerts:
+          - exp_labels: {severity: critical, area: kubernetes, component: skirmshop-apps, namespace: skirmshop, container: app, pod: collections-tree-app-6986ffc74b-fj22w, reason: OOMKilled}
+            exp_annotations:
+              summary: "Skirmshop app OOMKilled"
+              description: "skirmshop/collections-tree-app-6986ffc74b-fj22w was OOMKilled and restarted. Check its memory limit vs working set and whether the limit is simply too small."
+      - eval_time: 45m
+        alertname: AffiliateAppOOMKilled
+        exp_alerts: []
+  - interval: 5m
+    name: affiliate-app OOMKilled y reinicia -> solo AffiliateAppOOMKilled
+    input_series:
+      - series: 'kube_pod_container_status_last_terminated_reason{namespace="skirmshop",container="app",pod="affiliate-app-cf45d44dd-aaaaa",reason="OOMKilled"}'
+        values: '1x24'
+      - series: 'kube_pod_container_status_restarts_total{namespace="skirmshop",container="app",pod="affiliate-app-cf45d44dd-aaaaa"}'
+        values: '0x6 1x18'
+      - series: 'kube_pod_container_status_last_terminated_reason{namespace="skirmshop",container="app",pod="collections-tree-app-6986ffc74b-fj22w",reason="OOMKilled"}'
+        values: '0x24'
+      - series: 'kube_pod_container_status_restarts_total{namespace="skirmshop",container="app",pod="collections-tree-app-6986ffc74b-fj22w"}'
+        values: '0x24'
+    alert_rule_test:
+      - eval_time: 45m
+        alertname: AffiliateAppOOMKilled
+        exp_alerts:
+          - exp_labels: {severity: critical, area: kubernetes, component: affiliate, namespace: skirmshop, container: app, pod: affiliate-app-cf45d44dd-aaaaa, reason: OOMKilled}
+            exp_annotations:
+              summary: "Affiliate app OOMKilled"
+              description: "skirmshop/affiliate-app-cf45d44dd-aaaaa was OOMKilled and restarted. Heap leak likely — profile and fix in v0.4.5."
+      - eval_time: 45m
+        alertname: SkirmshopAppOOMKilled
+        exp_alerts: []
