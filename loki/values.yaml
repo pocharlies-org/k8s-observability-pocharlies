@@ -54,6 +54,11 @@ loki:
 
 singleBinary:
   replicas: 1
+  # 2026-10-27 (SC-2884): el GC de Go aprieta al acercarse a 2600MiB en vez de
+  # dejar que el cgroup (limite 3Gi) mate al proceso. Go 1.24 (loki 3.6.7) lo soporta.
+  extraEnv:
+    - name: GOMEMLIMIT
+      value: 2600MiB
   nodeSelector:
     node-pool: ks5-nvme
     kubernetes.io/arch: amd64
@@ -73,9 +78,15 @@ singleBinary:
       # el pod entero (110m = 100m + 10m sidecar loki-sc-rules); objetivo
       # 200m/pod => 190m aqui + 10m del sidecar.
       cpu: 190m
-      memory: 256Mi
+      # 2026-10-27 (SC-2884): 256Mi -> 1Gi. Working set medido: ~700-900Mi a las
+      # 2h de arranque (Go heap vivo, no cache) y +25Mi/h. El request viejo dejaba
+      # el pod Burstable con 4x su uso real reservado en el papel.
+      memory: 1Gi
     limits:
-      memory: 2Gi
+      # 2026-10-27 (SC-2884): 2Gi -> 3Gi. OOMKilled (CONSTRAINT_MEMCG, journal de
+      # ks5-cp-1 27-10 16:13Z) tras ~51h subiendo hasta el tope. Con GOMEMLIMIT
+      # (abajo) el GC aprieta antes de que el cgroup mate al proceso.
+      memory: 3Gi
 
 gateway:
   resources:
