@@ -23,6 +23,15 @@ defaultRules:
     # (INFRA-690) también queda fuera: ningún Spark tiene alerta de memoria.
     NodeMemoryHighUtilization:
       create: false
+    # SC-2641 (DEPL-15279): duplicado de la casa. La condición de esta regla del
+    # chart (spec > available, 15 min) es un subconjunto de KubernetesDeploymentUnavailable
+    # (manifests/rules.yaml, critical), que además SÍ puede excluir las identidades
+    # del perfil llm-tp — el chart no admite exclusión por deployment y cada cambio
+    # de variante del qwen38 (carga de 1-3 h) montaba el incidente DEPL con esta
+    # warning. Cobertura: KubernetesDeploymentUnavailable (resto) +
+    # LlmResidentDeploymentUnavailable (llm, 2 h).
+    KubeDeploymentReplicasMismatch:
+      create: false
   groups:
     etcd:
       create: false
@@ -62,8 +71,11 @@ vmsingle:
         memory: 12Gi
       limits:
         cpu: "2"
-        # 2026-10-28 (SC-2985): 12Gi -> 16Gi. Margen sobre los 11.7Gi sostenidos
-        # para las consultas pesadas (Aurora/ops-watch) sin OOM.
+        # 2026-10-28 (SC-2907): 12Gi -> 16Gi. OOMKilled el 27-10 con el working
+        # set tocando el limite (meseta 9-11 GiB de cache, pico medido 11.9 GiB
+        # en consultas pesadas de vmalert/Keep). El OOM de vmsingle abre hueco de
+        # ingesta -> absent() de LlmPoolCapabilityUnavailable dispara un critico
+        # con el pool sano (CRIT-16462).
         memory: 16Gi
     extraArgs:
       maxLabelsPerTimeseries: "200"

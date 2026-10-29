@@ -1,0 +1,65 @@
+# Casos de KubernetesDeploymentUnavailable y LlmResidentDeploymentUnavailable
+# (promtool test rules, SC-2641 / DEPL-15279). `rules` la genera
+# tests/test_sc2641_llm_deployment_paging_promtool.py desde la VMRule
+# pocharlies-service-visibility.
+# Escenario real: cada cambio de variante del qwen38 recrea el pod del head y el
+# modelo tarda 1-3 h en cargar (spec=1, available=0). Antes de SC-2641 eso montaba
+# el incidente DEPL con la crítica de 15 min; los nombres muertos del regex
+# (vllm-.*, .*-bench) además dejaban a los actuales sin la cobertura de 2 h.
+rule_files:
+  - llm-deployment-paging.rules.yaml
+evaluation_interval: 10m
+tests:
+  - interval: 10m
+    name: cambio de variante del qwen38 (head sin réplica 3 h) -> no salta la de 15 min; a las 2 h salta la de LLM
+    input_series:
+      - series: 'kube_deployment_spec_replicas{namespace="llm",deployment="qwen38-flash-next-head"}'
+        values: '1x40'
+      - series: 'kube_deployment_status_replicas_available{namespace="llm",deployment="qwen38-flash-next-head"}'
+        values: '0x40'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: KubernetesDeploymentUnavailable
+        exp_alerts: []
+      - eval_time: 90m
+        alertname: LlmResidentDeploymentUnavailable
+        exp_alerts: []
+      - eval_time: 190m
+        alertname: KubernetesDeploymentUnavailable
+        exp_alerts: []
+      - eval_time: 190m
+        alertname: LlmResidentDeploymentUnavailable
+        exp_alerts:
+          - exp_labels: {severity: critical, area: kubernetes, workload_class: gpu-llm, namespace: llm, deployment: qwen38-flash-next-head}
+            exp_annotations:
+              summary: "LLM resident deployment unavailable"
+              description: "llm/qwen38-flash-next-head is still unavailable after 2 hours; inspect GPU scheduling, model startup and the compute profile (gpu-arbiter-state)."
+  - interval: 10m
+    name: el worker de dgx3 (ventana creativa) tampoco dispara la genérica
+    input_series:
+      - series: 'kube_deployment_spec_replicas{namespace="llm",deployment="qwen38-flash-next-worker-dgx3"}'
+        values: '1x40'
+      - series: 'kube_deployment_status_replicas_available{namespace="llm",deployment="qwen38-flash-next-worker-dgx3"}'
+        values: '0x40'
+    alert_rule_test:
+      - eval_time: 190m
+        alertname: KubernetesDeploymentUnavailable
+        exp_alerts: []
+  - interval: 10m
+    name: un deployment normal (skirmshop/picker) sin réplica sigue disparando a los 15 min
+    input_series:
+      - series: 'kube_deployment_spec_replicas{namespace="skirmshop",deployment="picker"}'
+        values: '1x10'
+      - series: 'kube_deployment_status_replicas_available{namespace="skirmshop",deployment="picker"}'
+        values: '0x10'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: KubernetesDeploymentUnavailable
+        exp_alerts: []
+      - eval_time: 30m
+        alertname: KubernetesDeploymentUnavailable
+        exp_alerts:
+          - exp_labels: {severity: critical, area: kubernetes, namespace: skirmshop, deployment: picker}
+            exp_annotations:
+              summary: "Deployment unavailable"
+              description: "skirmshop/picker has fewer available replicas than desired."

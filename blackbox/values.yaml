@@ -2,9 +2,14 @@ fullnameOverride: blackbox-exporter
 
 config:
   modules:
+    # Timeout 8s (SC-2977): a 5s timeout equals the resolver's 5s retry window, so every
+    # DNS stall (CoreDNS conntrack race) failed the probe outright — bursts of false
+    # AffiliateAppPublicDown/CRIT from stalls, not outages. 8s absorbs the retry and still
+    # fits the 10s scrapeTimeout of every VMProbe; a real failure fails at 8s and the >3m
+    # alert rules are unchanged.
     http_alive:
       prober: http
-      timeout: 5s
+      timeout: 8s
       http:
         valid_http_versions: ["HTTP/1.1", "HTTP/2.0"]
         valid_status_codes: [200, 204, 301, 302, 401, 403]
@@ -12,7 +17,7 @@ config:
         preferred_ip_protocol: ip4
     http_alive_tls:
       prober: http
-      timeout: 5s
+      timeout: 8s
       http:
         valid_http_versions: ["HTTP/1.1", "HTTP/2.0"]
         valid_status_codes: [200, 204, 301, 302, 401, 403]
@@ -21,7 +26,7 @@ config:
         preferred_ip_protocol: ip4
     http_alive_tls_no_redirect:
       prober: http
-      timeout: 5s
+      timeout: 8s
       http:
         valid_http_versions: ["HTTP/1.1", "HTTP/2.0"]
         valid_status_codes: [200, 204, 301, 302, 401, 403]
