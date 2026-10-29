@@ -1268,7 +1268,14 @@ spec:
           #     dist resets caused by a restarted/crashlooping broker are
           #     expected (validated: the 2026-07-05 05:37Z pod-2 container
           #     restart produced dist resets on all pods but zero Mnesia events
-          #     in Loki, and is correctly gated out).
+          #     in Loki, and is correctly gated out). The 15m gate compares the
+          #     flap's OWN sample timestamp against the newest container start
+          #     (+900s), not time(): kube_pod_container_state_started lags a
+          #     few minutes behind a pod recreation (kube-state-metrics), and
+          #     the old time()-based gate read the stale pre-delete start time
+          #     during that window, so the 2026-10-29 02:03Z planned pod-2
+          #     recreation latched a false flap 20s "after" the new container
+          #     start and fired for 24h on a healthy cluster (SC-2942).
           #   * scrapes are currently healthy (>0.9) — while a blackout is
           #     still live, RabbitmqNodeScrapeBlackout/ClusterSizeBelowExpected
           #     already page; this alert owns the deceptive "everything looks
@@ -1299,17 +1306,13 @@ spec:
                       )
                     ) > bool 0
                   )
-                  *
-                  (
-                    (
-                      time() - max(kube_pod_container_state_started{namespace="databases",pod=~"shared-rabbitmq-.*",container="rabbitmq"})
-                    ) > bool 900
-                  )
                   == 1
                 )[24h:2m]
               )
               >
-              max(kube_pod_container_state_started{namespace="databases",pod=~"shared-rabbitmq-.*",container="rabbitmq"})
+              (
+                max(kube_pod_container_state_started{namespace="databases",pod=~"shared-rabbitmq-.*",container="rabbitmq"}) + 900
+              )
             )
             and on ()
             (
