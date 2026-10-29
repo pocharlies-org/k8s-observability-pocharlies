@@ -547,7 +547,10 @@ spec:
       # concurrencyPolicy Forbid, TODAS las ejecuciones siguientes se saltarían en
       # silencio. El peor fallo posible: dejar de sincronizar sin que nadie se entere.
       activeDeadlineSeconds: 1800
-      ttlSecondsAfterFinished: 86400
+      # Sin ttlSecondsAfterFinished a propósito (SC-3053): con 86400 los Jobs fallidos
+      # y sus logs desaparecían a las 24 h, antes de que ops-watch abriera la Request,
+      # y el RCA no tenía de dónde salir. El tope real lo ponen los history limits de
+      # arriba (1 con éxito, 3 fallidos), que acotan igual el tamaño.
       template:
         metadata:
           labels:
