@@ -2598,13 +2598,24 @@ spec:
           # ~6 h caídos sin aviso. Las reglas del chart no saltaron: NodeFilesystemSpaceFillingUp
           # exige <15 % libre Y quedarse a 0 en 24 h, y AlmostOutOfSpace avisa por debajo
           # del 5 %, que es justo donde el kubelet ya desaloja.
-          # Dos ramas, el valor de ambas es el % libre:
-          #   1. menos del 20 % libre;
-          #   2. al ritmo de las últimas 6 h (predict_linear) se llenaría en 3 días.
-          # El `and on(pod)` con kube_pod_info limita la regla a los nodos del matcher
-          # `node` (las series de node-exporter no traen label de nodo; patrón de
-          # pocharlies-node-memory). Los Sparks no entran. Para vigilar otro nodo,
-          # añadirlo al regex.
+          # Dos regímenes, el valor de ambos es el % libre (INFRA-1025, 29-10):
+          #   1. ubuntu, sauvage, ks5-cp-*, alphalink y atlantic: menos del 20 %
+          #      libre, o al ritmo de las últimas 6 h (predict_linear) se llena en
+          #      3 días;
+          #   2. dgx3: bajo 100 GiB libres (umbral absoluto), o se llena en 3 días
+          #      por predicción.
+          # El `and on(pod)` con kube_pod_info limita cada régimen a los nodos del
+          # matcher `node` (las series de node-exporter no traen label de nodo;
+          # patrón de pocharlies-node-memory).
+          # El 20 % fijo no vale para dgx3 (SC-3062): su disco de datos es de 916G y
+          # el 27-10 medía 168 GiB libres ≈ 18 % con el nodo sano; el umbral de
+          # eviction del kubelet es ~46G ≈ 5 %. Con el 20 % saltaría en falso cada
+          # día; con los 100 GiB absolutos avisa con margen antes del desalojo (la
+          # lane vllm worker-dgx3 se desalojó 12 veces sin aviso por este hueco).
+          # ks5-cp-*, alphalink y atlantic entran por INFRA-1006 (el image-GC llenó
+          # el disco de ks5-cp-3 sin aviso) y por el encargo de SC-3062. Ojo:
+          # alphalink estaba a ~14 % libre (10 GiB) el 29-10 — la alerta saltará al
+          # desplegar esto, y es un problema real, no ruido.
           # SC-2986 (25-10). El `/` de sauvage (md3, 3,9T) bajó de ~1 TB libre y sólo
           # avisó el KubePersistentVolumeFillingUp del PVC skirmshop-drive-mirror: su
           # estadística es el fs de atrás, o sea el `/` entero de sauvage, así que el
@@ -2613,22 +2624,40 @@ spec:
           # >80 % usado y Sauvage estaba a ~73 %; NodeDiskPressure exige disk-pressure,
           # que es tarde. Sauvage entra porque es el hub de backups: /srv/minio/data
           # (velero-backups, harbor-blobs, cnpg-backups) es lo que llena ese disco.
-          # alphalink (~15 % libre el 28-10) sigue sin vigilar: añadirlo al regex es
-          # decisión de quien oiga el crítico, porque saltaría el mismo día.
           expr: |
             (
               (
-                (node_filesystem_avail_bytes{job="node-exporter",mountpoint="/",fstype!~"tmpfs|overlay"} / node_filesystem_size_bytes{job="node-exporter",mountpoint="/",fstype!~"tmpfs|overlay"} * 100) < 20
+                (
+                  (node_filesystem_avail_bytes{job="node-exporter",mountpoint="/",fstype!~"tmpfs|overlay"} / node_filesystem_size_bytes{job="node-exporter",mountpoint="/",fstype!~"tmpfs|overlay"} * 100) < 20
+                )
+                or
+                (
+                  (node_filesystem_avail_bytes{job="node-exporter",mountpoint="/",fstype!~"tmpfs|overlay"} / node_filesystem_size_bytes{job="node-exporter",mountpoint="/",fstype!~"tmpfs|overlay"} * 100)
+                  and
+                  (predict_linear(node_filesystem_avail_bytes{job="node-exporter",mountpoint="/",fstype!~"tmpfs|overlay"}[6h], 3 * 86400) < 0)
+                )
               )
-              or
-              (
-                (node_filesystem_avail_bytes{job="node-exporter",mountpoint="/",fstype!~"tmpfs|overlay"} / node_filesystem_size_bytes{job="node-exporter",mountpoint="/",fstype!~"tmpfs|overlay"} * 100)
-                and
-                (predict_linear(node_filesystem_avail_bytes{job="node-exporter",mountpoint="/",fstype!~"tmpfs|overlay"}[6h], 3 * 86400) < 0)
-              )
+              and on(pod)
+              kube_pod_info{namespace="monitoring", pod=~"vm-prometheus-node-exporter-.*", node=~"ubuntu|sauvage|ks5-cp-.*|alphalink|atlantic"}
             )
-            and on(pod)
-            kube_pod_info{namespace="monitoring", pod=~"vm-prometheus-node-exporter-.*", node=~"ubuntu|sauvage"}
+            or
+            (
+              (
+                (
+                  (node_filesystem_avail_bytes{job="node-exporter",mountpoint="/",fstype!~"tmpfs|overlay"} / node_filesystem_size_bytes{job="node-exporter",mountpoint="/",fstype!~"tmpfs|overlay"} * 100)
+                  and
+                  (node_filesystem_avail_bytes{job="node-exporter",mountpoint="/",fstype!~"tmpfs|overlay"} < 107374182400)
+                )
+                or
+                (
+                  (node_filesystem_avail_bytes{job="node-exporter",mountpoint="/",fstype!~"tmpfs|overlay"} / node_filesystem_size_bytes{job="node-exporter",mountpoint="/",fstype!~"tmpfs|overlay"} * 100)
+                  and
+                  (predict_linear(node_filesystem_avail_bytes{job="node-exporter",mountpoint="/",fstype!~"tmpfs|overlay"}[6h], 3 * 86400) < 0)
+                )
+              )
+              and on(pod)
+              kube_pod_info{namespace="monitoring", pod=~"vm-prometheus-node-exporter-.*", node="dgx3"}
+            )
           for: 30m
           labels:
             severity: critical
@@ -2638,10 +2667,10 @@ spec:
             description: >-
               A / de {{ $labels.instance }} ({{ $labels.device }}) le queda el {{ printf "%.1f" $value }} % libre.
               El nodo: `kubectl get pod -n monitoring {{ $labels.pod }} -o jsonpath='{.spec.nodeName}'`.
-              Salta con menos del 20 % libre o si al ritmo de las últimas 6 h se llena en menos de 3 días.
-              Por debajo del 5 % el kubelet entra en disk-pressure y desaloja pods (el 07-10: AdGuard, el DNS de la LAN).
+              Salta con menos del 20 % libre (en dgx3, bajo 100 GiB libres) o si al ritmo de las últimas 6 h se llena en menos de 3 días.
+              Por debajo del umbral de eviction (~5 %) el kubelet entra en disk-pressure y desaloja pods (el 07-10: AdGuard, el DNS de la LAN; 18/10 y 26/10: la lane vllm de dgx3).
               Mirar qué crece (du por directorio: /var/lib/longhorn, /home, /srv, /tmp) y liberar caché.
-              En sauvage lo que crece es /srv/minio/data (velero-backups, harbor-blobs, cnpg-backups).
+              En sauvage lo que crece es /srv/minio/data (velero-backups, harbor-blobs, cnpg-backups); en dgx3, /srv/creative (checkpoints de entrenamiento).
         - alert: NodeDiskPressure
           # INFRA-849. Backstop independiente del exporter del nodo que se llena.
           # El 07-10 el node-exporter de ubuntu murió con el disco y NodeRootDiskLowOrFilling
