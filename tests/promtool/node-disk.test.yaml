@@ -1,8 +1,9 @@
 # Casos de NodeRootDiskLowOrFilling (promtool test rules, INFRA-623). `rules` la genera
 # tests/test_infra623_node_disk_promtool.py desde la VMRule pocharlies-node-disk.
 # Disco de 1000 GB (1e12 bytes) para que los porcentajes se lean a ojo.
-# El matcher `node` de la regla cubre ubuntu y sauvage (SC-2986): los dos casos que
-# saltan son uno de cada nodo; el Spark (dgx3) comprueba que sigue fuera.
+# El matcher `node` de la regla cubre ubuntu, sauvage, ks5-cp-*, alphalink y atlantic
+# al 20 %, y dgx3 con umbral absoluto de 100 GiB (INFRA-1025): los casos cubren el
+# 20 % de un nodo clásico, el regex nuevo (ks5-cp-3), y los dos lados del umbral de dgx3.
 rule_files:
   - node-disk.rules.yaml
 evaluation_interval: 5m
@@ -26,7 +27,7 @@ tests:
           - exp_labels: {severity: critical, area: capacity, job: node-exporter, mountpoint: "/", fstype: ext4, device: /dev/mapper/ubuntu--vg-ubuntu--lv, instance: "10.42.0.147:9100", pod: vm-prometheus-node-exporter-aaaaa}
             exp_annotations:
               summary: "Disco raíz del nodo (vm-prometheus-node-exporter-aaaaa): poco espacio libre o se llena en menos de 3 días"
-              description: "A / de 10.42.0.147:9100 (/dev/mapper/ubuntu--vg-ubuntu--lv) le queda el 15.0 % libre. El nodo: `kubectl get pod -n monitoring vm-prometheus-node-exporter-aaaaa -o jsonpath='{.spec.nodeName}'`. Salta con menos del 20 % libre o si al ritmo de las últimas 6 h se llena en menos de 3 días. Por debajo del 5 % el kubelet entra en disk-pressure y desaloja pods (el 07-10: AdGuard, el DNS de la LAN). Mirar qué crece (du por directorio: /var/lib/longhorn, /home, /srv, /tmp) y liberar caché. En sauvage lo que crece es /srv/minio/data (velero-backups, harbor-blobs, cnpg-backups)."
+              description: "A / de 10.42.0.147:9100 (/dev/mapper/ubuntu--vg-ubuntu--lv) le queda el 15.0 % libre. El nodo: `kubectl get pod -n monitoring vm-prometheus-node-exporter-aaaaa -o jsonpath='{.spec.nodeName}'`. Salta con menos del 20 % libre (en dgx3, bajo 100 GiB libres) o si al ritmo de las últimas 6 h se llena en menos de 3 días. Por debajo del umbral de eviction (~5 %) el kubelet entra en disk-pressure y desaloja pods (el 07-10: AdGuard, el DNS de la LAN; 18/10 y 26/10: la lane vllm de dgx3). Mirar qué crece (du por directorio: /var/lib/longhorn, /home, /srv, /tmp) y liberar caché. En sauvage lo que crece es /srv/minio/data (velero-backups, harbor-blobs, cnpg-backups); en dgx3, /srv/creative (checkpoints de entrenamiento)."
   - interval: 5m
     name: sauvage (hub de backups), menos del 20 % libre (15 %) -> salta; es el caso del 25-10
     input_series:
@@ -46,7 +47,7 @@ tests:
           - exp_labels: {severity: critical, area: capacity, job: node-exporter, mountpoint: "/", fstype: ext4, device: /dev/md3, instance: "10.42.4.114:9100", pod: vm-prometheus-node-exporter-ccccc}
             exp_annotations:
               summary: "Disco raíz del nodo (vm-prometheus-node-exporter-ccccc): poco espacio libre o se llena en menos de 3 días"
-              description: "A / de 10.42.4.114:9100 (/dev/md3) le queda el 15.0 % libre. El nodo: `kubectl get pod -n monitoring vm-prometheus-node-exporter-ccccc -o jsonpath='{.spec.nodeName}'`. Salta con menos del 20 % libre o si al ritmo de las últimas 6 h se llena en menos de 3 días. Por debajo del 5 % el kubelet entra en disk-pressure y desaloja pods (el 07-10: AdGuard, el DNS de la LAN). Mirar qué crece (du por directorio: /var/lib/longhorn, /home, /srv, /tmp) y liberar caché. En sauvage lo que crece es /srv/minio/data (velero-backups, harbor-blobs, cnpg-backups)."
+              description: "A / de 10.42.4.114:9100 (/dev/md3) le queda el 15.0 % libre. El nodo: `kubectl get pod -n monitoring vm-prometheus-node-exporter-ccccc -o jsonpath='{.spec.nodeName}'`. Salta con menos del 20 % libre (en dgx3, bajo 100 GiB libres) o si al ritmo de las últimas 6 h se llena en menos de 3 días. Por debajo del umbral de eviction (~5 %) el kubelet entra en disk-pressure y desaloja pods (el 07-10: AdGuard, el DNS de la LAN; 18/10 y 26/10: la lane vllm de dgx3). Mirar qué crece (du por directorio: /var/lib/longhorn, /home, /srv, /tmp) y liberar caché. En sauvage lo que crece es /srv/minio/data (velero-backups, harbor-blobs, cnpg-backups); en dgx3, /srv/creative (checkpoints de entrenamiento)."
   - interval: 5m
     name: ubuntu, 50 % libre pero bajando 400 GB/día (se llena en ~1,3 días; a las 9 h quedan 350 GB) -> salta por la predicción
     input_series:
@@ -64,7 +65,7 @@ tests:
           - exp_labels: {severity: critical, area: capacity, job: node-exporter, mountpoint: "/", fstype: ext4, device: /dev/mapper/ubuntu--vg-ubuntu--lv, instance: "10.42.0.147:9100", pod: vm-prometheus-node-exporter-aaaaa}
             exp_annotations:
               summary: "Disco raíz del nodo (vm-prometheus-node-exporter-aaaaa): poco espacio libre o se llena en menos de 3 días"
-              description: "A / de 10.42.0.147:9100 (/dev/mapper/ubuntu--vg-ubuntu--lv) le queda el 35.0 % libre. El nodo: `kubectl get pod -n monitoring vm-prometheus-node-exporter-aaaaa -o jsonpath='{.spec.nodeName}'`. Salta con menos del 20 % libre o si al ritmo de las últimas 6 h se llena en menos de 3 días. Por debajo del 5 % el kubelet entra en disk-pressure y desaloja pods (el 07-10: AdGuard, el DNS de la LAN). Mirar qué crece (du por directorio: /var/lib/longhorn, /home, /srv, /tmp) y liberar caché. En sauvage lo que crece es /srv/minio/data (velero-backups, harbor-blobs, cnpg-backups)."
+              description: "A / de 10.42.0.147:9100 (/dev/mapper/ubuntu--vg-ubuntu--lv) le queda el 35.0 % libre. El nodo: `kubectl get pod -n monitoring vm-prometheus-node-exporter-aaaaa -o jsonpath='{.spec.nodeName}'`. Salta con menos del 20 % libre (en dgx3, bajo 100 GiB libres) o si al ritmo de las últimas 6 h se llena en menos de 3 días. Por debajo del umbral de eviction (~5 %) el kubelet entra en disk-pressure y desaloja pods (el 07-10: AdGuard, el DNS de la LAN; 18/10 y 26/10: la lane vllm de dgx3). Mirar qué crece (du por directorio: /var/lib/longhorn, /home, /srv, /tmp) y liberar caché. En sauvage lo que crece es /srv/minio/data (velero-backups, harbor-blobs, cnpg-backups); en dgx3, /srv/creative (checkpoints de entrenamiento)."
   - interval: 5m
     name: ubuntu, 30 % libre goteando 30 GB/día (se llenaría en ~10 días) -> no salta
     input_series:
@@ -79,11 +80,31 @@ tests:
         alertname: NodeRootDiskLowOrFilling
         exp_alerts: []
   - interval: 5m
-    name: Spark (dgx3), fuera del matcher, con el 5 % libre -> no salta
+    name: dgx3, 5 % libre (50 GB de 916G reales) -> salta por el umbral absoluto de 100 GiB
     input_series:
-      - series: 'node_filesystem_avail_bytes{job="node-exporter",mountpoint="/",fstype="ext4",device="/dev/nvme0n1p2",instance="10.42.1.173:9100",pod="vm-prometheus-node-exporter-bbbbb"}'
+      - series: 'node_filesystem_avail_bytes{job="node-exporter",mountpoint="/",fstype="ext4",device="/dev/nvme0n1p2",instance="10.42.7.110:9100",pod="vm-prometheus-node-exporter-bbbbb"}'
         values: '50000000000x20'
-      - series: 'node_filesystem_size_bytes{job="node-exporter",mountpoint="/",fstype="ext4",device="/dev/nvme0n1p2",instance="10.42.1.173:9100",pod="vm-prometheus-node-exporter-bbbbb"}'
+      - series: 'node_filesystem_size_bytes{job="node-exporter",mountpoint="/",fstype="ext4",device="/dev/nvme0n1p2",instance="10.42.7.110:9100",pod="vm-prometheus-node-exporter-bbbbb"}'
+        values: '1000000000000x20'
+      - series: 'kube_pod_info{namespace="monitoring",pod="vm-prometheus-node-exporter-bbbbb",node="dgx3"}'
+        values: '1x20'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: NodeRootDiskLowOrFilling
+        exp_alerts: []
+      - eval_time: 40m
+        alertname: NodeRootDiskLowOrFilling
+        exp_alerts:
+          - exp_labels: {severity: critical, area: capacity, job: node-exporter, mountpoint: "/", fstype: ext4, device: /dev/nvme0n1p2, instance: "10.42.7.110:9100", pod: vm-prometheus-node-exporter-bbbbb}
+            exp_annotations:
+              summary: "Disco raíz del nodo (vm-prometheus-node-exporter-bbbbb): poco espacio libre o se llena en menos de 3 días"
+              description: "A / de 10.42.7.110:9100 (/dev/nvme0n1p2) le queda el 5.0 % libre. El nodo: `kubectl get pod -n monitoring vm-prometheus-node-exporter-bbbbb -o jsonpath='{.spec.nodeName}'`. Salta con menos del 20 % libre (en dgx3, bajo 100 GiB libres) o si al ritmo de las últimas 6 h se llena en menos de 3 días. Por debajo del umbral de eviction (~5 %) el kubelet entra en disk-pressure y desaloja pods (el 07-10: AdGuard, el DNS de la LAN; 18/10 y 26/10: la lane vllm de dgx3). Mirar qué crece (du por directorio: /var/lib/longhorn, /home, /srv, /tmp) y liberar caché. En sauvage lo que crece es /srv/minio/data (velero-backups, harbor-blobs, cnpg-backups); en dgx3, /srv/creative (checkpoints de entrenamiento)."
+  - interval: 5m
+    name: dgx3 sano medido el 27-10 (18 % libre, 180 GB > 100 GiB) estable -> no salta (el 20 % fijo habría dado falso positivo)
+    input_series:
+      - series: 'node_filesystem_avail_bytes{job="node-exporter",mountpoint="/",fstype="ext4",device="/dev/nvme0n1p2",instance="10.42.7.110:9100",pod="vm-prometheus-node-exporter-bbbbb"}'
+        values: '180000000000x20'
+      - series: 'node_filesystem_size_bytes{job="node-exporter",mountpoint="/",fstype="ext4",device="/dev/nvme0n1p2",instance="10.42.7.110:9100",pod="vm-prometheus-node-exporter-bbbbb"}'
         values: '1000000000000x20'
       - series: 'kube_pod_info{namespace="monitoring",pod="vm-prometheus-node-exporter-bbbbb",node="dgx3"}'
         values: '1x20'
@@ -91,3 +112,23 @@ tests:
       - eval_time: 50m
         alertname: NodeRootDiskLowOrFilling
         exp_alerts: []
+  - interval: 5m
+    name: ks5-cp-3 (control-plane, INFRA-1006), 15 % libre -> salta por el regex nuevo
+    input_series:
+      - series: 'node_filesystem_avail_bytes{job="node-exporter",mountpoint="/",fstype="ext4",device="/dev/md3",instance="10.42.6.103:9100",pod="vm-prometheus-node-exporter-ddddd"}'
+        values: '150000000000x20'
+      - series: 'node_filesystem_size_bytes{job="node-exporter",mountpoint="/",fstype="ext4",device="/dev/md3",instance="10.42.6.103:9100",pod="vm-prometheus-node-exporter-ddddd"}'
+        values: '1000000000000x20'
+      - series: 'kube_pod_info{namespace="monitoring",pod="vm-prometheus-node-exporter-ddddd",node="ks5-cp-3"}'
+        values: '1x20'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: NodeRootDiskLowOrFilling
+        exp_alerts: []
+      - eval_time: 40m
+        alertname: NodeRootDiskLowOrFilling
+        exp_alerts:
+          - exp_labels: {severity: critical, area: capacity, job: node-exporter, mountpoint: "/", fstype: ext4, device: /dev/md3, instance: "10.42.6.103:9100", pod: vm-prometheus-node-exporter-ddddd}
+            exp_annotations:
+              summary: "Disco raíz del nodo (vm-prometheus-node-exporter-ddddd): poco espacio libre o se llena en menos de 3 días"
+              description: "A / de 10.42.6.103:9100 (/dev/md3) le queda el 15.0 % libre. El nodo: `kubectl get pod -n monitoring vm-prometheus-node-exporter-ddddd -o jsonpath='{.spec.nodeName}'`. Salta con menos del 20 % libre (en dgx3, bajo 100 GiB libres) o si al ritmo de las últimas 6 h se llena en menos de 3 días. Por debajo del umbral de eviction (~5 %) el kubelet entra en disk-pressure y desaloja pods (el 07-10: AdGuard, el DNS de la LAN; 18/10 y 26/10: la lane vllm de dgx3). Mirar qué crece (du por directorio: /var/lib/longhorn, /home, /srv, /tmp) y liberar caché. En sauvage lo que crece es /srv/minio/data (velero-backups, harbor-blobs, cnpg-backups); en dgx3, /srv/creative (checkpoints de entrenamiento)."
