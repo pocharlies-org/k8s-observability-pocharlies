@@ -1,0 +1,202 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# INFRA-1031 (SC-3623): evidencia RCA que sobreviva a la retención de 48 h.
+#
+# La Request pedía «retención multi-nivel por prefijo de métrica» con
+# -retentionPeriod. Verificado sobre el binario exacto del clúster
+# (victoriametrics/victoria-metrics:v1.143.0, `--help`): en single-node
+# -retentionPeriod es un periodo ÚNICO para toda la base (multi-nivel no
+# existe; -retentionFilter no está registrado). Subir la global tampoco vale:
+# 62 GB con 48 h sobre un PVC de 100 Gi con 40 Gi libres → 90 días globales
+# no caben (harían falta ~2,8 TB).
+#
+# Decisión (equivalente funcional, coste nulo frente al PVC principal):
+# un vmsingle-rca dedicado con -retentionPeriod=90d y un vmalert-rca que
+# calcula las series rca:* desde el vmsingle principal y las escribe SOLO
+# en el dedicado. rca:* son ~200 series (una por job + 3 agregados):
+# 90 días caben en el PVC de 5 Gi con holgura (cientos de MB).
+#
+# Las rca:* viven en vmsingle-rca, NO en el principal: el RCA se consulta
+# ahí (datasource de Grafana «vmsingle-rca (90 d)» o
+# `kubectl -n monitoring exec deploy/vmsingle-rca -- wget -qO-
+# 'http://127.0.0.1:8428/api/v1/query?query=rca:up:count'`).
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vmalert-rca-rules
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: monitoring
+data:
+  rca.yaml: |
+    groups:
+      - name: rca-signals
+        interval: 30s
+        rules:
+          # Latido del camino: nº de targets con serie `up` viva. Su caída a
+          # (o cerca de) 0 es la huella del hueco vmagent→vmsingle.
+          - record: rca:up:count
+            expr: count(up)
+          # Por job: qué jobs estaban vivos y cuáles no durante el hueco.
+          - record: rca:job_up
+            expr: max by (job) (up)
+          # Cola de remote-write de vmagent: distinguía «vmagent escribiendo
+          # pero vmsingle no acepta» de «vmagent parado» (medido en v1.143.0:
+          # la métrica se llama pending_data_bytes, no packets_pending).
+          - record: rca:remotewrite_pending
+            expr: max(vmagent_remotewrite_pending_data_bytes)
+          # Scrapes fallidos: si el hueco era de targets que no respondían
+          # frente a un camino roto (rca:up:count a 0 con failed a 0 = camino).
+          - record: rca:scrapes_failed
+            expr: sum(increase(vm_promscrape_scrapes_failed_total[5m]))
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: vmsingle-rca
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: vmsingle-rca
+    app.kubernetes.io/part-of: monitoring
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: longhorn
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vmsingle-rca
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: vmsingle-rca
+    app.kubernetes.io/part-of: monitoring
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate  # PVC RWO: nunca dos pods escribiendo la misma TSDB
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: vmsingle-rca
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: vmsingle-rca
+        app.kubernetes.io/part-of: monitoring
+    spec:
+      nodeSelector:
+        node-pool: ks5-nvme
+      containers:
+        - name: vmsingle
+          # Misma versión que el vmsingle principal (verificado en el pod vivo).
+          image: victoriametrics/victoria-metrics:v1.143.0
+          args:
+            - -storageDataPath=/storage
+            - -retentionPeriod=90d
+            - -httpListenAddr=:8428
+          ports:
+            - name: http
+              containerPort: 8428
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          volumeMounts:
+            - name: storage
+              mountPath: /storage
+      volumes:
+        - name: storage
+          persistentVolumeClaim:
+            claimName: vmsingle-rca
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vmsingle-rca
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: vmsingle-rca
+    app.kubernetes.io/part-of: monitoring
+spec:
+  selector:
+    app.kubernetes.io/name: vmsingle-rca
+  ports:
+    - name: http
+      port: 8428
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vmalert-rca
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: vmalert-rca
+    app.kubernetes.io/part-of: monitoring
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: vmalert-rca
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: vmalert-rca
+        app.kubernetes.io/part-of: monitoring
+    spec:
+      nodeSelector:
+        node-pool: ks5-nvme
+      containers:
+        - name: vmalert
+          image: victoriametrics/vmalert:v1.143.0
+          args:
+            # Lee las crudas del vmsingle principal (48 h)…
+            - -datasource.url=http://vmsingle-vm-victoria-metrics-k8s-stack.monitoring.svc.cluster.local:8428
+            # …y escribe las rca:* solo en el de 90 días. Sin -notifier.url:
+            # este vmalert sólo tiene recording rules, no dispara alertas.
+            - -remoteWrite.url=http://vmsingle-rca.monitoring.svc.cluster.local:8428
+            - -rule=/etc/vmalert/rules/*.yaml
+            - -evaluationInterval=30s
+            - -httpListenAddr=:8880
+          ports:
+            - name: http
+              containerPort: 8880
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 128Mi
+          volumeMounts:
+            - name: rules
+              mountPath: /etc/vmalert/rules
+              readOnly: true
+      volumes:
+        - name: rules
+          configMap:
+            name: vmalert-rca-rules
+---
+# Datasource de Grafana para el RCA (el sidecar de Grafana lo recoge por la
+# etiqueta; sin contraseña, no hace falta ExternalSecret como keep-pg).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-datasource-vmsingle-rca
+  namespace: monitoring
+  labels:
+    grafana_datasource: "1"
+data:
+  vmsingle-rca.yaml: |
+    apiVersion: 1
+    datasources:
+      - name: vmsingle-rca (90d)
+        uid: vmsingle-rca
+        type: prometheus
+        access: proxy
+        url: http://vmsingle-rca.monitoring.svc.cluster.local:8428
+        editable: false

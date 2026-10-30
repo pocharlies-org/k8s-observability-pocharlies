@@ -808,3 +808,53 @@ rules:
       El CronJob skirmshop/shopify-picqer-order-audit (diario 02:30) encuentra
       descuadres Shopify/Picqer o completa sin emitir telemetría. Mismo patrón
       que sii-cronjobs: familia de nombre -> un incidente.
+
+  # ---------------------------------------------------------------------------
+  # INFRA-1031 (SC-3623) — hueco del camino de scrape (vmagent→vmsingle)
+  #
+  # El 23/10 un hueco del camino de ≥15 min dejó sin muestras a TODOS los
+  # jobs y las 7 absent() dispararon juntas: Keep montó N incidentes de
+  # «job X ausente» (SC-2923, SC-2934, SC-2937) cuando era UNA avería del
+  # data-plane. Esta regla titula el incidente «camino-de-scrape» y agrupa
+  # dentro las ausencias que sólo dicen «no pude leer» (telemetría ciega):
+  # cert-manager, rabbitmq, keep-backend, aurora, supervisor de la compañía
+  # y la cadena de facturación — ninguna afirma que su servicio esté caído.
+  #
+  # Deliberadamente FUERA: LlmPoolCapabilityUnavailable, SynapseCoreAbsent y
+  # X86Silencioso también significan «el servicio real está caído» — titular
+  # eso «hueco del camino» ocultaría una caída verdadera. Si el simulacro
+  # muestra que estas tres ensucian demasiado el incidente, la inhibición
+  # (vmalert inhibit_rules) es la herramienta, y es decisión de SC-3623.
+  # ---------------------------------------------------------------------------
+  - ruleName: scrape-path-gap
+    celQuery: >-
+      name in ["ScrapePathGap", "VmagentRemoteWriteFailing",
+      "CertManagerCertificateMetricsMissing", "RabbitmqScrapeMissing",
+      "RabbitmqPeersMetricMissing", "KeepBackendAbsent",
+      "AuroraRcaCoverageAbsent", "CompaniaSupervisorSinMetricas",
+      "SkirmbooksInvoicingChainTelemetryMissing"]
+    sqlQuery:
+      sql: "((name in (:name_1, :name_2, :name_3, :name_4, :name_5, :name_6, :name_7, :name_8, :name_9)))"
+      params:
+        name_1: ScrapePathGap
+        name_2: VmagentRemoteWriteFailing
+        name_3: CertManagerCertificateMetricsMissing
+        name_4: RabbitmqScrapeMissing
+        name_5: RabbitmqPeersMetricMissing
+        name_6: KeepBackendAbsent
+        name_7: AuroraRcaCoverageAbsent
+        name_8: CompaniaSupervisorSinMetricas
+        name_9: SkirmbooksInvoicingChainTelemetryMissing
+    timeframeInSeconds: 900
+    timeUnit: minutes
+    groupingCriteria: []
+    createOn: any
+    resolveOn: all_resolved
+    incidentPrefix: SCPATH
+    incidentNameTemplate: "Hueco del camino de scrape (vmagent→vmsingle)"
+    groupDescription: >-
+      El data-plane de monitoring (vmagent→vmsingle) está dejando de escribir:
+      las absent() hermanas son telemetría ciega, no servicios caídos.
+      Diagnóstico por orden: pods de vmagent y vmsingle (OOMKilled, SC-2907),
+      cola de remote-write (rca:remotewrite_pending) y logs en Loki
+      (namespace="monitoring", app="vmagent").
