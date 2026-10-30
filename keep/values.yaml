@@ -851,6 +851,31 @@ backend:
                   - key: severity_drift
                     value: "{{ alert.labels.severity }}"
 
+      - id: claude-cuentas-renovar
+        name: Renovación automática de logins Claude
+        description: >-
+          La vuelta del aviso del monitor x86 (contrato http.claude-cuentas-renovador.v1,
+          x86-host-runtime-pocharlies): cuando el refresh token de un home caduca pronto el monitor
+          emite `ClaudeCuentasRenovar` — antes era un correo pidiendo `/login` — y aquí se ejecuta
+          la renovación: webhook al renovador del x86 (tailnet :8797), que rota el par OAuth del
+          home. Sin `steps` por la regla de arriba (un step que falla corta las acciones en 0.52.1).
+          Si el renovador no puede (el home no tiene refresh token útil), la acción falla, el
+          incidente queda firing y el monitor ya habrá avisado por su canal de humano: eso solo lo
+          arregla un `/login` a mano. El `resolved` lo emite el monitor al volver a `ok`.
+        triggers:
+          - type: alert
+            only_on_change: [status]
+            cel: >-
+              name == "ClaudeCuentasRenovar" && status == "firing"
+        actions:
+          - name: renovar
+            provider:
+              type: webhook
+              config: "{{ providers.claude_renovador }}"
+              with:
+                body:
+                  dir: "{{ alert.labels.dir }}"
+
   env:
     # URL pública del backend, la que el navegador usa. Con el ingress del chart
     # desactivado hay que fijarla: los helpers caerían a /backend.
