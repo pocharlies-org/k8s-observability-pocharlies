@@ -1,0 +1,55 @@
+# SC-3738: casos de KeepIngestionSilent (promtool test rules). `rules` la genera
+# tests/test_sc3738_keep_ingestion_silent_promtool.py desde el grupo keep.hub-health
+# de manifests/rules.yaml. La expr suma el increase sobre las dos réplicas del
+# VMAlertmanager (SC-3711): una sola en silencio (rollout, estado heredado por
+# gossip) NO dispara; arde solo si callan todas.
+rule_files:
+  - keep-hub-health.rules.yaml
+evaluation_interval: 1m
+tests:
+  - interval: 1m
+    name: corte real — las dos réplicas sin notificar durante 30 min dispara
+    input_series:
+      - series: 'alertmanager_notifications_total{integration="webhook",pod="vmalertmanager-0"}'
+        values: '0x60'
+      - series: 'alertmanager_notifications_total{integration="webhook",pod="vmalertmanager-1"}'
+        values: '0x60'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: KeepIngestionSilent
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: KeepIngestionSilent
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              area: availability
+            exp_annotations:
+              summary: "Alertmanager no ha notificado nada a Keep en 30 minutos"
+              description: >-
+                Con Watchdog activo debería haber tráfico constante hacia el webhook. Silencio
+                total sugiere que la ruta no está entregando.
+
+  - interval: 1m
+    name: rollout SC-3711 — una réplica en silencio (contador 0) y la otra notificando no dispara
+    input_series:
+      - series: 'alertmanager_notifications_total{integration="webhook",pod="vmalertmanager-0"}'
+        values: '0x60'
+      - series: 'alertmanager_notifications_total{integration="webhook",pod="vmalertmanager-1"}'
+        values: '0+1x60'
+    alert_rule_test:
+      - eval_time: 45m
+        alertname: KeepIngestionSilent
+        exp_alerts: []
+
+  - interval: 1m
+    name: sano — las dos réplicas notificando no dispara
+    input_series:
+      - series: 'alertmanager_notifications_total{integration="webhook",pod="vmalertmanager-0"}'
+        values: '0+1x60'
+      - series: 'alertmanager_notifications_total{integration="webhook",pod="vmalertmanager-1"}'
+        values: '0+2x60'
+    alert_rule_test:
+      - eval_time: 45m
+        alertname: KeepIngestionSilent
+        exp_alerts: []

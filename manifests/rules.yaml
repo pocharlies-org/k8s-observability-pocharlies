@@ -1886,7 +1886,11 @@ spec:
           # Watchdog llega siempre (antes iba al blackhole, ahora entra a Keep).
           # Si Alertmanager deja de notificar del todo, ni fallos ni éxitos se
           # incrementan: este es el caso que ninguna de las dos anteriores ve.
-          expr: increase(alertmanager_notifications_total{integration="webhook"}[30m]) == 0
+          # SC-3738: el increase se SUMA sobre las réplicas (2 desde SC-3711, con
+          # gossip): sin la suma la expr evaluaba por serie y una sola réplica en
+          # silencio (rollout, estado heredado del cluster) disparaba el incidente
+          # aunque la otra notificara. Con la suma solo arde si callan TODAS.
+          expr: sum(increase(alertmanager_notifications_total{integration="webhook"}[30m])) == 0
           for: 10m
           labels:
             severity: warning
