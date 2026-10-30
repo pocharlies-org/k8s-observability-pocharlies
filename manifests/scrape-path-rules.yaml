@@ -9,7 +9,7 @@
 #
 # Estas reglas dicen «camino roto» en vez de «job X ausente»: el summary lleva
 # literalmente «hueco del camino de scrape» y keep/rules/correlation-rules.yaml
-# (regla scrape-path-gap) agrupa aquí las ausencias de telemetría ciegas.
+# (regla camino-de-scrape) agrupa aquí las ausencias de telemetría ciegas.
 # ─────────────────────────────────────────────────────────────────────────────
 apiVersion: operator.victoriametrics.com/v1beta1
 kind: VMRule

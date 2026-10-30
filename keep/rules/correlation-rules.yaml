@@ -186,7 +186,7 @@ rules:
                  "KubeletInstanceUnreachable", "TargetDown", "BlackboxProbeDown",
                  "ScrapePoolHasNoTargets", "TooManyScrapeErrors", "AlertingRulesError",
                  "TooManyLogs", "LitellmNotReady", "AtlassianMcpToolDown",
-                 # INFRA-1031: el data-plane tiene regla propia (scrape-path-gap,
+                 # INFRA-1031: el data-plane tiene regla propia (camino-de-scrape,
                  # más abajo) — excluidas para no abrir dos incidentes.
                  "ScrapePathGap", "VmagentRemoteWriteFailing"]
       )
@@ -834,7 +834,7 @@ rules:
   # durante el hueco es inhibición (vmalert inhibit_rules), y eso es
   # decisión de SC-3623, no de esta Request.
   # ---------------------------------------------------------------------------
-  - ruleName: scrape-path-gap
+  - ruleName: camino-de-scrape
     celQuery: 'name in ["ScrapePathGap", "VmagentRemoteWriteFailing"]'
     sqlQuery:
       sql: "((name in (:name_1, :name_2)))"
