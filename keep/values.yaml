@@ -860,7 +860,7 @@ backend:
           la renovación: webhook al renovador del x86 (tailnet :8797), que rota el par OAuth del
           home. Sin `steps` por la regla de arriba (un step que falla corta las acciones en 0.52.1).
           Si el renovador no puede (el home no tiene refresh token útil), la acción falla, el
-          incidente queda firing y el monitor ya habrá avisado por Telegram/correo: eso solo lo
+          incidente queda firing y el monitor ya habrá avisado por su canal de humano: eso solo lo
           arregla un `/login` a mano. El `resolved` lo emite el monitor al volver a `ok`.
         triggers:
           - type: alert
