@@ -144,6 +144,18 @@ vmalert:
 alertmanager:
   enabled: true
   spec:
+    # SC-3711 (30-10): el estado de notificacion de Alertmanager (grupos firing
+    # y cola de reintentos a Keep) solo vive en memoria: prom/alertmanager
+    # v0.32.1 no tiene --data.snapshot/--data.restore (verificado sobre el
+    # binario vivo; el PVC guarda silences y notification logs, no ese estado)
+    # y con una replica cada recreacion del pod perdia el resolved de las
+    # alertas ya firing -> Keep dejaba la incidencia acknowledged (SC-3588).
+    # Con 2 replicas el operador habilita el cluster gossip y el estado
+    # sobrevive a la recreacion de un pod; el chart anade ademas el notifier de
+    # la 2a replica a vmalert, asi que la ingesta no depende del pod-0. El caso
+    # "ambas replicas caen a la vez" sigue perdiendo estado: el guard durable
+    # es la reconciliacion Keep<->Alertmanager (decidido en SC-3711).
+    replicaCount: 2
     # Drop the per-config `namespace="monitoring"` entry matcher the
     # operator otherwise injects into the synapse-webhook route. Without
     # this, infra alerts (kube-state/node-exporter carry the AFFECTED
