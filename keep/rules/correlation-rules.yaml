@@ -185,7 +185,10 @@ rules:
                  "KubeStatefulSetReplicasMismatch", "KubernetesStatefulSetUnavailable",
                  "KubeletInstanceUnreachable", "TargetDown", "BlackboxProbeDown",
                  "ScrapePoolHasNoTargets", "TooManyScrapeErrors", "AlertingRulesError",
-                 "TooManyLogs", "LitellmNotReady", "AtlassianMcpToolDown"]
+                 "TooManyLogs", "LitellmNotReady", "AtlassianMcpToolDown",
+                 # INFRA-1031: el data-plane tiene regla propia (scrape-path-gap,
+                 # más abajo) — excluidas para no abrir dos incidentes.
+                 "ScrapePathGap", "VmagentRemoteWriteFailing"]
       )
     sqlQuery:
       sql: "((severity = :severity_1))"
@@ -808,3 +811,46 @@ rules:
       El CronJob skirmshop/shopify-picqer-order-audit (diario 02:30) encuentra
       descuadres Shopify/Picqer o completa sin emitir telemetría. Mismo patrón
       que sii-cronjobs: familia de nombre -> un incidente.
+
+  # ---------------------------------------------------------------------------
+  # INFRA-1031 (SC-3623) — hueco del camino de scrape (vmagent→vmsingle)
+  #
+  # El 23/10 un hueco del camino de ≥15 min dejó sin muestras a TODOS los
+  # jobs y las 7 absent() dispararon juntas: Keep montó N incidentes de
+  # «job X ausente» (SC-2923, SC-2934, SC-2937) cuando era UNA avería del
+  # data-plane. Esta regla pone el incidente que nombra la avería real:
+  # «Hueco del camino de scrape», y excluye sus dos alertas del
+  # critical-safety-net (INVARIANTE 1: la exclusión delega en esta regla).
+  #
+  # Por qué sólo las dos alertas del camino y no también las absent()
+  # hermanas: INFRA-405 (test_infra405_correlation_rules) exige que cada
+  # alerta case con ≤1 regla, y CertManagerCertificateMetricsMissing,
+  # Rabbitmq*, KeepBackendAbsent y AuroraRcaCoverageAbsent ya son propiedad
+  # de synapse-pipeline / keep-hub-degraded / aurora-rca-degraded / el
+  # safety-net. Arrastrarlas aquí rompería el contrato; dejarlas fuera es lo
+  # que permite que el contrato siga valiendo. Durante un hueco real esas
+  # ausencias abrirán además su incidente de dominio (como hoy) — el
+  # SCPATH es el que dice qué es lo que está roto de verdad. Silenciarlas
+  # durante el hueco es inhibición (vmalert inhibit_rules), y eso es
+  # decisión de SC-3623, no de esta Request.
+  # ---------------------------------------------------------------------------
+  - ruleName: scrape-path-gap
+    celQuery: 'name in ["ScrapePathGap", "VmagentRemoteWriteFailing"]'
+    sqlQuery:
+      sql: "((name in (:name_1, :name_2)))"
+      params:
+        name_1: ScrapePathGap
+        name_2: VmagentRemoteWriteFailing
+    timeframeInSeconds: 900
+    timeUnit: minutes
+    groupingCriteria: []
+    createOn: any
+    resolveOn: all_resolved
+    incidentPrefix: SCPATH
+    incidentNameTemplate: "Hueco del camino de scrape (vmagent→vmsingle)"
+    groupDescription: >-
+      El data-plane de monitoring (vmagent→vmsingle) está dejando de escribir:
+      las absent() hermanas son telemetría ciega, no servicios caídos.
+      Diagnóstico por orden: pods de vmagent y vmsingle (OOMKilled, SC-2907),
+      cola de remote-write (rca:remotewrite_pending) y logs en Loki
+      (namespace="monitoring", app="vmagent").

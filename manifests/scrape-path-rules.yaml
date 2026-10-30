@@ -1,0 +1,74 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# INFRA-1031 (SC-3623): auto-monitoreo del camino de scrape (vmagent→vmsingle).
+#
+# El 23/10 hubo TRES tormentas simultáneas de absent() (SC-2923 15:02,
+# SC-2934 ~20:11, SC-2937 22:30 UTC): un hueco del camino de ≥15 min deja sin
+# muestras a TODOS los jobs y las 7 reglas absent() disparan juntas — Keep las
+# vendía como N caídas independientes cuando era UNA avería del data-plane.
+# Ningún servicio real había caído y ninguna instancia pudo tener RCA.
+#
+# Estas reglas dicen «camino roto» en vez de «job X ausente»: el summary lleva
+# literalmente «hueco del camino de scrape» y keep/rules/correlation-rules.yaml
+# (regla scrape-path-gap) agrupa aquí las ausencias de telemetría ciegas.
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMRule
+metadata:
+  name: scrape-path
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: monitoring
+spec:
+  groups:
+    - name: scrape-path
+      rules:
+        - alert: ScrapePathGap
+          # count(up) es el latido del camino: si vmagent deja de escribir
+          # (OOMKilled, nodo caído, remote-write bloqueado), las series `up`
+          # quedan vacías tras la ventana de lookback (~5 min) y esto cae a 0.
+          # El `or vector(0)` de la izquierda es imprescindible: en un hueco
+          # TOTAL el lado izquierdo es vacío y una comparación con lado vacío
+          # NO dispara — justo lo que hay que cazar. La derecha se deja sin
+          # guarda a propósito: count() sobre series vacías devuelve vacío, así
+          # que en un arranque en frío (offset 1h sin datos) la comparación
+          # queda vacía y la alerta no se dispara sin histórico que comparar.
+          expr: |
+            (count(up) or vector(0)) <= 0.5 * count(up offset 1h)
+          for: 5m
+          labels:
+            severity: critical
+            area: monitoring
+          annotations:
+            summary: "Hueco del camino de scrape (vmagent→vmsingle): count(up) cae ≥50 % respecto a 1h antes"
+            description: >-
+              NO son N servicios caídos: el camino de scrape
+              (vmagent→vmsingle) está dejando sin muestras a todos los jobs,
+              y las absent() que disparan a la vez son telemetría ciega, no
+              caídas. Antes de tocar ningún servicio, mira el camino:
+              `kubectl -n monitoring get pods -l
+              app.kubernetes.io/name=vmagent` y el estado de vmsingle
+              (OOMKilled — SC-2907), y los logs en Loki
+              (namespace="monitoring").
+
+        - alert: VmagentRemoteWriteFailing
+          # Nombres de métrica MEDIDOS sobre v1.143.0: no existe
+          # vmagent_remotewrite_packets_pending (así venía pedida en la
+          # Request); las reales son vmagent_remotewrite_errors_total y
+          # vmagent_remotewrite_pending_data_bytes. for: 10m descarta el
+          # bloque en vuelo normal (pending > 0 transitorio es lo habitual).
+          expr: |
+            increase(vmagent_remotewrite_errors_total[10m]) > 0
+            or
+            vmagent_remotewrite_pending_data_bytes > 0
+          for: 10m
+          labels:
+            severity: critical
+            area: monitoring
+          annotations:
+            summary: "vmagent no consigue escribir en vmsingle: errores de remote-write o backlog sostenido"
+            description: >-
+              vmagent acumula errores de remote-write o cola pendiente
+              (pending_data_bytes > 0) durante 10 min: el camino se está
+              atascando ANTES de quedarse vacío del todo (ScrapePathGap).
+              Comprueba vmsingle (memoria/OOM) y los logs de vmagent en
+              Loki (namespace="monitoring", app="vmagent").

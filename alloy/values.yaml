@@ -39,6 +39,19 @@ alloy:
           source_labels = ["__meta_kubernetes_pod_label_app"]
           target_label  = "app"
         }
+        // INFRA-1031: los pods gestionados por operadores (vmagent, vmsingle,
+        // vmalert, …) no traen etiqueta `app`, sólo `app.kubernetes.io/name`,
+        // y sus logs llegaban a Loki sin `app` — el data-plane de monitoring
+        // no era consultable por componente. Fallback: `app` sólo cuando está
+        // vacío (el regex ";(.+)" exige primero el separador, o sea source
+        // `app` vacío y name no vacío), así que ningún stream existente cambia
+        // de valor.
+        rule {
+          source_labels = ["__meta_kubernetes_pod_label_app", "__meta_kubernetes_pod_label_app_kubernetes_io_name"]
+          regex         = ";(.+)"
+          target_label  = "app"
+          replacement   = "$1"
+        }
         rule {
           target_label = "cluster"
           replacement  = "k3s-lan"
