@@ -185,7 +185,10 @@ rules:
                  "KubeStatefulSetReplicasMismatch", "KubernetesStatefulSetUnavailable",
                  "KubeletInstanceUnreachable", "TargetDown", "BlackboxProbeDown",
                  "ScrapePoolHasNoTargets", "TooManyScrapeErrors", "AlertingRulesError",
-                 "TooManyLogs", "LitellmNotReady", "AtlassianMcpToolDown"]
+                 "TooManyLogs", "LitellmNotReady", "AtlassianMcpToolDown",
+                 # INFRA-1031: el data-plane tiene regla propia (scrape-path-gap,
+                 # más abajo) — excluidas para no abrir dos incidentes.
+                 "ScrapePathGap", "VmagentRemoteWriteFailing"]
       )
     sqlQuery:
       sql: "((severity = :severity_1))"
@@ -815,36 +818,29 @@ rules:
   # El 23/10 un hueco del camino de ≥15 min dejó sin muestras a TODOS los
   # jobs y las 7 absent() dispararon juntas: Keep montó N incidentes de
   # «job X ausente» (SC-2923, SC-2934, SC-2937) cuando era UNA avería del
-  # data-plane. Esta regla titula el incidente «camino-de-scrape» y agrupa
-  # dentro las ausencias que sólo dicen «no pude leer» (telemetría ciega):
-  # cert-manager, rabbitmq, keep-backend, aurora, supervisor de la compañía
-  # y la cadena de facturación — ninguna afirma que su servicio esté caído.
+  # data-plane. Esta regla pone el incidente que nombra la avería real:
+  # «Hueco del camino de scrape», y excluye sus dos alertas del
+  # critical-safety-net (INVARIANTE 1: la exclusión delega en esta regla).
   #
-  # Deliberadamente FUERA: LlmPoolCapabilityUnavailable, SynapseCoreAbsent y
-  # X86Silencioso también significan «el servicio real está caído» — titular
-  # eso «hueco del camino» ocultaría una caída verdadera. Si el simulacro
-  # muestra que estas tres ensucian demasiado el incidente, la inhibición
-  # (vmalert inhibit_rules) es la herramienta, y es decisión de SC-3623.
+  # Por qué sólo las dos alertas del camino y no también las absent()
+  # hermanas: INFRA-405 (test_infra405_correlation_rules) exige que cada
+  # alerta case con ≤1 regla, y CertManagerCertificateMetricsMissing,
+  # Rabbitmq*, KeepBackendAbsent y AuroraRcaCoverageAbsent ya son propiedad
+  # de synapse-pipeline / keep-hub-degraded / aurora-rca-degraded / el
+  # safety-net. Arrastrarlas aquí rompería el contrato; dejarlas fuera es lo
+  # que permite que el contrato siga valiendo. Durante un hueco real esas
+  # ausencias abrirán además su incidente de dominio (como hoy) — el
+  # SCPATH es el que dice qué es lo que está roto de verdad. Silenciarlas
+  # durante el hueco es inhibición (vmalert inhibit_rules), y eso es
+  # decisión de SC-3623, no de esta Request.
   # ---------------------------------------------------------------------------
   - ruleName: scrape-path-gap
-    celQuery: >-
-      name in ["ScrapePathGap", "VmagentRemoteWriteFailing",
-      "CertManagerCertificateMetricsMissing", "RabbitmqScrapeMissing",
-      "RabbitmqPeersMetricMissing", "KeepBackendAbsent",
-      "AuroraRcaCoverageAbsent", "CompaniaSupervisorSinMetricas",
-      "SkirmbooksInvoicingChainTelemetryMissing"]
+    celQuery: 'name in ["ScrapePathGap", "VmagentRemoteWriteFailing"]'
     sqlQuery:
-      sql: "((name in (:name_1, :name_2, :name_3, :name_4, :name_5, :name_6, :name_7, :name_8, :name_9)))"
+      sql: "((name in (:name_1, :name_2)))"
       params:
         name_1: ScrapePathGap
         name_2: VmagentRemoteWriteFailing
-        name_3: CertManagerCertificateMetricsMissing
-        name_4: RabbitmqScrapeMissing
-        name_5: RabbitmqPeersMetricMissing
-        name_6: KeepBackendAbsent
-        name_7: AuroraRcaCoverageAbsent
-        name_8: CompaniaSupervisorSinMetricas
-        name_9: SkirmbooksInvoicingChainTelemetryMissing
     timeframeInSeconds: 900
     timeUnit: minutes
     groupingCriteria: []
