@@ -1,0 +1,66 @@
+# SC-2938: RabbitmqScrapeMissing y RabbitmqPeersMetricMissing solo arden si vmagent sirve.
+# Testigo: count(vm_promscrape_active_scrapers) > 0 (medido en v1.143.0: 23 series con vmagent vivo,
+# 0 con el pod parado). Caso 1 es el único que dispara; 2 y 3 son los que el RCA pedía que callaran.
+rule_files:
+  - rabbit-scrape.rules.yaml
+evaluation_interval: 1m
+tests:
+  - interval: 1m
+    name: "vmagent sirve y RabbitMQ no tiene identity - dispara tras el for de 5 min"
+    input_series:
+      - series: 'vm_promscrape_active_scrapers{job="vmagent-vm-victoria-metrics-k8s-stack",type="azure_sd_configs"}'
+        values: '1x20'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: RabbitmqScrapeMissing
+        exp_alerts: []
+      - eval_time: 7m
+        alertname: RabbitmqScrapeMissing
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              area: messaging
+              component: shared-rabbitmq
+            exp_annotations:
+              summary: "RabbitMQ broker metrics are missing"
+              description: "No rabbitmq_identity_info series for shared-rabbitmq for 5m. The broker scrape (manifests/rabbitmq-scrape.yaml) is failing or the broker is down. All other RabbitMQ alerts are blind until this is fixed."
+  - interval: 1m
+    name: "vmagent parado (sin testigo) y sin identity - NO dispara (incidente 30-10 22:42-23:02)"
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: RabbitmqScrapeMissing
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: RabbitmqPeersMetricMissing
+        exp_alerts: []
+  - interval: 1m
+    name: "vmagent sirve y el broker tiene identity - silencio"
+    input_series:
+      - series: 'vm_promscrape_active_scrapers{job="vmagent-vm-victoria-metrics-k8s-stack",type="azure_sd_configs"}'
+        values: '1x20'
+      - series: 'rabbitmq_identity_info{job="shared-rabbitmq",rabbitmq_node="rabbit@shared-rabbitmq-0.shared-rabbitmq-headless.databases.svc.cluster.local"}'
+        values: '1x20'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: RabbitmqScrapeMissing
+        exp_alerts: []
+  - interval: 1m
+    name: "vmagent sirve y falta rabbitmq_unreachable_cluster_peers_count mas de 15 min - dispara RabbitmqPeersMetricMissing"
+    input_series:
+      - series: 'vm_promscrape_active_scrapers{job="vmagent-vm-victoria-metrics-k8s-stack",type="azure_sd_configs"}'
+        values: '1x25'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: RabbitmqPeersMetricMissing
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: RabbitmqPeersMetricMissing
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              area: messaging
+              component: shared-rabbitmq
+              namespace: databases
+            exp_annotations:
+              summary: "rabbitmq_unreachable_cluster_peers_count has been absent >15m — partition detection is blind"
+              description: "The metric backing RabbitmqClusterPartition no longer exists in VM. Check the VMServiceScrape shared-rabbitmq (manifests/rabbitmq-scrape.yaml) and the broker prometheus plugin (port 15692)."
