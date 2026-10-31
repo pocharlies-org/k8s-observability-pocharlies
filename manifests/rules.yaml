@@ -1010,8 +1010,12 @@ spec:
         - alert: RabbitmqScrapeMissing
           # The broker scrape itself is gone. Without this the whole rule set
           # is silently blind — which is precisely how the incident happened.
+          # SC-2938: only when vmagent is serving. If the scraper itself is down
+          # (rollout, drill) this absent() fires with RabbitMQ healthy; that gap
+          # is ScrapePathGap's (scrape-path-rules.yaml), not a broker outage.
           expr: |
             absent(rabbitmq_identity_info{rabbitmq_node=~".*shared-rabbitmq.*"})
+              and on() (count(vm_promscrape_active_scrapers) > 0)
           for: 5m
           labels:
             severity: critical
@@ -1358,7 +1362,8 @@ spec:
           # disappears (plugin/scrape regression), that alert goes silently
           # blind. Critical, not warning, so it rides the default route
           # (precedent: RabbitmqScrapeMissing is critical for the same reason).
-          expr: absent(rabbitmq_unreachable_cluster_peers_count{namespace="databases"})
+          # SC-2938: same guard as RabbitmqScrapeMissing (it reads the same scrape).
+          expr: absent(rabbitmq_unreachable_cluster_peers_count{namespace="databases"}) and on() (count(vm_promscrape_active_scrapers) > 0)
           for: 15m
           labels:
             severity: critical
