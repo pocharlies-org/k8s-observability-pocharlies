@@ -47,8 +47,23 @@ jobs:
         run: |
           python -m unittest discover -s tests -v
 
+  # SC-3821: el motor de Keep evalúa cada celQuery con celpy; una expresión
+  # inválida (p. ej. un comentario `#` dentro del bloque, INFRA-1031) sólo
+  # reventaba en el Job de apply contra POST/PUT /rules. Se compila aquí.
+  cel-queries:
+    runs-on: arc-k8s
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Compile Keep celQuery with cel-python
+        run: |
+          pip install -q cel-python pyyaml
+          python scripts/verify-cel-queries.py
+
   standard:
-    needs: [tests]
+    needs: [tests, cel-queries]
     uses: pocharlies-org/k8s-gitops-pocharlies/.github/workflows/reusable-ci.yml@main
     with:
       runner: arc-k8s
