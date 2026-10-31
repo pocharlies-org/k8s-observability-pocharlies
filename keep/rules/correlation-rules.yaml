@@ -168,6 +168,8 @@ rules:
   # sin servicio ni payload propio — CRIT-7501/7507/7509/7528/7536/7539 eran todos
   # el mismo LitellmNotReady duplicando su «Plano LLM degradado» de llm-plane.
   # La cobertura la sigue dando llm-plane (ver verify-notification-coverage.py).
+  # INFRA-1031: ScrapePathGap y VmagentRemoteWriteFailing tienen regla propia
+  # (camino-de-scrape, más abajo) y se excluyen aquí para no abrir dos incidentes.
   - ruleName: critical-safety-net
     celQuery: >-
       (severity == "critical" || labels.severity == "page") && !(
@@ -186,8 +188,6 @@ rules:
                  "KubeletInstanceUnreachable", "TargetDown", "BlackboxProbeDown",
                  "ScrapePoolHasNoTargets", "TooManyScrapeErrors", "AlertingRulesError",
                  "TooManyLogs", "LitellmNotReady", "AtlassianMcpToolDown",
-                 # INFRA-1031: el data-plane tiene regla propia (camino-de-scrape,
-                 # más abajo) — excluidas para no abrir dos incidentes.
                  "ScrapePathGap", "VmagentRemoteWriteFailing"]
       )
     sqlQuery:
