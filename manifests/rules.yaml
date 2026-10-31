@@ -1760,10 +1760,20 @@ spec:
           # negativo (> 0 no devuelve nada porque ahora no hay fallos recientes).
           # >= 2 en 30m (INFRA-882): un fallo suelto ya lo explica el ops-explainer en
           # el topic Infra; aquí, el workflow que falla de forma repetida.
+          # SC-2938 (guarda de pipeline para increase()): con el vmagent de 1 replica,
+          # tras un corte del scrape la serie renace y VictoriaMetrics lee el primer
+          # punto como arranque desde 0 — increase() fabrica el salto (medido 30-10 y
+          # 31-10: esta alerta ardió con el contador plano y 0 fallos en la BD). El
+          # testigo «vmagent vivo» no basta: al arder, vmagent ya volvió; se exige que
+          # el testigo lleve TODA la ventana presente (60 muestras a 30s). Sin hueco
+          # reciente el increase es real; durante el hueco manda ScrapePathGap.
           expr: |
-            sum by (workflow, tenant) (
-              increase(synapse_engine_workflow_instance_duration_seconds_count{status="failed"}[30m])
-            ) >= 2
+            (
+              sum by (workflow, tenant) (
+                increase(synapse_engine_workflow_instance_duration_seconds_count{status="failed"}[30m])
+              ) >= 2
+            )
+            and on() (min(count_over_time(vm_promscrape_active_scrapers[30m])) >= 60)
           for: 2m
           labels:
             severity: warning
@@ -1782,10 +1792,17 @@ spec:
           # dlq-monitor cuenta lo que drena — como cualquier workload. Cualquier
           # incremento es un contrato roto o un mensaje envenenado, y entra en
           # la misma familia de incidentes SYNW.
+          # SC-2938: misma guarda que la pata engine — el renacimiento de la serie
+          # tras un corte del scrape fabrica el incremento (medido 30-10 23:05Z y
+          # 31-10 01:25Z con el contador plano en 6). Se exige el testigo del
+          # scrape presente toda la ventana (20 muestras a 30s).
           expr: |
-            sum by (tenant, kind) (
-              increase(synapse_dlq_messages_total[10m])
-            ) > 0
+            (
+              sum by (tenant, kind) (
+                increase(synapse_dlq_messages_total[10m])
+              ) > 0
+            )
+            and on() (min(count_over_time(vm_promscrape_active_scrapers[10m])) >= 20)
           for: 1m
           labels:
             severity: warning

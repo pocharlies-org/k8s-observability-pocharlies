@@ -1,0 +1,80 @@
+# SC-2938: SynapseWorkflowFailed (grupo keep.hub-health, dos patas) solo arde si el
+# scrape lleva toda la ventana presente. Testigo: min(count_over_time(vm_promscrape_
+# active_scrapers[ventana])) >= muestras completas (30s: 20 en 10m, 60 en 30m).
+# Intervalo 30s para que la densidad del test iguale la real.
+rule_files:
+  - synapse-workflow.rules.yaml
+evaluation_interval: 30s
+tests:
+  - interval: 30s
+    name: "fallo real de DLQ con scrape continuo - dispara la pata unroutable"
+    input_series:
+      - series: 'vm_promscrape_active_scrapers{job="vmagent-vm-victoria-metrics-k8s-stack",type="azure_sd_configs"}'
+        values: '1x80'
+      - series: 'synapse_dlq_messages_total{job="synapse-adapter-ops-explainer-dlq-monitor",instance="10.42.4.210:9112",tenant="skirmshop",kind="dlq"}'
+        values: '0x31 3x49'
+    alert_rule_test:
+      - eval_time: 14m
+        alertname: SynapseWorkflowFailed
+        exp_alerts: []
+      - eval_time: 18m
+        alertname: SynapseWorkflowFailed
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              area: synapse
+              tenant: skirmshop
+              kind: dlq
+            exp_annotations:
+              summary: "Mensajes dlq de skirmshop entrando en la red de seguridad"
+              description: "El dlq-monitor drenó mensajes nuevos (dlq) en los últimos 10m — dead-letter o routing key sin binding. El detalle está en la tarjeta del ops-explainer y en synapse.dlq_archive."
+  - interval: 30s
+    name: "renacimiento de la serie tras hueco del scrape - NO dispara (fabricación increase)"
+    input_series:
+      - series: 'vm_promscrape_active_scrapers{job="vmagent-vm-victoria-metrics-k8s-stack",type="azure_sd_configs"}'
+        values: '1x11 _x30 1x40'
+      - series: 'synapse_dlq_messages_total{job="synapse-adapter-ops-explainer-dlq-monitor",instance="10.42.4.210:9112",tenant="skirmshop",kind="dlq"}'
+        values: '6x11 _x30 6x40'
+    alert_rule_test:
+      - eval_time: 22m
+        alertname: SynapseWorkflowFailed
+        exp_alerts: []
+      - eval_time: 24m
+        alertname: SynapseWorkflowFailed
+        exp_alerts: []
+  - interval: 30s
+    name: "workflow que falla dos veces con scrape continuo - dispara la pata engine"
+    input_series:
+      - series: 'vm_promscrape_active_scrapers{job="vmagent-vm-victoria-metrics-k8s-stack",type="azure_sd_configs"}'
+        values: '1x100'
+      - series: 'synapse_engine_workflow_instance_duration_seconds_count{job="synapse-engine",status="failed",tenant="skirmshop",workflow="skirmshop.test.workflow"}'
+        values: '2x71 4x30'
+    alert_rule_test:
+      - eval_time: 34m
+        alertname: SynapseWorkflowFailed
+        exp_alerts: []
+      - eval_time: 40m
+        alertname: SynapseWorkflowFailed
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              area: synapse
+              tenant: skirmshop
+              workflow: skirmshop.test.workflow
+            exp_annotations:
+              summary: "Workflow de Synapse fallido: skirmshop.test.workflow"
+              description: "El engine ha finalizado con error el workflow skirmshop.test.workflow (tenant skirmshop) al menos dos veces en los últimos 30 minutos. Detalle en la UI de Synapse; el RCA lo produce Aurora."
+  - interval: 30s
+    name: "hueco del scrape reciente con contador plano - la pata engine calla"
+    input_series:
+      - series: 'vm_promscrape_active_scrapers{job="vmagent-vm-victoria-metrics-k8s-stack",type="azure_sd_configs"}'
+        values: '1x11 _x40 1x40'
+      - series: 'synapse_engine_workflow_instance_duration_seconds_count{job="synapse-engine",status="failed",tenant="skirmshop",workflow="skirmshop.test.workflow"}'
+        values: '2x11 _x40 2x40'
+    alert_rule_test:
+      - eval_time: 27m
+        alertname: SynapseWorkflowFailed
+        exp_alerts: []
+      - eval_time: 30m
+        alertname: SynapseWorkflowFailed
+        exp_alerts: []
