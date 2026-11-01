@@ -1,0 +1,77 @@
+# Casos de la VMRule pocharlies-mac-build-disk (promtool test rules, DGX-1401).
+# El disco de mac-build es un contenedor APFS de 460 GB; los valores se leen a ojo
+# contra el umbral del 90 % de uso y los 46 GB libres. El emisor es el LaunchAgent
+# com.e-dani.disk-metric (push cada 5 min), de ahí el interval. Las anotaciones
+# esperadas son las de la VMRule: si alguien cambia el texto, cambia aquí también.
+rule_files:
+- mac-build-disk.rules.yaml
+evaluation_interval: 5m
+tests:
+- interval: 5m
+  name: sano (74 % de uso, 108 GB libres) -> no salta
+  input_series:
+  - series: mac_build_disk_used_percent{host="mac-build"}
+    values: 74x14
+  - series: mac_build_disk_free_bytes{host="mac-build"}
+    values: 108000000000x14
+  alert_rule_test:
+  - eval_time: 60m
+    alertname: MacBuildDiskLowOrFilling
+    exp_alerts: []
+  - eval_time: 60m
+    alertname: MacBuildDiskMetricStale
+    exp_alerts: []
+- interval: 5m
+  name: 92 % de uso sostenido -> salta pasados los 10 min del `for`
+  input_series:
+  - series: mac_build_disk_used_percent{host="mac-build"}
+    values: 92x14
+  - series: mac_build_disk_free_bytes{host="mac-build"}
+    values: 36000000000x14
+  alert_rule_test:
+  - eval_time: 5m
+    alertname: MacBuildDiskLowOrFilling
+    exp_alerts: []
+  - eval_time: 15m
+    alertname: MacBuildDiskLowOrFilling
+    exp_alerts:
+    - exp_labels: &id001
+        severity: critical
+        area: capacity
+        host: mac-build
+      exp_annotations: &id002
+        summary: 'Disco de mac-build (Mac de compilaciones) al 90 % o más: el entorno de pruebas es lo primero que se rompe'
+        description: 'El contenedor de 460 GB de mac-build pasa del 90 % de uso (o bajo 46 GB libres). Cuando aprieta, el primer damnificado es el entorno de pruebas del Mac: los builds de la CI de pruebas se cortan (INFRA-827) y los simuladores de trabajo dejan de poder escribir (DGX-1392). Liberar en este orden (precedente DGX-1401, 01-11, que devolvió 108 GiB libres): DerivedData, simuladores que no estén en la lista FIJOS de limpieza-xcode.sh (`xcrun simctl list devices`), worktrees terminados de ~/builds, cachés de Xcode/npm/Homebrew y `vm_bundles` de Claude (se redesargan). Comprobar primero que no hay una compilación en curso (`pgrep xcodebuild`).'
+- interval: 5m
+  name: percentual sano pero 40 GB libres -> salta por el backstop absoluto
+  input_series:
+  - series: mac_build_disk_used_percent{host="mac-build"}
+    values: 85x14
+  - series: mac_build_disk_free_bytes{host="mac-build"}
+    values: 40000000000x14
+  alert_rule_test:
+  - eval_time: 15m
+    alertname: MacBuildDiskLowOrFilling
+    exp_alerts:
+    - exp_labels: *id001
+      exp_annotations: *id002
+- interval: 5m
+  name: sin serie (LaunchAgent muerto, Mac apagado) -> ceguera a los 30 min
+  input_series: []
+  alert_rule_test:
+  - eval_time: 20m
+    alertname: MacBuildDiskMetricStale
+    exp_alerts: []
+  - eval_time: 40m
+    alertname: MacBuildDiskMetricStale
+    exp_alerts:
+    - exp_labels:
+        severity: critical
+        area: monitoring
+        host: mac-build
+      exp_annotations:
+        summary: 'mac-build no reporta su disco hace 30 min: la vigilancia de disco está ciega'
+        description: 'VictoriaMetrics no ve `mac_build_disk_used_percent` desde mac-build hace 30 min (el LaunchAgent empuja cada 5 min). Mirar: ¿está el Mac despierto y en el tailnet (`tailscale status` en x86)? ¿`launchctl print gui/$(id -u)/com.e-dani.disk-metric` en mac-build? ¿el push falla? scripts/mac-build-disk-metric.sh deja sus errores en ~/builds/disk-metric.err.log. Reinstalar: scripts/mac-build-disk-alerta-install.sh (dgx-infra).'
+  - eval_time: 40m
+    alertname: MacBuildDiskLowOrFilling
+    exp_alerts: []
