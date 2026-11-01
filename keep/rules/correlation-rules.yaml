@@ -32,9 +32,11 @@
 # excluirlo, se notifica dos veces — molesto, no peligroso: ése es el lado
 # correcto por el que fallar. Keep no tiene prioridades entre reglas.
 #
-# Verificar tras cada cambio:
-#     scripts/verify-notification-coverage.py
-# falla si alguna serie que notifica hoy se quedaría muda.
+# Verificar tras cada cambio (el CI las corre las dos):
+#     scripts/verify-notification-coverage.py  — falla si alguna serie que
+#         notifica hoy se quedaría muda.
+#     scripts/verify-cel-queries.py            — compila cada celQuery con
+#         cel-python, como hace el motor de Keep (celpy).
 # ---------------------------------------------------------------------------
 #
 # Las reglas no se pueden provisionar con el chart (sólo providers, workflows,
