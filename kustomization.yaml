@@ -74,6 +74,9 @@ resources:
   # mismo motivo que arc-scrape.yaml: los scrapes y reglas de plataforma viven en este repo.
   - manifests/frigate-scrape.yaml
   - manifests/frigate-rules.yaml
+  # DGX-1401: alerta del disco de mac-build (off-cluster, series empujadas por su
+  # LaunchAgent com.e-dani.disk-metric — dgx-infra scripts/mac-build-disk-metric.sh).
+  - manifests/mac-build-disk-rules.yaml
   - manifests/dgx-gpu-mem-exporter.yaml
   - manifests/kyverno-policy-exceptions.yaml
   - manifests/dgx-cluster-health-watcher.yaml
