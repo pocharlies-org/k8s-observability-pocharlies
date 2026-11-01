@@ -1,0 +1,81 @@
+# DGX-1401 — disco de mac-build (Mac de compilaciones, off-cluster).
+#
+# Fuente: `mac_build_disk_*` y `mac_build_swap_*` que empuja cada 5 min el LaunchAgent
+# com.e-dani.disk-metric de mac-build (scripts/mac-build-disk-metric.sh en dgx-infra,
+# instalado con scripts/mac-build-disk-alerta-install.sh). El push va a
+# https://vm.lan.e-dani.com/api/v1/import/prometheus: el ingress de VM admite el tailnet
+# directo (manifests/ingressroutes.yaml, prioridad 300) y mac-build está en el tailnet
+# (100.85.61.58). No hay scrape: el Mac no escucha nada, sólo empuja.
+#
+# Contexto: medido el 01-11-2026 con 13 GiB libres (97 % de uso) y ~10 GB de swap; el
+# primer damnificado es el entorno de pruebas del Mac (simuladores, XCUITest — DGX-1392).
+# INFRA-827 y SC-2563 eran la misma presión. El disco se gestionaba sesión a sesión sin
+# umbral: éste es el umbral, con aviso ANTES del 90 %.
+#
+# Enrutado, en dos pasos y los dos hacen falta (como frigate-rules.yaml):
+#   1. Alertmanager: el catch-all `receiver: keep` las entrega a Keep (sin ruta nueva por
+#      alertname; `python3 scripts/alert_routing.py matrix`).
+#   2. Keep solo notifica INCIDENTES: la regla `mac-build-disk` de
+#      keep/rules/correlation-rules.yaml (prefijo MBD) las convierte en incidente. Son
+#      `critical` y `MacBuildDisk` está excluida de `critical-safety-net` para no abrir
+#      dos incidentes por la misma alerta (patrón node-degraded);
+#      tests/test_dgx1401_macbuild_correlation.py lo vigila.
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMRule
+metadata:
+  name: pocharlies-mac-build-disk
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: mac-build
+    app.kubernetes.io/component: alerting
+spec:
+  groups:
+    - name: pocharlies.mac-build-disk
+      rules:
+        # Umbral pedido: aviso antes del 90 % de uso. El `for` de 10 min con push cada
+        # 5 min exige dos lecturas por encima del umbral (anti-espícula: una compilación
+        # puntual no despierta a nadie). El lado `free_bytes` (46 GB ≈ 10 % del
+        # contenedor de 460 GB) es el backstop por si el percentual sale raro: los dos
+        # casan a la vez alrededor del 90 %.
+        - alert: MacBuildDiskLowOrFilling
+          expr: |
+            mac_build_disk_used_percent{host="mac-build"} >= 90
+              or
+            mac_build_disk_free_bytes{host="mac-build"} < 46000000000
+          for: 10m
+          labels:
+            severity: critical
+            area: capacity
+          annotations:
+            summary: "Disco de mac-build (Mac de compilaciones) al 90 % o más: el entorno de pruebas es lo primero que se rompe"
+            description: >-
+              El contenedor de 460 GB de mac-build pasa del 90 % de uso (o bajo 46 GB
+              libres). Cuando aprieta, el primer damnificado es el entorno de pruebas del
+              Mac: los builds de la CI de pruebas se cortan (INFRA-827) y los simuladores
+              de trabajo dejan de poder escribir (DGX-1392). Liberar en este orden
+              (precedente DGX-1401, 01-11, que devolvió 108 GiB libres): DerivedData,
+              simuladores que no estén en la lista FIJOS de limpieza-xcode.sh
+              (`xcrun simctl list devices`), worktrees terminados de ~/builds, cachés de
+              Xcode/npm/Homebrew y `vm_bundles` de Claude (se redesargan). Comprobar
+              primero que no hay una compilación en curso (`pgrep xcodebuild`).
+        # Lección de INFRA-849: la alerta que se queda ciega justo cuando hace falta es
+        # peor que no tener alerta. Si el LaunchAgent de mac-build deja de empujar (Mac
+        # apagado o sin tailnet, script roto, ingress caído), la serie se va y aquí salta
+        # a los 30 min: la vigilancia del disco no puede quedarse muda sola.
+        - alert: MacBuildDiskMetricStale
+          expr: |
+            absent(mac_build_disk_used_percent{host="mac-build"})
+          for: 30m
+          labels:
+            severity: critical
+            area: monitoring
+          annotations:
+            summary: "mac-build no reporta su disco hace 30 min: la vigilancia de disco está ciega"
+            description: >-
+              VictoriaMetrics no ve `mac_build_disk_used_percent` desde mac-build hace
+              30 min (el LaunchAgent empuja cada 5 min). Mirar: ¿está el Mac despierto y
+              en el tailnet (`tailscale status` en x86)? ¿`launchctl print
+              gui/$(id -u)/com.e-dani.disk-metric` en mac-build? ¿el push falla?
+              scripts/mac-build-disk-metric.sh deja sus errores en
+              ~/builds/disk-metric.err.log. Reinstalar:
+              scripts/mac-build-disk-alerta-install.sh (dgx-infra).

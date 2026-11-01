@@ -183,7 +183,7 @@ rules:
         name.startsWith("Rabbitmq") || name.startsWith("Keep") ||
         name.startsWith("Alertmanager") || name.startsWith("SharedValkey") ||
         name.startsWith("SharedDatastore") || name.startsWith("KubeNode") ||
-        name.startsWith("Node") ||
+        name.startsWith("Node") || name.startsWith("MacBuildDisk") ||
         name in ["KubernetesDeploymentUnavailable", "KubeDeploymentReplicasMismatch",
                  "KubePodNotReady", "KubeContainerWaiting",
                  "KubeStatefulSetReplicasMismatch", "KubernetesStatefulSetUnavailable",
@@ -441,6 +441,29 @@ rules:
       CPU, cámara real sin frames y volumen de grabaciones casi lleno
       (manifests/frigate-rules.yaml). Fuente: frigate_* de /api/metrics y
       kubelet_volume_stats_* del PVC frigate-media.
+
+  # Disco del Mac de compilaciones (DGX-1401, off-cluster): `mac_build_disk_*` empujadas
+  # por el LaunchAgent com.e-dani.disk-metric de mac-build (scripts/mac-build-disk-metric.sh
+  # en dgx-infra). Son `critical` y van EXCLUIDAS de critical-safety-net arriba (patrón
+  # node-degraded): sin exclusión se notificarían dos veces; sin regla no habrían llegado
+  # a nadie. Cubre el umbral del 90 % y la ceguera de la métrica (lección INFRA-849).
+  - ruleName: mac-build-disk
+    celQuery: 'name.startsWith("MacBuildDisk")'
+    sqlQuery:
+      sql: "((name like :name_1))"
+      params:
+        name_1: MacBuildDisk%
+    timeframeInSeconds: 1800
+    timeUnit: minutes
+    groupingCriteria: [alertname]
+    createOn: any
+    resolveOn: all_resolved
+    incidentPrefix: MBD
+    incidentNameTemplate: "mac-build: {{ alertname }}"
+    groupDescription: >-
+      Disco de mac-build (Mac de compilaciones) por encima del 90 % de uso o bajo 46 GB
+      libres, o el LaunchAgent que lo reporta lleva 30 min sin empujar (vigilancia
+      ciega). manifests/mac-build-disk-rules.yaml.
 
   # Schedule muerto (fuente `schedules` de ops-watch, SC-2459): un workflow programado
   # crítico sin ningún run en su margen (p. ej. GitHub lo desactivó tras 3 fallos). El CI
