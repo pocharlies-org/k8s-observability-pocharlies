@@ -38,7 +38,10 @@ jobs:
           python-version: "3.13"
       - name: Install promtool (INFRA-376 rule test)
         run: |
-          pip install pyyaml "psycopg[binary]" chevron
+          # cel-python provee `celpy`, el motor CEL que ejecuta Keep: con él
+          # instalado, la matriz de correlación de tests/keep_correlation.py se
+          # evalúa también con el motor real (INFRA-400; antes se saltaba en CI).
+          pip install pyyaml "psycopg[binary]" chevron cel-python==0.5.0
           curl -fsSL https://github.com/prometheus/prometheus/releases/download/v2.55.1/prometheus-2.55.1.linux-amd64.tar.gz \
             | tar -xz --strip-components=1 -C "$RUNNER_TEMP" prometheus-2.55.1.linux-amd64/promtool
           echo "PROMTOOL=$RUNNER_TEMP/promtool" >> "$GITHUB_ENV"

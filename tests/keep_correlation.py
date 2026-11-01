@@ -10,7 +10,8 @@ the family fails until the rule covers it.
 Reuses the composition and the CEL evaluator of
 ``scripts/verify-notification-coverage.py``, like test_infra405_correlation_rules. When
 ``celpy`` (the engine Keep runs, rulesengine.py) is installed the same matrix is also
-evaluated with it; CI does not install it, so that part skips. Hermetic: no kubectl, no network.
+evaluated with it too; CI installs it as `cel-python` (INFRA-400), so the real
+engine runs on every pull request. Hermetic: no kubectl, no network.
 
 A suite subclasses ``CorrelationContract`` together with ``unittest.TestCase`` and sets
 ``RULE`` (ruleName), ``VMRULE_FILE``, ``VMRULE`` (metadata.name) and ``INCIDENT_NAME``
