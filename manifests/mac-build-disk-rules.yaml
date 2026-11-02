@@ -20,6 +20,29 @@
 #      `critical` y `MacBuildDisk` está excluida de `critical-safety-net` para no abrir
 #      dos incidentes por la misma alerta (patrón node-degraded);
 #      tests/test_dgx1401_macbuild_correlation.py lo vigila.
+#
+# Carril de pruebas de umbral (SC-4171; causa raíz de SC-4135: el sintético de la prueba
+# de DGX-1401, sin marcador, abrió dos Requests — MBD-18219→SC-4060 y MBD-18226→SC-4134).
+# Para probar que la regla dispara de verdad SIN abrir Request, empujar el sintético CON la
+# etiqueta `test` (su valor, la clave del ticket de la prueba), manteniéndolo vivo hasta ver
+# el incidente — el `for` son 10 min y la muestra vale 5 min:
+#   ssh mac-build 'for i in $(seq 1 12); do
+#     printf "mac_build_disk_used_percent{host=\"mac-build\",test=\"SC-XXXX\"} 95\n" \
+#       | curl -s --data-binary @- https://vm.lan.e-dani.com/api/v1/import/prometheus
+#     sleep 60; done'
+# El selector de la regla es de subconjunto: la serie con la etiqueta extra dispara la regla
+# de producción y la cadena se prueba entera (vmalert → Alertmanager → Keep → ops-watch).
+# En Keep aparece el incidente MBD y la ronda de ops-watch (timer 15 min) lo aparca como
+# «Prueba declarada <marcador>» sin abrir Request. Al terminar, borrar SOLO la serie
+# sintética — match por la etiqueta `test`, NUNCA `host="mac-build"` a secas: eso borra
+# también la real, la métrica queda ausente y salta MacBuildDiskMetricStale (así nació
+# MBD-18224 → SC-4132):
+#   curl -X POST 'https://vm.lan.e-dani.com/api/v1/admin/tsdb/delete_series?match[]=mac_build_disk_used_percent{test="SC-XXXX"}'
+# El LaunchAgent re-empuja el valor real cada 5 min; comprobar que vuelve fresco:
+#   curl -s 'https://vm.lan.e-dani.com/api/v1/query?query=mac_build_disk_used_percent'
+# Mismo carril para las pruebas de umbral del x86 (precedente INFRA-849): vale para toda
+# regla cuya expresión case por etiquetas — la serie sintética lleva `test="<clave>"` y
+# ops-watch trata el incidente como prueba. Runbook completo: skill `mac-ops`.
 apiVersion: operator.victoriametrics.com/v1beta1
 kind: VMRule
 metadata:
