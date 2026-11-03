@@ -1070,19 +1070,36 @@ spec:
           # published email.skirmshop.draft for weeks while the live consumer
           # bound messaging.skirmshop.draft_email — every publish was ack'd,
           # the app reported draft=queued, and the Gmail drafts never existed.
+          #
+          # SKIRM-351 (C4, second cause): the sink only sees messages that were
+          # PUBLISHED. A command binding on the broker with no row in
+          # synapse.plugin_actions (a live consumer nobody registered, or a
+          # stale binding) is the same contract break in the other direction and
+          # never lands here — the engine's topology_watch (SKIRM-350) measures
+          # binding-vs-table and emits synapse_topology_drift{tenant}. Same
+          # alert, same alertmanager routing: both causes mean publisher,
+          # consumer and registry disagree. The gauge is not traffic — the
+          # drift fixture (synapse repo, scripts/ci/plugins_drift_fixture.py)
+          # proves it without publishing a single message.
           expr: |
-            rabbitmq_detailed_queue_messages_ready{
-              vhost="/synapse",
-              queue="synapse.unroutable"
-            } > 0
+            (
+              rabbitmq_detailed_queue_messages_ready{
+                vhost="/synapse",
+                queue="synapse.unroutable"
+              } > 0
+            )
+            or
+            (
+              synapse_topology_drift > 0
+            )
           for: 1m
           labels:
             severity: warning
             area: messaging
             component: shared-rabbitmq
           annotations:
-            summary: "Synapse has unroutable messages (contract break)"
-            description: "Queue synapse.unroutable holds messages: some publisher used a routing key with no binding. Inspect the payload headers for the origin (`source`, `connection_name`) and the routing key, then reconcile publisher and consumer against libs/synapse-contracts/registry.yaml. Runbook: skill synapse-contracts."
+            summary: "Synapse contract break: unroutable messages or topology drift"
+            description: "One alert, two causes. (1) Queue synapse.unroutable holds messages: a publisher used a routing key with no binding — inspect the payload headers (`source`, `connection_name`) and the routing key. (2) synapse_topology_drift > 0: the broker carries a command binding with no row in synapse.plugin_actions (a live consumer nobody registered, or a stale binding); the drifting tenant is in the alert's `tenant` label. Both mean publisher, consumer and registry disagree: reconcile them against libs/synapse-contracts/registry.yaml. Runbook: skill synapse-contracts."
         - alert: RabbitmqFunctionalQueueNoConsumer
           # A functional queue with messages waiting and zero consumers
           # attached. This is a dead handler. Buffers (which legitimately have
