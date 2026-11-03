@@ -36,10 +36,15 @@ backend:
   #
   # Aquí ponía 2 con el razonamiento "Keep es el único notificador: una réplica
   # en un nodo no es aceptable". Ese razonamiento sólo se sostiene si las dos
-  # réplicas caen en nodos DISTINTOS. Al consolidar Keep en `sauvage`
-  # (nodeSelector abajo), las dos vivirían en el mismo nodo: sobrevivirían a la
-  # muerte de un pod, pero no a la del nodo — que es el fallo del que protegía la
-  # segunda réplica. Mantener 2 seria pagar el doble por una HA que ya no existe.
+  # réplicas caen en nodos DISTINTOS. Al consolidar Keep en `sauvage` (INFRA-912)
+  # las dos vivían en el mismo nodo: sobrevivían a la muerte de un pod, pero no a
+  # la del nodo — que es el fallo del que protegía la segunda réplica. Mantener 2
+  # sería pagar el doble por una HA que ya no existía.
+  #
+  # SC-3980 (2026-11-03) quita el pin a un solo nodo (affinity abajo), así que la
+  # premisa de arriba ya no se sostiene. Sigue 1 réplica por la otra razón: el
+  # DEADLOCK del rollout con 2 que se cuenta más abajo. Volver a 2 es decisión
+  # propia, con su prueba de rollout, no un efecto de este cambio.
   #
   # INFRA-912 (2026-10-17): la lane directa de Telegram (`backstop-telegram`)
   # se retiró con las alertas por Telegram; ya no hay vía de aviso que no pase
@@ -1019,17 +1024,53 @@ backend:
     repository: us-central1-docker.pkg.dev/keephq/keep/keep-api
     pullPolicy: IfNotPresent
 
-  # Consolidado en sauvage. El taint del nodo es `role=edge:NoSchedule`, así que
-  # el nodeSelector SOLO no basta: sin el toleration el pod se queda Pending.
-  nodeSelector:
-    kubernetes.io/hostname: sauvage
-  tolerations:
-    - key: role
-      operator: Equal
-      value: edge
-      effect: NoSchedule
+  # SC-3980 (2026-11-03): Keep fuera de `sauvage`, y por qué así y no de otra forma.
+  #
+  # El hub llevaba consolidado en sauvage desde INFRA-912. La noche del 01-11 ese
+  # nodo saturó su disco y el proceso entero de keep-backend se congeló: liveness
+  # y readiness fallando a la vez, logs en silencio hasta 02:27:30Z, y
+  # Alertmanager con `context deadline exceeded` entregando a
+  # `monitoring-synapse-webhook-keep` (incidente b823faad; RCA en SC-1706).
+  #
+  # Medido con node-exporter vía VictoriaMetrics — ventana nocturna 19:00-03:00Z,
+  # tres noches hasta el 03-11; io_time del dispositivo del `/`, que en estos
+  # nodos es `md3` en todos:
+  #
+  #   sauvage    io_time 100 %   load1 hasta 37.7   <- el que congela Keep
+  #   atlantic   io_time  43 %   load1 hasta 26.7   (16 CPUs: también apretado)
+  #   ks5-cp-1   io_time   8 %   load1 hasta 13.9
+  #   ks5-cp-2   io_time  16 %   load1 hasta 18.0   (aquí vive su Postgres)
+  #   ks5-cp-3   io_time   9 %   load1 hasta  7.8
+  #
+  # De ahí `required NotIn [sauvage]` y NO un nodeSelector a un nodo concreto: un
+  # pin fija el hub en el siguiente nodo que se sature (atlantic, el candidato
+  # natural, es el segundo peor medido), y con 1 réplica un nodo caído lo deja
+  # Pending. La preferencia sobre `node-pool=ks5-nvme` sí fija el sitio bueno: el
+  # disco más sano de noche, donde Keep corrió antes de INFRA-912 y donde está su
+  # Base de datos (CNPG en ks5-cp-2/3). Los nodos con taint (`dedicated=llm`,
+  # `dedicated=alpha`) quedan fuera solos: este pod no los tolera.
+  #
+  # El `tolerations: role=edge` que había aquí se retira con el pin: era para el
+  # taint de sauvage, y sauvage queda excluido.
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+          - matchExpressions:
+              - key: kubernetes.io/hostname
+                operator: NotIn
+                values:
+                  - sauvage
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          preference:
+            matchExpressions:
+              - key: node-pool
+                operator: In
+                values:
+                  - ks5-nvme
 
-  # startupProbe, y sin ella el traslado a sauvage NO funciona.
+  # startupProbe, y sin ella Keep no arranca en un nodo con el disco lento.
   #
   # Los defaults del chart para liveness son initialDelaySeconds 60 +
   # failureThreshold 5 × periodSeconds 10 = el contenedor muere a los ~110s si
@@ -1091,10 +1132,11 @@ backend:
   #   - `preferred` anti-affinity: desbloquea, pero durante la transición apiló
   #     las 2 réplicas en el MISMO nodo y ahí se quedaron.
   #
-  # Con 1 réplica fijada a un único nodo, repartir no significa nada: la
-  # restricción quedaba inerte (ScheduleAnyway nunca bloquea, pero tampoco hace
-  # nada). Se retira para que el fichero no describa una topología que ya no
-  # existe. Si algún día vuelven las 2 réplicas a varios nodos, esto se restaura
+  # Con 1 réplica, repartir no significa nada: la restricción quedaba inerte
+  # (ScheduleAnyway nunca bloquea, pero tampoco hace nada). Se retira para que el
+  # fichero no describa una topología que ya no existe. Desde SC-3980 el pod ya no
+  # está fijado a un nodo, pero sigue habiendo 1 réplica, así que esto sigue sin
+  # aplicar. Si algún día vuelven las 2 réplicas a varios nodos, esto se restaura
   # tal cual — es la primitiva correcta, no un parche.
 
   # MITIGACIÓN, NO ARREGLO (2026-08-06). El backend se estaba quedando sin
@@ -1204,14 +1246,28 @@ frontend:
     repository: us-central1-docker.pkg.dev/keephq/keep/keep-ui
     pullPolicy: IfNotPresent
 
-  # Junto al backend, en sauvage. Mismo taint, mismo toleration.
-  nodeSelector:
-    kubernetes.io/hostname: sauvage
-  tolerations:
-    - key: role
-      operator: Equal
-      value: edge
-      effect: NoSchedule
+  # Mismo sitio que el backend (SC-3980): fuera de sauvage, preferido el pool
+  # ks5-nvme. La UI llama a keep-backend por Service, así que su nodo no cambia
+  # nada funcional; se mueve con él para no dejar un componente del hub en el nodo
+  # que satura de noche. Sin toleration: el de `role=edge` era del taint de
+  # sauvage, y sauvage queda excluido.
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+          - matchExpressions:
+              - key: kubernetes.io/hostname
+                operator: NotIn
+                values:
+                  - sauvage
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          preference:
+            matchExpressions:
+              - key: node-pool
+                operator: In
+                values:
+                  - ks5-nvme
 
   resources:
     requests:
