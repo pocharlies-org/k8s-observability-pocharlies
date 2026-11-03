@@ -167,6 +167,27 @@ def test_metrics_endpoint_exposes_the_four_series():
         assert name in body, name
 
 
+def test_last_success_metric_keeps_full_epoch_precision():
+    # SC-4481: la exposición se renderizaba con "%g" (6 cifras significativas) y un epoch
+    # ~1.79e9 perdía los segundos (1793732279.5 -> 1793730000). VictoriaMetrics guardaba el
+    # valor recortado y la VMRule `time()-last_success>300` disparaba en falso con el MCP
+    # sano (up=1, errores 0). Con "%.3f" el valor sobrevive íntegro.
+    mod = run_cycle("ok")
+    mod._state["last_success"] = 1793732279.5
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), mod.Handler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        body = urllib.request.urlopen(
+            f"http://127.0.0.1:{srv.server_address[1]}/metrics", timeout=5).read().decode()
+    finally:
+        srv.shutdown()
+    line = next(l for l in body.splitlines()
+                if l.startswith("atlassian_mcp_tool_last_success_timestamp_seconds "))
+    value = float(line.split()[-1])
+    # Con "%g" daría 1793730000.0 (diff 2279.5 s); con "%.3f" es 1793732279.5 (diff 0).
+    assert abs(value - 1793732279.5) < 1.0, value
+
+
 def test_default_mcp_url_points_at_the_real_gateway_service():
     # El Service agentgateway-mcp vive en el namespace `agentgateway` (medido: kubectl get
     # svc -A; no existe el ns `agentgateway-mcp`). Sin env, la sonda debe apuntar ahí: con
