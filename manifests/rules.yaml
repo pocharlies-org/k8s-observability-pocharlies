@@ -2796,7 +2796,7 @@ spec:
             area: capacity
             namespace: buildkit
           annotations:
-            summary: "Caché de buildkitd-amd64 por encima del 85 % del tmpfs de 30Gi ({{ $value | humanizeBytes }})"
+            summary: "Caché de buildkitd-amd64 por encima del 85 % del tmpfs de 30Gi ({{ $value | humanize1024 }}B)"
             description: >-
               El working set del contenedor buildkitd (que incluye las páginas del tmpfs de la
               caché) lleva 10 min por encima de 26.1Gi = 85 % del sizeLimit de 30Gi. A 30Gi el
