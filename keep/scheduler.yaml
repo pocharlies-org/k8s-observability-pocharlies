@@ -73,17 +73,30 @@ spec:
         keep-component: scheduler
     spec:
       serviceAccountName: keep
-      # Mismo sitio que keep-backend (sauvage + toleration del taint edge):
-      # el scheduler llama a Postgres y a los providers locales, y la
-      # consolidación de Keep en un nodo ya es criterio del repo (ver el
-      # comentario de nodeSelector en keep/values.yaml).
-      nodeSelector:
-        kubernetes.io/hostname: sauvage
-      tolerations:
-        - key: role
-          operator: Equal
-          value: edge
-          effect: NoSchedule
+      # Mismo sitio que keep-backend (SC-3980, 2026-11-03): fuera de sauvage —
+      # su disco saturado fue lo que congeló la ingesta del hub (RCA en SC-1706)—
+      # y con preferencia por el pool ks5-nvme, el más sano de noche. El scheduler
+      # llama a Postgres (CNPG en ks5-cp-2/3) y a los providers locales, así que
+      # además de libre queda más cerca de su base de datos. Medición y motivo en
+      # el comentario de `affinity` de keep/values.yaml. Sin toleration: el de
+      # `role=edge` era del taint de sauvage, y sauvage queda excluido.
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: NotIn
+                    values:
+                      - sauvage
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              preference:
+                matchExpressions:
+                  - key: node-pool
+                    operator: In
+                    values:
+                      - ks5-nvme
       containers:
         - name: scheduler
           # = appVersion del chart keep 0.1.96; mantener en pareja (arriba).
