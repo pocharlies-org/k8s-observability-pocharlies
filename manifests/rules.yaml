@@ -2764,3 +2764,44 @@ spec:
               El nodo ubuntu (x86) lleva más de 5 min sin Ready en kube-state-metrics, o la serie ha desaparecido.
               Causa típica: NFS hard contra sauvage (100.109.183.9) o kubelet bloqueado. Mirar
               `grep sauvage /proc/mounts`, `journalctl -b -1 -k` y `systemctl --user status openchamber`.
+---
+# INFRA-1014 (03-11-2026). La caché del builder amd64 (buildkitd-amd64, ns buildkit) es un
+# tmpfs de 30Gi y sus páginas cuentan contra el cgroup del pod; se llenó 4 veces desde
+# agosto (INFRA-953: 20-08, 05-09, 17-10, 19-10) y ninguna avisó: se sabía cuando los builds
+# amd64 de toda la org caían con "no space left on device" (el 19-10 tumbó correo-app, el
+# dashboard de dgx-infra y el chat durante horas).
+# Medición: no hay métrica de df para un emptyDir tmpfs; las páginas del tmpfs se cobran al
+# cgroup del contenedor que las escribe, así que container_memory_working_set_bytes del
+# contenedor buildkitd ES la ocupación del tmpfs más el RSS del daemon y sus builds. Con el
+# GC de SC-2759 (~9Gi en reposo) el día a día está muy por debajo del umbral, así que el
+# RSS no introduce ruido.
+# Umbral: 85 % del sizeLimit de 30Gi = 26.1Gi (28057006694 bytes), con for 10m: margen para
+# podar (`buildctl prune` contra el socket del builder) antes del ENOSPC. La referencia
+# desde el manifiesto está en k8s-infra-pocharlies buildkit/buildkitd-amd64.yaml.
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMRule
+metadata:
+  name: pocharlies-buildkit-cache
+  namespace: monitoring
+spec:
+  groups:
+    - name: pocharlies.buildkit-cache
+      rules:
+        - alert: BuildkitAmd64CacheHigh
+          expr: |
+            container_memory_working_set_bytes{namespace="buildkit", pod=~"buildkitd-amd64.*", container="buildkitd"} > 26.1Gi
+          for: 10m
+          labels:
+            severity: warning
+            area: capacity
+            namespace: buildkit
+          annotations:
+            summary: "Caché de buildkitd-amd64 por encima del 85 % del tmpfs de 30Gi ({{ $value | humanizeBytes }})"
+            description: >-
+              El working set del contenedor buildkitd (que incluye las páginas del tmpfs de la
+              caché) lleva 10 min por encima de 26.1Gi = 85 % del sizeLimit de 30Gi. A 30Gi el
+              tmpfs da ENOSPC y caen todos los builds amd64 de la org (INFRA-953: 4 veces sin
+              aviso). Actuar antes del lleno: `kubectl -n buildkit exec deploy/buildkitd-amd64 --
+              buildctl --addr unix:///run/user/1000/buildkit/buildkitd.sock du` para ver la
+              caché y `... prune` para podarla; si el GC (buildkitd.toml, SC-2759) no está
+              podando, revisar el ConfigMap buildkitd-amd64-config.
