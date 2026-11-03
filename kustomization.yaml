@@ -81,6 +81,7 @@ resources:
   - manifests/kyverno-policy-exceptions.yaml
   - manifests/dgx-cluster-health-watcher.yaml
   - manifests/atlassian-mcp-probe.yaml
+  - manifests/atlassian-mcp-rules.yaml
 
 # Las reglas de correlación se montan como fichero en el Job que las aplica, en
 # vez de duplicarse inline: keep/rules/correlation-rules.yaml sigue siendo la
