@@ -88,6 +88,15 @@ igual). Necesita Postgres: sin `AURORA_TEST_PG_DSN` se salta en local y **falla 
 
 ## 8. Decisiones y trampas
 
+- `2026-11-03` · INFRA-1135 (SC-4342): `cron-job-failed` agrupa por `[namespace, owner_name]` y su nombre lleva el
+  CronJob. ops-watch calcula la `keep-causa` de la Request como sha1 del nombre del incidente (sin su número), así que
+  la granularidad del incidente es la de la causa: con `[namespace, alertname]` los ~20 CronJobs de un namespace
+  compartían una sola causa (medido: `9c99776a1c` bajo la que cayeron architecture-sync, memory-promotion y
+  knowledge-pages). `owner_name` (el CronJob, `kube_job_owner`) llega top-level a la alerta; `job_name` (el Job, con
+  sufijo de ejecución) NUNCA va al nombre: sería un número volátil en la causa. BrainIngestConsecutiveFailures no
+  lleva `owner_name` → huella «none» en Keep (`rulesengine._calc_rule_fingerprint`) → sigue con su propio incidente
+  (INFRA-378 se conserva). Pin: `tests/test_infra378_keep_notify_contract.py`.
+
 - `2026-10-17` · INFRA-912 (Dani: «las alertas en Telegram son inútiles; borra todos los topics de alertas»). Fuera
   TODO envío a Telegram del repo: los cuatro workflows de aviso de `keep/values.yaml`, la action `telegram-rca` de
   `aurora-report-back` (el RCA queda en la ejecución y en Aurora; dejarlo como comentario en la Request no es trivial
