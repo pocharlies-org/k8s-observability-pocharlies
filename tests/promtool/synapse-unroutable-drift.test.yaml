@@ -1,0 +1,64 @@
+# SKIRM-351 (C4): SynapseUnroutableMessages fires on BOTH causes — messages in
+# the unroutable sink (original behaviour) and topology drift (a command binding
+# with no row in synapse.plugin_actions). The gauge synapse_topology_drift is
+# emitted by the engine's topology_watch (SKIRM-350) and measures
+# binding-vs-table, not traffic: the drift case needs no published messages,
+# matching the SKIRM-351 fixture (synapse repo, scripts/ci/plugins_drift_fixture.py).
+rule_files:
+  - synapse-unroutable-drift.rules.yaml
+evaluation_interval: 30s
+tests:
+  - interval: 30s
+    name: "sink unroutable con mensajes - dispara (regresión del comportamiento original)"
+    input_series:
+      - series: 'rabbitmq_detailed_queue_messages_ready{vhost="/synapse",queue="synapse.unroutable"}'
+        values: '0 1 1 1'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: SynapseUnroutableMessages
+        exp_alerts: []
+      - eval_time: 2m
+        alertname: SynapseUnroutableMessages
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              area: messaging
+              component: shared-rabbitmq
+              vhost: /synapse
+              queue: synapse.unroutable
+            exp_annotations:
+              summary: "Synapse contract break: unroutable messages or topology drift"
+              description: "One alert, two causes. (1) Queue synapse.unroutable holds messages: a publisher used a routing key with no binding — inspect the payload headers (`source`, `connection_name`) and the routing key. (2) synapse_topology_drift > 0: the broker carries a command binding with no row in synapse.plugin_actions (a live consumer nobody registered, or a stale binding); the drifting tenant is in the alert's `tenant` label. Both mean publisher, consumer and registry disagree: reconcile them against libs/synapse-contracts/registry.yaml. Runbook: skill synapse-contracts."
+
+  - interval: 30s
+    name: "deriva topologica (binding sin fila en plugin_actions) - dispara por el termino OR"
+    input_series:
+      - series: 'synapse_topology_drift{tenant="synapsedrifttest"}'
+        values: '0 1 1 1'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: SynapseUnroutableMessages
+        exp_alerts: []
+      - eval_time: 2m
+        alertname: SynapseUnroutableMessages
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              area: messaging
+              component: shared-rabbitmq
+              tenant: synapsedrifttest
+            exp_annotations:
+              summary: "Synapse contract break: unroutable messages or topology drift"
+              description: "One alert, two causes. (1) Queue synapse.unroutable holds messages: a publisher used a routing key with no binding — inspect the payload headers (`source`, `connection_name`) and the routing key. (2) synapse_topology_drift > 0: the broker carries a command binding with no row in synapse.plugin_actions (a live consumer nobody registered, or a stale binding); the drifting tenant is in the alert's `tenant` label. Both mean publisher, consumer and registry disagree: reconcile them against libs/synapse-contracts/registry.yaml. Runbook: skill synapse-contracts."
+
+  - interval: 30s
+    name: "sin unroutables y sin deriva - la alerta calla"
+    input_series:
+      - series: 'rabbitmq_detailed_queue_messages_ready{vhost="/synapse",queue="synapse.unroutable"}'
+        values: '0 0 0 0'
+      - series: 'synapse_topology_drift{tenant="synapsedrifttest"}'
+        values: '0 0 0 0'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: SynapseUnroutableMessages
+        exp_alerts: []
