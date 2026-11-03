@@ -2792,7 +2792,16 @@ spec:
             container_memory_working_set_bytes{namespace="buildkit", pod=~"buildkitd-amd64.*", container="buildkitd"} > 26.1Gi
           for: 10m
           labels:
-            severity: warning
+            # critical, no warning: la safety-net de correlación de Keep
+            # (keep/rules/correlation-rules.yaml) solo crea incidencia para
+            # severity == critical o labels.severity == page; con warning la
+            # alerta llegaba a Keep y se quedaba sin incidencia (medido el
+            # 03-11: la prueba con warning generó filas firing y ningún
+            # incidente; con critical, CRIT-18361 en 4 s). Mismo criterio que
+            # NodeRootDiskLowOrFilling: el lleno tumba los builds amd64 de la
+            # org entera (INFRA-953), y el `for: 10m` ya es el margen de poda,
+            # así que quien arde es el incidente, no el ruido.
+            severity: critical
             area: capacity
             namespace: buildkit
           annotations:
