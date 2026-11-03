@@ -38,12 +38,14 @@ def load_probe(env):
 class FakeGateway(BaseHTTPRequestHandler):
     """Una escucha para todo: /token (Keycloak) y /mcp (AgentGateway)."""
     mode = "ok"  # ok | sse | iserror | http500
+    token_ua = None  # User-Agent con el que la sonda pidió el token (SC-4437)
 
     def do_POST(self):
         path = urlparse(self.path).path
         body = (json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                 if path != "/token" else {})
         if path == "/token":
+            FakeGateway.token_ua = self.headers.get("User-Agent")
             payload = json.dumps({"access_token": "t"}).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -118,6 +120,15 @@ def test_cycle_up_json_and_sse():
         assert mod._state["up"] == 1, mode
         assert mod._state["last_success"] > 0
         assert sum(mod._state["errors"].values()) == 0, mode
+
+
+def test_token_request_carries_a_non_default_user_agent():
+    # El edge de auth-next responde 403 "error code: 1010" (Cloudflare bot-fight) al UA
+    # por defecto de urllib: con él la sonda queda up=0 con kind=http para siempre
+    # (SC-4437). El token debe pedirse con un UA propio.
+    mod = run_cycle("ok")
+    assert mod._state["up"] == 1
+    assert FakeGateway.token_ua and not FakeGateway.token_ua.startswith("Python-urllib")
 
 
 def test_cycle_iserror_counts_iserror():

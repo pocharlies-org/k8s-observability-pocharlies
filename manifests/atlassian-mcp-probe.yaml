@@ -57,6 +57,10 @@ data:
     TIMEOUT = float(os.environ.get("PROBE_TIMEOUT_S", "10"))
     PORT = int(os.environ.get("PROBE_PORT", "9114"))
     PROTOCOL_VERSION = "2025-06-18"
+    # El edge de auth-next bloquea el UA por defecto de urllib (Python-urllib/*) con
+    # 403 "error code: 1010" (Cloudflare bot-fight): sin UA propio el token falla y la
+    # sonda queda up=0 con kind=http para siempre (SC-4437).
+    USER_AGENT = "atlassian-mcp-probe/1.0"
 
     KINDS = ("http", "timeout", "isError", "jsonrpc")
     _lock = threading.Lock()
@@ -69,7 +73,8 @@ data:
 
     def _post(url, payload, token=None, session=None):
         headers = {"Content-Type": "application/json",
-                   "Accept": "application/json, text/event-stream"}
+                   "Accept": "application/json, text/event-stream",
+                   "User-Agent": USER_AGENT}
         if token:
             headers["Authorization"] = "Bearer " + token
         if session:
@@ -121,7 +126,8 @@ data:
                 "client_secret": CLIENT_SECRET,
             }).encode()
             req = urllib.request.Request(TOKEN_URL, data=form,
-                                         headers={"Content-Type": "application/x-www-form-urlencoded"})
+                                         headers={"Content-Type": "application/x-www-form-urlencoded",
+                                                  "User-Agent": USER_AGENT})
             try:
                 with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
                     token = json.loads(resp.read())["access_token"]
@@ -229,7 +235,7 @@ spec:
         # gateway): el ConfigMap se monta plano (sin generator), así que sin esta anotación
         # editar probe.py NO reiniciaría el pod. tests/test_atlassian_mcp_probe.py la compara
         # con el hash real: cambiar el script sin refrescarla rompe CI.
-        checksum/script: "sha256:c6f1c1e792c2fad8a3211ec9345ea228789aa7382bc61c88cb0dd8a3143f0728"
+        checksum/script: "sha256:7d74c86d40b19f93c4c7ca9925696d8fc0586bea058b8c52fab9036666f4b05b"
     spec:
       containers:
         - name: probe
