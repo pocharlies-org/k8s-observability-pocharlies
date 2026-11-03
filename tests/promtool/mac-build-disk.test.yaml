@@ -1,25 +1,33 @@
-# Casos de la VMRule pocharlies-mac-build-disk (promtool test rules, DGX-1401).
+# Casos de la VMRule pocharlies-mac-build-disk (promtool test rules, DGX-1401;
+# condicion de presencia y MacBuildUnreachable: SC-4378 / problema SC-4338).
 # El disco de mac-build es un contenedor APFS de 460 GB; los valores se leen a ojo
-# contra el umbral del 90 % de uso y los 46 GB libres. El emisor es el LaunchAgent
-# com.e-dani.disk-metric (push cada 5 min), de ahí el interval. Las anotaciones
-# esperadas son las de la VMRule: si alguien cambia el texto, cambia aquí también.
+# contra el umbral del 90 % de uso y los 46 GB libres. El emisor del disco es el
+# LaunchAgent com.e-dani.disk-metric (push cada 5 min); la sonda de presencia
+# mac_build_awake la empuja el timer mac-build-presence del x86 (cada 5 min), de
+# ahi el interval. Las anotaciones esperadas son las de la VMRule: si alguien
+# cambia el texto, cambia aqui tambien (se regeneran del manifiesto).
 rule_files:
 - mac-build-disk.rules.yaml
 evaluation_interval: 5m
 tests:
 - interval: 5m
-  name: sano (74 % de uso, 108 GB libres) -> no salta
+  name: sano (74 % de uso, 108 GB libres, Mac despierto) -> no salta nada
   input_series:
   - series: mac_build_disk_used_percent{host="mac-build"}
     values: 74x14
   - series: mac_build_disk_free_bytes{host="mac-build"}
     values: 108000000000x14
+  - series: mac_build_awake{host="mac-build"}
+    values: 1x14
   alert_rule_test:
   - eval_time: 60m
     alertname: MacBuildDiskLowOrFilling
     exp_alerts: []
   - eval_time: 60m
     alertname: MacBuildDiskMetricStale
+    exp_alerts: []
+  - eval_time: 60m
+    alertname: MacBuildUnreachable
     exp_alerts: []
 - interval: 5m
   name: 92 % de uso sostenido -> salta pasados los 10 min del `for`
@@ -35,11 +43,12 @@ tests:
   - eval_time: 15m
     alertname: MacBuildDiskLowOrFilling
     exp_alerts:
-    - exp_labels: &id001
+    - &id001
+      exp_labels:
         severity: critical
         area: capacity
         host: mac-build
-      exp_annotations: &id002
+      exp_annotations:
         summary: 'Disco de mac-build (Mac de compilaciones) al 90 % o más: el entorno de pruebas es lo primero que se rompe'
         description: 'El contenedor de 460 GB de mac-build pasa del 90 % de uso (o bajo 46 GB libres). Cuando aprieta, el primer damnificado es el entorno de pruebas del Mac: los builds de la CI de pruebas se cortan (INFRA-827) y los simuladores de trabajo dejan de poder escribir (DGX-1392). Liberar en este orden (precedente DGX-1401, 01-11, que devolvió 108 GiB libres): DerivedData, simuladores que no estén en la lista FIJOS de limpieza-xcode.sh (`xcrun simctl list devices`), worktrees terminados de ~/builds, cachés de Xcode/npm/Homebrew y `vm_bundles` de Claude (se redesargan). Comprobar primero que no hay una compilación en curso (`pgrep xcodebuild`).'
 - interval: 5m
@@ -53,11 +62,12 @@ tests:
   - eval_time: 15m
     alertname: MacBuildDiskLowOrFilling
     exp_alerts:
-    - exp_labels: *id001
-      exp_annotations: *id002
+    - *id001
 - interval: 5m
-  name: sin serie (LaunchAgent muerto, Mac apagado) -> ceguera a los 30 min
-  input_series: []
+  name: 'Mac despierto (awake=1) y serie de disco ausente -> ceguera a los 30 min (SC-4378: el caso que sigue siendo incidente)'
+  input_series:
+  - series: mac_build_awake{host="mac-build"}
+    values: 1x12
   alert_rule_test:
   - eval_time: 20m
     alertname: MacBuildDiskMetricStale
@@ -70,8 +80,45 @@ tests:
         area: monitoring
         host: mac-build
       exp_annotations:
-        summary: 'mac-build no reporta su disco hace 30 min: la vigilancia de disco está ciega'
-        description: 'VictoriaMetrics no ve `mac_build_disk_used_percent` desde mac-build hace 30 min (el LaunchAgent empuja cada 5 min). Mirar: ¿está el Mac despierto y en el tailnet (`tailscale status` en x86)? ¿`launchctl print gui/$(id -u)/com.e-dani.disk-metric` en mac-build? ¿el push falla? scripts/mac-build-disk-metric.sh deja sus errores en ~/builds/disk-metric.err.log. Reinstalar: scripts/mac-build-disk-alerta-install.sh (dgx-infra).'
+        summary: 'mac-build responde pero no reporta su disco hace 30 min: la vigilancia de disco está ciega'
+        description: 'La sonda de x86 ve a mac-build responder (mac_build_awake = 1) pero VictoriaMetrics no ve `mac_build_disk_used_percent` hace 30 min: el LaunchAgent empuja cada 5 min, así que está roto (o el push falla), no dormido. Comprobar: `launchctl print gui/$(id -u)/com.e-dani.disk-metric` en mac-build y `~/builds/disk-metric.err.log` (scripts/mac-build-disk-metric.sh deja ahí sus errores). Reinstalar: scripts/mac-build-disk-alerta-install.sh (dgx-infra). Si el Mac estaba dormido, esto no debería haber salido: mirar el histórico de mac_build_awake antes de cerrar (skill `mac-ops`).'
+  - eval_time: 40m
+    alertname: MacBuildUnreachable
+    exp_alerts: []
   - eval_time: 40m
     alertname: MacBuildDiskLowOrFilling
     exp_alerts: []
+- interval: 5m
+  name: Mac dormido (awake=0) y serie ausente -> NO ceguera (SC-4338); Unreachable al pasar las 12 h
+  input_series:
+  - series: mac_build_awake{host="mac-build"}
+    values: '0x150'
+  alert_rule_test:
+  - eval_time: 40m
+    alertname: MacBuildDiskMetricStale
+    exp_alerts: []
+  - eval_time: 11h55m
+    alertname: MacBuildUnreachable
+    exp_alerts: []
+  - eval_time: 12h5m
+    alertname: MacBuildUnreachable
+    exp_alerts:
+    - &id002
+      exp_labels:
+        severity: warning
+        area: monitoring
+        host: mac-build
+      exp_annotations:
+        summary: 'mac-build lleva 12 h sin responder (o la sonda de x86 sin empujar): los builds y la vigilancia están parados'
+        description: 'La sonda de presencia (`mac-build-presence`, timer de x86 cada 5 min) lleva 12 h viendo a mac-build sin responder, o no ha empujado `mac_build_awake` en todo ese rato. Dos causas: el Mac lleva medio día dormido/apagado (fuera del uso normal) o el timer del x86 está muerto — comprobar primero `systemctl --user status mac-build-presence.timer` en el x86 y después el tailnet (`tailscale ping 100.85.61.58`). Con la sonda muerta, MacBuildDiskMetricStale también está ciego: arreglar el timer es lo primero.'
+- interval: 5m
+  name: sonda muerta (sin mac_build_awake, sin disco) -> MetricStale NO dispara (no hay con quien casar); Unreachable a las 12 h por el absent()
+  input_series: []
+  alert_rule_test:
+  - eval_time: 40m
+    alertname: MacBuildDiskMetricStale
+    exp_alerts: []
+  - eval_time: 12h5m
+    alertname: MacBuildUnreachable
+    exp_alerts:
+    - *id002
