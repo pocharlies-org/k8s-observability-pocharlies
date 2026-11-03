@@ -1,0 +1,110 @@
+# SC-4414: casos de KeycloakRoleDriftConsecutiveFailures y de la exclusion de
+# keycloak-role-drift en K8sCronJobFailed (promtool test rules).
+# `rules` la genera tests/test_sc4414_keycloak_role_drift_promtool.py desde la VMRule.
+# El CronJob es */15 (ciclos a t=0, t=15m, t=30m...); los Jobs que genera llevan
+# sufijo numerico, los manuales (--from=cronjob) no.
+rule_files:
+  - keycloak-role-drift.rules.yaml
+evaluation_interval: 1m
+tests:
+  - interval: 1m
+    name: un ciclo suelto fallando no abre nada (ni la generica, excluida)
+    input_series:
+      - series: 'kube_job_failed{namespace="keycloak", job_name="keycloak-role-drift-1762000000", condition="true"}'
+        values: '1x25'
+      - series: 'kube_job_owner{namespace="keycloak", job_name="keycloak-role-drift-1762000000", owner_name="keycloak-role-drift", owner_kind="CronJob"}'
+        values: '1x25'
+      - series: 'kube_job_status_start_time{namespace="keycloak", job_name="keycloak-role-drift-1762000000"}'
+        values: '14400x25'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: KeycloakRoleDriftConsecutiveFailures
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: K8sCronJobFailed
+        exp_alerts: []
+  - interval: 1m
+    name: dos ciclos consecutivos fallando disparan (el segundo a t=15m)
+    input_series:
+      - series: 'kube_job_failed{namespace="keycloak", job_name="keycloak-role-drift-1762000000", condition="true"}'
+        values: '1x10'
+      - series: 'kube_job_failed{namespace="keycloak", job_name="keycloak-role-drift-1762000900", condition="true"}'
+        values: '1 1 1 1 1 1 1 1 1 1'
+      - series: 'kube_job_owner{namespace="keycloak", job_name="keycloak-role-drift-1762000000", owner_name="keycloak-role-drift", owner_kind="CronJob"}'
+        values: '1x10'
+      - series: 'kube_job_owner{namespace="keycloak", job_name="keycloak-role-drift-1762000900", owner_name="keycloak-role-drift", owner_kind="CronJob"}'
+        values: '1x10'
+      - series: 'kube_job_status_start_time{namespace="keycloak", job_name="keycloak-role-drift-1762000000"}'
+        values: '14400x10'
+      - series: 'kube_job_status_start_time{namespace="keycloak", job_name="keycloak-role-drift-1762000900"}'
+        values: '15300x10'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: KeycloakRoleDriftConsecutiveFailures
+        exp_alerts:
+          - exp_labels: {severity: warning, area: kubernetes, domain: crons, namespace: keycloak}
+            exp_annotations:
+              summary: "keycloak-role-drift acumula fallos consecutivos (2 jobs fallidos en 30 min)"
+              description: "Dos o mas Jobs consecutivos de keycloak/keycloak-role-drift (CronJob cada 15 min, INFRA-250) han fallado y el ultimo ciclo sigue fallando: hay DRIFT real entre el realm edani y ROLES.yaml/PRINCIPALS.md. Lee las lineas DRIFT del ultimo job (`kubectl -n keycloak get jobs --sort-by=.metadata.creationTimestamp | grep keycloak-role-drift`, `kubectl -n keycloak logs job/JOB | grep '^DRIFT:'`). El arreglo es una PR de declaracion en k8s-infra-pocharlies; la regla SC-4414 es declaracion y concesion en la misma PR."
+  - interval: 1m
+    name: drift de dos ciclos que el tercer ciclo limpia se apaga (unless de exito posterior)
+    input_series:
+      - series: 'kube_job_failed{namespace="keycloak", job_name="keycloak-role-drift-1762000000", condition="true"}'
+        values: '1x31'
+      - series: 'kube_job_failed{namespace="keycloak", job_name="keycloak-role-drift-1762000900", condition="true"}'
+        values: '1x31'
+      - series: 'kube_job_owner{namespace="keycloak", job_name="keycloak-role-drift-1762000000", owner_name="keycloak-role-drift", owner_kind="CronJob"}'
+        values: '1x31'
+      - series: 'kube_job_owner{namespace="keycloak", job_name="keycloak-role-drift-1762000900", owner_name="keycloak-role-drift", owner_kind="CronJob"}'
+        values: '1x31'
+      - series: 'kube_job_owner{namespace="keycloak", job_name="keycloak-role-drift-1762001800", owner_name="keycloak-role-drift", owner_kind="CronJob"}'
+        values: '_x30 1x5'
+      - series: 'kube_job_status_start_time{namespace="keycloak", job_name="keycloak-role-drift-1762000000"}'
+        values: '14400x31'
+      - series: 'kube_job_status_start_time{namespace="keycloak", job_name="keycloak-role-drift-1762000900"}'
+        values: '15300x31'
+      - series: 'kube_job_status_start_time{namespace="keycloak", job_name="keycloak-role-drift-1762001800"}'
+        values: '_x30 18000x5'
+      - series: 'kube_job_status_succeeded{namespace="keycloak", job_name="keycloak-role-drift-1762001800", condition="true"}'
+        values: '_x30 1x5'
+    alert_rule_test:
+      # a t=17m los dos fallos estan y aun no hay exito: dispara
+      - eval_time: 17m
+        alertname: KeycloakRoleDriftConsecutiveFailures
+        exp_alerts:
+          - exp_labels: {severity: warning, area: kubernetes, domain: crons, namespace: keycloak}
+            exp_annotations:
+              summary: "keycloak-role-drift acumula fallos consecutivos (2 jobs fallidos en 30 min)"
+              description: "Dos o mas Jobs consecutivos de keycloak/keycloak-role-drift (CronJob cada 15 min, INFRA-250) han fallado y el ultimo ciclo sigue fallando: hay DRIFT real entre el realm edani y ROLES.yaml/PRINCIPALS.md. Lee las lineas DRIFT del ultimo job (`kubectl -n keycloak get jobs --sort-by=.metadata.creationTimestamp | grep keycloak-role-drift`, `kubectl -n keycloak logs job/JOB | grep '^DRIFT:'`). El arreglo es una PR de declaracion en k8s-infra-pocharlies; la regla SC-4414 es declaracion y concesion en la misma PR."
+      # a t=31m el job de t=30m (start 18000) supero al ultimo fallo (15300): se apaga
+      - eval_time: 31m
+        alertname: KeycloakRoleDriftConsecutiveFailures
+        exp_alerts: []
+  - interval: 1m
+    name: el job manual (sufijo no numerico) no cuenta, ni sumando con un fallo real
+    input_series:
+      - series: 'kube_job_failed{namespace="keycloak", job_name="keycloak-role-drift-manual-1", condition="true"}'
+        values: '1x10'
+      - series: 'kube_job_failed{namespace="keycloak", job_name="keycloak-role-drift-1762000000", condition="true"}'
+        values: '1x10'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: KeycloakRoleDriftConsecutiveFailures
+        exp_alerts: []
+  - interval: 1m
+    name: "control de la exclusion: otro CronJob del namespace si sigue en K8sCronJobFailed"
+    input_series:
+      - series: 'kube_job_failed{namespace="keycloak", job_name="otro-cron-1762000000", condition="true"}'
+        values: '1x25'
+      - series: 'kube_job_owner{namespace="keycloak", job_name="otro-cron-1762000000", owner_name="otro-cron", owner_kind="CronJob"}'
+        values: '1x25'
+      - series: 'kube_job_status_start_time{namespace="keycloak", job_name="otro-cron-1762000000"}'
+        values: '14400x25'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: K8sCronJobFailed
+        exp_alerts:
+          - exp_labels: {severity: warning, area: kubernetes, domain: crons, namespace: keycloak, owner_name: otro-cron}
+            exp_annotations:
+              summary: "CronJob keycloak/otro-cron failed"
+              description: "The latest Job of CronJob keycloak/otro-cron has failed (kubectl -n keycloak get jobs). Keep groups the alert into a CRON incident and notifies the Infra topic (1248) of Pocharlies Operations, with root-cause analysis via Aurora."

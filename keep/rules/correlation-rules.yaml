@@ -642,13 +642,16 @@ rules:
   # huella «none» (rulesengine._calc_rule_fingerprint) y sigue abriendo su propio
   # incidente ⇒ `created` ⇒ aviso (el motivo de INFRA-378); entra en la misma
   # regla (INFRA-286), no en el mismo incidente.
+  # SC-4414: KeycloakRoleDriftConsecutiveFailures entra en la misma correlacion
+  # (el drift de keycloak-role-drift es un CronJob fallando, incidentes CRON).
   - ruleName: cron-job-failed
-    celQuery: 'name == "K8sCronJobFailed" || name == "BrainIngestConsecutiveFailures"'
+    celQuery: 'name == "K8sCronJobFailed" || name == "BrainIngestConsecutiveFailures" || name == "KeycloakRoleDriftConsecutiveFailures"'
     sqlQuery:
-      sql: "((name in (:name_1, :name_2)))"
+      sql: "((name in (:name_1, :name_2, :name_3)))"
       params:
         name_1: K8sCronJobFailed
         name_2: BrainIngestConsecutiveFailures
+        name_3: KeycloakRoleDriftConsecutiveFailures
     timeframeInSeconds: 3600
     timeUnit: minutes
     groupingCriteria: [namespace, owner_name]
