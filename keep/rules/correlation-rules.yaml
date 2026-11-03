@@ -624,14 +624,19 @@ rules:
   # análisis lo hace Aurora (que además ve el clúster entero, no sólo los logs) y
   # la notificación Keep con el resumen del router.
   #
-  # Agrupado por [namespace, alertname] (INFRA-378): antes era sólo namespace y
-  # el incidente viejo CRON-9d403a3e, abierto con K8sCronJobFailed de los Jobs
-  # t287-test* en firing, absorbía las BrainIngestConsecutiveFailures nuevas sin
-  # emitir `created` — Alertmanager las reenviaba sobre un incidente ya agrupado
-  # y ningún aviso llegaba a Telegram. Con alertname en los criterios, cada
-  # familia de alerta abre su propio incidente ⇒ `created` ⇒ aviso.
-  # BrainIngestConsecutiveFailures entra en la misma regla (INFRA-286), ya no en
-  # el mismo incidente.
+  # Agrupado por [namespace, owner_name] (INFRA-1135): ops-watch deriva la
+  # `causa` de la Request del sha1 del NOMBRE del incidente (sin su número), así
+  # que la granularidad del incidente es la granularidad de la causa. Con
+  # [namespace, alertname] (INFRA-378) los ~20 CronJobs de un namespace casaban
+  # todos en «K8sCronJobFailed en <ns>» y compartían una sola causa para fallos
+  # ajenos (medido: keep-causa cron-job-failed:9c99776a1c bajo la que cayeron
+  # architecture-sync, memory-promotion y knowledge-pages; SC-4342). owner_name
+  # es el CronJob (kube_job_owner, top-level en la alerta) y va también en el
+  # nombre ⇒ una causa por job. El `alertname` del nombre sigue separando
+  # familias: BrainIngestConsecutiveFailures no lleva owner_name, Keep le da la
+  # huella «none» (rulesengine._calc_rule_fingerprint) y sigue abriendo su propio
+  # incidente ⇒ `created` ⇒ aviso (el motivo de INFRA-378); entra en la misma
+  # regla (INFRA-286), no en el mismo incidente.
   - ruleName: cron-job-failed
     celQuery: 'name == "K8sCronJobFailed" || name == "BrainIngestConsecutiveFailures"'
     sqlQuery:
@@ -641,11 +646,11 @@ rules:
         name_2: BrainIngestConsecutiveFailures
     timeframeInSeconds: 3600
     timeUnit: minutes
-    groupingCriteria: [namespace, alertname]
+    groupingCriteria: [namespace, owner_name]
     createOn: any
     resolveOn: all_resolved
     incidentPrefix: CRON
-    incidentNameTemplate: "{{ alertname }} en {{ namespace }}"
+    incidentNameTemplate: "{{ alertname }} en {{ namespace }} · {{ owner_name }}"
     groupDescription: >-
       CronJobs con Jobs fallidos. Los logs de pods efímeros que Loki pierde los
       recupera Aurora vía kubectl-agent.

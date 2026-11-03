@@ -2496,8 +2496,9 @@ spec:
         # 5 min es whatsapp-voice-transcribe (sano, Complete 1/1); sus Jobs
         # no casan este regex — cubrirlos es decisión aparte, no ruido.
         # INFRA-377: se conserva `namespace` en la alerta para que la
-        # correlación de Keep (cron-job-failed, groupingCriteria [namespace])
-        # titule el incidente con la fuente y no "N/A". Test:
+        # correlación de Keep (cron-job-failed, groupingCriteria
+        # [namespace, owner_name] desde INFRA-1135) titule el incidente con la
+        # fuente y no "N/A". Test:
         # tests/test_infra376_brain_ingest_promtool.py + tests/promtool/.
         # NO lleva `unless` de éxito posterior a propósito: el unless de
         # K8sCronJobFailed es su unless + for:15m con cron de 5 min; aquí la
