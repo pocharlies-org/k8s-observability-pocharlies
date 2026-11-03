@@ -170,7 +170,10 @@ data:
                     lines = [
                         "atlassian_mcp_tool_up %d" % _state["up"],
                         "atlassian_mcp_tool_latency_seconds %g" % _state["latency"],
-                        "atlassian_mcp_tool_last_success_timestamp_seconds %g" % _state["last_success"],
+                        # %.3f y no %g: %g recorta a 6 cifras significativas y un epoch
+                        # ~1.79e9 pierde los segundos (quedaba ~1793730000), así que
+                        # time()-last_success>300 disparaba en falso con el MCP sano (SC-4481).
+                        "atlassian_mcp_tool_last_success_timestamp_seconds %.3f" % _state["last_success"],
                     ]
                     lines += ['atlassian_mcp_probe_errors_total{kind="%s"} %d' % (k, n)
                               for k, n in sorted(_state["errors"].items())]
@@ -235,7 +238,7 @@ spec:
         # gateway): el ConfigMap se monta plano (sin generator), así que sin esta anotación
         # editar probe.py NO reiniciaría el pod. tests/test_atlassian_mcp_probe.py la compara
         # con el hash real: cambiar el script sin refrescarla rompe CI.
-        checksum/script: "sha256:7d74c86d40b19f93c4c7ca9925696d8fc0586bea058b8c52fab9036666f4b05b"
+        checksum/script: "sha256:c88b3368b7771d75b3ca78c4a2b4f199cc163899a15eef02f67fcf01f2631b56"
     spec:
       containers:
         - name: probe
