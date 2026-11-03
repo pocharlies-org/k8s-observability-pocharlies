@@ -797,7 +797,11 @@ spec:
                 max by (namespace, job_name) (kube_job_status_start_time > time() - 14400)
               )
               * on (namespace, job_name) group_left(owner_name)
-                max by (namespace, job_name, owner_name) (kube_job_owner{owner_kind="CronJob"})
+                # SC-4414 (SC-4369): keycloak-role-drift queda fuera — su cadencia
+                # */15 casaba exacta con el `for: 15m` y un ciclo suelto de drift
+                # (normal durante un despliegue) abria Request. Solo dispara tras 2
+                # fallos consecutivos, en KeycloakRoleDriftConsecutiveFailures.
+                max by (namespace, job_name, owner_name) (kube_job_owner{owner_kind="CronJob", owner_name!="keycloak-role-drift"})
             )
             unless on (namespace, owner_name)
             (
@@ -833,6 +837,60 @@ spec:
           annotations:
             summary: "CronJob {{ $labels.namespace }}/{{ $labels.owner_name }} failed"
             description: "The latest Job of CronJob {{ $labels.namespace }}/{{ $labels.owner_name }} has failed (kubectl -n {{ $labels.namespace }} get jobs). Keep groups the alert into a CRON incident and notifies the Infra topic (1248) of Pocharlies Operations, with root-cause analysis via Aurora."
+        # SC-4414 (SC-4369): keycloak/keycloak-role-drift (*/15, INFRA-250) sale 1 con
+        # cualquier linea DRIFT, y su cadencia de 15 min casaba exacta con el `for: 15m`
+        # de K8sCronJobFailed: un ciclo suelto — el hueco normal de un despliegue en dos
+        # pasos — era un incidente con Request (4 en 18 dias). Excluido de la regla
+        # generica (arriba, owner_name!=), aqui dispara solo tras 2 fallos consecutivos:
+        # el count de BrainIngestConsecutiveFailures (INFRA-286/INFRA-376) sobre una
+        # ventana de 30 min = 2 ciclos, Y el `unless` de exito posterior de
+        # K8sCronJobFailed — con failedJobsHistoryLimit=3 y TTL 3600 del CronJob los
+        # Jobs fallidos sobreviven ~1 h, asi que el count solo no sabe que el hueco se
+        # cerro; el unless lo sabe y apaga la alerta en el siguiente ciclo bueno. El
+        # drift persistente (falla cada ciclo, sin exito que lo supersede) sigue
+        # disparando. Los Jobs manuales (`keycloak-role-drift-manual-1`, --from=cronjob)
+        # no casan el regex: sufijo no numerico.
+        # Test: tests/test_sc4414_keycloak_role_drift_promtool.py +
+        # tests/promtool/keycloak-role-drift.test.yaml.
+        - alert: KeycloakRoleDriftConsecutiveFailures
+          expr: |
+            (
+              count by (namespace) (
+                max by (namespace, job_name) (
+                  last_over_time(kube_job_failed{namespace="keycloak", job_name=~"keycloak-role-drift-[0-9]+", condition="true"}[30m]) == 1
+                )
+              ) >= 2
+            )
+            unless on (namespace)
+            (
+              max by (namespace) (
+                (
+                  max by (namespace, job_name) (kube_job_status_start_time)
+                  * on (namespace, job_name)
+                    max by (namespace, job_name) (kube_job_status_succeeded > 0)
+                )
+                * on (namespace, job_name) group_left(owner_name)
+                  max by (namespace, job_name, owner_name) (kube_job_owner{owner_kind="CronJob", owner_name="keycloak-role-drift"})
+              )
+              >
+              max by (namespace) (
+                (
+                  max by (namespace, job_name) (kube_job_status_start_time)
+                  * on (namespace, job_name)
+                    max by (namespace, job_name) (kube_job_failed{condition="true"} == 1)
+                )
+                * on (namespace, job_name) group_left(owner_name)
+                  max by (namespace, job_name, owner_name) (kube_job_owner{owner_kind="CronJob", owner_name="keycloak-role-drift"})
+              )
+            )
+          for: 2m
+          labels:
+            severity: warning
+            area: kubernetes
+            domain: crons
+          annotations:
+            summary: "keycloak-role-drift acumula fallos consecutivos ({{ $value }} jobs fallidos en 30 min)"
+            description: "Dos o mas Jobs consecutivos de keycloak/keycloak-role-drift (CronJob cada 15 min, INFRA-250) han fallado y el ultimo ciclo sigue fallando: hay DRIFT real entre el realm edani y ROLES.yaml/PRINCIPALS.md. Lee las lineas DRIFT del ultimo job (`kubectl -n keycloak get jobs --sort-by=.metadata.creationTimestamp | grep keycloak-role-drift`, `kubectl -n keycloak logs job/JOB | grep '^DRIFT:'`). El arreglo es una PR de declaracion en k8s-infra-pocharlies; la regla SC-4414 es declaracion y concesion en la misma PR."
     - name: pocharlies.backup-freshness
       rules:
         # Kubernetes es autoritativo sobre si el backup COMPLETO, mismo criterio
