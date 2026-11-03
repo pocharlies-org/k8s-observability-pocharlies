@@ -25,11 +25,16 @@ class MacBuildDiskCorrelationTests(CorrelationContract, unittest.TestCase):
     VMRULE = "pocharlies-mac-build-disk"
     INCIDENT_NAME = "mac-build: {{ alertname }}"
 
-    def test_ambas_son_critical(self):
-        # No son warning al estilo frigate: el disco lleno corta los builds de pruebas
-        # (INFRA-827) y el entorno de DGX-1392; y la ceguera del emisor es el fallo que
-        # INFRA-849 dejó sin destinatario. Critical + exclusión del safety-net.
-        self.assertEqual(set(self.alerts.values()), {"critical"})
+    def test_severidades(self):
+        # Las dos de disco no son warning al estilo frigate: el disco lleno corta los
+        # builds de pruebas (INFRA-827) y el entorno de DGX-1392; y la ceguera del emisor
+        # con el Mac despierto es el fallo que INFRA-849 dejó sin destinatario. Critical +
+        # exclusión del safety-net. MacBuildUnreachable (SC-4378) es warning: un Mac
+        # dormido de tarde es el uso normal de Dani; medio día sin responder es lo raro,
+        # y al safety-net (sólo critical) no llega, así que no hace falta excluirlo.
+        self.assertEqual(self.alerts["MacBuildDiskLowOrFilling"], "critical")
+        self.assertEqual(self.alerts["MacBuildDiskMetricStale"], "critical")
+        self.assertEqual(self.alerts["MacBuildUnreachable"], "warning")
 
 
 if __name__ == "__main__":

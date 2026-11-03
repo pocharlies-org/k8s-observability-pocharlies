@@ -183,7 +183,7 @@ rules:
         name.startsWith("Rabbitmq") || name.startsWith("Keep") ||
         name.startsWith("Alertmanager") || name.startsWith("SharedValkey") ||
         name.startsWith("SharedDatastore") || name.startsWith("KubeNode") ||
-        name.startsWith("Node") || name.startsWith("MacBuildDisk") ||
+        name.startsWith("Node") || name.startsWith("MacBuild") ||
         name in ["KubernetesDeploymentUnavailable", "KubeDeploymentReplicasMismatch",
                  "KubePodNotReady", "KubeContainerWaiting",
                  "KubeStatefulSetReplicasMismatch", "KubernetesStatefulSetUnavailable",
@@ -442,17 +442,22 @@ rules:
       (manifests/frigate-rules.yaml). Fuente: frigate_* de /api/metrics y
       kubelet_volume_stats_* del PVC frigate-media.
 
-  # Disco del Mac de compilaciones (DGX-1401, off-cluster): `mac_build_disk_*` empujadas
-  # por el LaunchAgent com.e-dani.disk-metric de mac-build (scripts/mac-build-disk-metric.sh
-  # en dgx-infra). Son `critical` y van EXCLUIDAS de critical-safety-net arriba (patrón
-  # node-degraded): sin exclusión se notificarían dos veces; sin regla no habrían llegado
-  # a nadie. Cubre el umbral del 90 % y la ceguera de la métrica (lección INFRA-849).
+  # Familia mac-build (DGX-1401, off-cluster): `mac_build_disk_*` empujadas por el
+  # LaunchAgent com.e-dani.disk-metric de mac-build (scripts/mac-build-disk-metric.sh en
+  # dgx-infra) y la sonda de presencia `mac_build_awake` del timer mac-build-presence del
+  # x86 (SC-4378). Las dos de disco son `critical` y van EXCLUIDAS de critical-safety-net
+  # arriba (patrón node-degraded): sin exclusión se notificarían dos veces; sin regla no
+  # habrían llegado a nadie. Cubre el umbral del 90 %, la ceguera de la métrica con el Mac
+  # despierto (lección INFRA-849) y el Mac sin responder 12 h (MacBuildUnreachable,
+  # warning). La exclusión del safety-net se ensanchó a la par que esta regla (invariante
+  # 1: todo lo excluido tiene regla; la de unreachable es warning y al safety-net no le
+  # afecta, pero el prefijo de las dos tiene que ser el mismo).
   - ruleName: mac-build-disk
-    celQuery: 'name.startsWith("MacBuildDisk")'
+    celQuery: 'name.startsWith("MacBuild")'
     sqlQuery:
       sql: "((name like :name_1))"
       params:
-        name_1: MacBuildDisk%
+        name_1: MacBuild%
     timeframeInSeconds: 1800
     timeUnit: minutes
     groupingCriteria: [alertname]
@@ -462,8 +467,8 @@ rules:
     incidentNameTemplate: "mac-build: {{ alertname }}"
     groupDescription: >-
       Disco de mac-build (Mac de compilaciones) por encima del 90 % de uso o bajo 46 GB
-      libres, o el LaunchAgent que lo reporta lleva 30 min sin empujar (vigilancia
-      ciega). manifests/mac-build-disk-rules.yaml.
+      libres, el emisor que lo reporta roto con el Mac respondiendo (vigilancia ciega), o
+      el Mac 12 h sin responder a la sonda de x86. manifests/mac-build-disk-rules.yaml.
 
   # Schedule muerto (fuente `schedules` de ops-watch, SC-2459): un workflow programado
   # crítico sin ningún run en su margen (p. ej. GitHub lo desactivó tras 3 fallos). El CI

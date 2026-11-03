@@ -7,6 +7,12 @@
 # directo (manifests/ingressroutes.yaml, prioridad 300) y mac-build está en el tailnet
 # (100.85.61.58). No hay scrape: el Mac no escucha nada, sólo empuja.
 #
+# Productor adicional (SC-4378): `mac_build_awake{host="mac-build"} 1|0`, empujada cada
+# 5 min desde el x86 por el timer `mac-build-presence` (x86-host-runtime: tailscale ping +
+# ssh a mac-build). Es la condición de MacBuildDiskMetricStale y de MacBuildUnreachable:
+# el Mac es un portátil que duerme y la ausencia de disco con el Mac dormido no es un
+# incidente (SC-4338: dos Requests auto-cerradas por esto).
+#
 # Contexto: medido el 01-11-2026 con 13 GiB libres (97 % de uso) y ~10 GB de swap; el
 # primer damnificado es el entorno de pruebas del Mac (simuladores, XCUITest — DGX-1392).
 # INFRA-827 y SC-2563 eran la misma presión. El disco se gestionaba sesión a sesión sin
@@ -82,23 +88,60 @@ spec:
               Xcode/npm/Homebrew y `vm_bundles` de Claude (se redesargan). Comprobar
               primero que no hay una compilación en curso (`pgrep xcodebuild`).
         # Lección de INFRA-849: la alerta que se queda ciega justo cuando hace falta es
-        # peor que no tener alerta. Si el LaunchAgent de mac-build deja de empujar (Mac
-        # apagado o sin tailnet, script roto, ingress caído), la serie se va y aquí salta
-        # a los 30 min: la vigilancia del disco no puede quedarse muda sola.
+        # peor que no tener alerta — si el LaunchAgent de mac-build deja de empujar con el
+        # Mac DESPIERTO, la vigilancia del disco se queda muda sola y hay que enterarse.
+        # Lección de SC-4338 (causa mac-build-disk, dos Requests auto-cerradas): el Mac es
+        # un portátil que duerme, y con él dormido la ausencia de serie es el estado normal,
+        # no un incidente. Por eso el `and on()` con la sonda de presencia
+        # `mac_build_awake` (timer `mac-build-presence` de x86-host-runtime, cada 5 min por
+        # tailnet): sólo dispara con el Mac respondiendo y sin métrica. El `on()` vacío es
+        # deliberado: el resultado de `absent()` no lleva `__name__` y el de la comparación
+        # sí, y un `and` sin `on()` no casaría nunca (medido con promtool, SC-4378).
+        # Con la sonda muerta tampoco dispara (no hay con quién casar): ese agujero lo
+        # tapa MacBuildUnreachable abajo, que también casa con `absent(mac_build_awake)`.
         - alert: MacBuildDiskMetricStale
           expr: |
             absent(mac_build_disk_used_percent{host="mac-build"})
+              and on() (mac_build_awake{host="mac-build"} == 1)
           for: 30m
           labels:
             severity: critical
             area: monitoring
           annotations:
-            summary: "mac-build no reporta su disco hace 30 min: la vigilancia de disco está ciega"
+            summary: "mac-build responde pero no reporta su disco hace 30 min: la vigilancia de disco está ciega"
             description: >-
-              VictoriaMetrics no ve `mac_build_disk_used_percent` desde mac-build hace
-              30 min (el LaunchAgent empuja cada 5 min). Mirar: ¿está el Mac despierto y
-              en el tailnet (`tailscale status` en x86)? ¿`launchctl print
-              gui/$(id -u)/com.e-dani.disk-metric` en mac-build? ¿el push falla?
-              scripts/mac-build-disk-metric.sh deja sus errores en
-              ~/builds/disk-metric.err.log. Reinstalar:
-              scripts/mac-build-disk-alerta-install.sh (dgx-infra).
+              La sonda de x86 ve a mac-build responder (mac_build_awake = 1) pero
+              VictoriaMetrics no ve `mac_build_disk_used_percent` hace 30 min: el
+              LaunchAgent empuja cada 5 min, así que está roto (o el push falla), no
+              dormido. Comprobar: `launchctl print gui/$(id -u)/com.e-dani.disk-metric`
+              en mac-build y `~/builds/disk-metric.err.log` (scripts/mac-build-disk-metric.sh
+              deja ahí sus errores). Reinstalar:
+              scripts/mac-build-disk-alerta-install.sh (dgx-infra). Si el Mac estaba
+              dormido, esto no debería haber salido: mirar el histórico de
+              mac_build_awake antes de cerrar (skill `mac-ops`).
+        # SC-4378: el arreglo de SC-4338 no puede cambiar ceguera de métrica por ceguera de
+        # Mac. Con awake = 0 sostenido (o con la propia sonda sin empujar, `absent`: el
+        # timer vive en el x86, si se apaga nadie más lo sabe) no hay ninguna alerta de
+        # disco útil, y un Mac inaccesible medio día sí es incidente: los builds y el
+        # entorno de pruebas de DGX-1392 dependen de él. Warning, no critical: un Mac
+        # dormido de tarde es el uso normal de Dani; medio día sin responder es lo raro.
+        # Cae en el mismo incidente MBD que las dos de arriba (correlación `MacBuild`).
+        - alert: MacBuildUnreachable
+          expr: |
+            (mac_build_awake{host="mac-build"} == 0)
+              or
+            absent(mac_build_awake{host="mac-build"})
+          for: 12h
+          labels:
+            severity: warning
+            area: monitoring
+          annotations:
+            summary: "mac-build lleva 12 h sin responder (o la sonda de x86 sin empujar): los builds y la vigilancia están parados"
+            description: >-
+              La sonda de presencia (`mac-build-presence`, timer de x86 cada 5 min) lleva
+              12 h viendo a mac-build sin responder, o no ha empujado `mac_build_awake` en
+              todo ese rato. Dos causas: el Mac lleva medio día dormido/apagado (fuera del
+              uso normal) o el timer del x86 está muerto — comprobar primero
+              `systemctl --user status mac-build-presence.timer` en el x86 y después el
+              tailnet (`tailscale ping 100.85.61.58`). Con la sonda muerta,
+              MacBuildDiskMetricStale también está ciego: arreglar el timer es lo primero.
