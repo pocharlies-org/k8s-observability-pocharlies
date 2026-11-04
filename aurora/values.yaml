@@ -221,7 +221,7 @@ config:
   GUARDRAILS_ENABLED: "true"
   GUARDRAILS_SIGMA_ENABLED: "true"
   GUARDRAILS_LLM_MODEL: bedrock/qwen38-off
-  GUARDRAILS_LLM_TIMEOUT_SECONDS: "30"
+  GUARDRAILS_LLM_TIMEOUT_SECONDS: "90"
 
   # --- Aislamiento de los comandos de los agentes: DESACTIVADO ---
   #
