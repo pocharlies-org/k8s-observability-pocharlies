@@ -42,7 +42,7 @@ spec:
       path: /metrics
       interval: 30s
       scrapeTimeout: 15s
-      metricRelabelings:
+      metricRelabelConfigs:
         # Deja únicamente el contador de peticiones por service/code/method/protocol.
         - sourceLabels: [__name__]
           regex: "traefik_service_requests_total"
