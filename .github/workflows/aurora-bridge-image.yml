@@ -1,14 +1,16 @@
 name: aurora · bridge image (INFRA-326)
 
-# Construye el puente documentado images/aurora/bridge (aurora-server sha-e35121a +
-# parche Arvo-AI/aurora#688). Multi-arch nativo sin QEMU: cada plataforma la compila el
-# buildkitd de su arch en el namespace buildkit — mismo patrón que
+# Construye el fork documentado images/aurora/bridge (aurora-server upstream 1.2.20
+# por digest + los dos conjuntos registrados: tool-output Arvo-AI/aurora#602 y timeout
+# del juez Arvo-AI/aurora#688). Multi-arch nativo sin QEMU: cada plataforma la compila
+# el buildkitd de su arch en el namespace buildkit — mismo patrón que
 # dgx-infra/.github/workflows/build-bge-embedding.yml. Runner arc-k8s (skill
 # ci-runners-arc); el job necesita docker, que el release de ARC trae por sidecar dind.
 #
-# NO pisa tags existentes: sube ghcr.io/pocharlies-org/aurora-server:sha-e35121a-p688.
-# VER images/aurora/bridge/README.md — PLAN DE RETIRADA: este workflow se borra cuando
-# Arvo-AI/aurora#688 se fusione y se sudee a la imagen upstream.
+# NO pisa tags existentes: sube ghcr.io/pocharlies-org/aurora-server:sha-40dfd6d-p688b
+# (sufijo nuevo por cambio de contenido — regla del registro, INFRA-324).
+# VER images/aurora/bridge/README.md — RETIRADA por merge aguas arriba: cada PR
+# fusionada retira su conjunto; fusionadas ambas, este workflow se borra.
 
 on:
   workflow_dispatch: {}
@@ -51,7 +53,7 @@ jobs:
         # a INFRA-326). En main (push o dispatch) se publica el tag.
         run: |
           ARGS=(--platform linux/amd64,linux/arm64
-                --tag ghcr.io/pocharlies-org/aurora-server:sha-e35121a-p688)
+                --tag ghcr.io/pocharlies-org/aurora-server:sha-40dfd6d-p688b)
           if [ "${GITHUB_REF}" = "refs/heads/main" ]; then
             ARGS+=(--push)
           else
@@ -64,17 +66,19 @@ jobs:
       - name: Espejo del tag frontend (mismo digest, sin rebuild)
         # El chart compone `aurora-frontend:{image.tag}` del MISMO tag global
         # (templates/frontend-deployment.yaml:36, sin override por componente):
-        # sin este espejo el frontend entraría en ImagePullBackOff con el tag -p688.
+        # sin este espejo el frontend entraría en ImagePullBackOff con el tag -p688b.
+        # Fuente: el frontend upstream 1.2.20 pineado por digest (la base nueva es la
+        # imagen de Arvo, ya no el build manual espejado en nuestra org).
         if: github.ref == 'refs/heads/main'
         run: |
           docker buildx imagetools create \
-            -t ghcr.io/pocharlies-org/aurora-frontend:sha-e35121a-p688 \
-            ghcr.io/pocharlies-org/aurora-frontend:sha-e35121aeb7d80293d2e4ce462fe2bc05d9adb469
+            -t ghcr.io/pocharlies-org/aurora-frontend:sha-40dfd6d-p688b \
+            ghcr.io/arvo-ai/aurora-frontend@sha256:e74e7a81d5dd813fcd28028de56abb00a6dc39980809a004d192b335ba2c11eb
 
       - name: Verificar manifiesto y digest
         if: github.ref == 'refs/heads/main'
         run: |
-          docker buildx imagetools inspect ghcr.io/pocharlies-org/aurora-server:sha-e35121a-p688 \
+          docker buildx imagetools inspect ghcr.io/pocharlies-org/aurora-server:sha-40dfd6d-p688b \
             | tee /tmp/inspect.txt
           grep -q 'linux/amd64' /tmp/inspect.txt && grep -q 'linux/arm64' /tmp/inspect.txt
           echo "Digest:"; grep -m1 Digest /tmp/inspect.txt >> "$GITHUB_STEP_SUMMARY" || true

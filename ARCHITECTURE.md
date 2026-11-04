@@ -180,5 +180,16 @@ igual). Necesita Postgres: sin `AURORA_TEST_PG_DSN` se salta en local y **falla 
   fecha: el vigía de drift sobre Arvo-AI/aurora (registro upstream-autoupdate, en `dgx-infra` — fuera de este
   repo; su alta se tramita aparte, ver PR de INFRA-1157) convierte cada merge en la tarea de rebase del
   conjunto correspondiente.
+- `2026-11-04` · **Bump de base del fork a upstream 1.2.20 → tag `sha-40dfd6d-p688b`** (INFRA-1157,
+  segundo tramo): la base pasa del build manual `sha-e35121a` (1.2.18) a la imagen publicada
+  `ghcr.io/arvo-ai/aurora-server:1.2.20` (commit `40dfd6d`, pineada por digest `84d9586d…` — el tag
+  de upstream es mutable). Motivo medido: 1.2.20 trae Arvo-AI/aurora#610 (fusionada el 31-08), que
+  pone `time_limit=420`/`soft_time_limit=330` a la tarea de resumen y desatasca los 153 incidentes
+  varados en `summarizing`. Los DOS conjuntos registrados se reaplican sin conflicto sobre 1.2.20
+  (medido 04-11: los ficheros que tocan no tienen drift entre 1.2.18 y 1.2.20; los ficheros del
+  #688 son byte a byte los ya envasados) y el frontend se espeja desde el upstream 1.2.20 por
+  digest. Sufijo nuevo `-p688b` por la regla de arriba (cambio de contenido = sufijo, nunca
+  reescritura); el chart sigue en `aurora-oss 1.2.16` — subirlo es decisión aparte, no acompaña a
+  este bump. Ficheros, hashes y comando de aplicación: `images/aurora/bridge/README.md`.
 
 Última verificación contra el código: 2026-10-03 · 09373a7 (origin/main)

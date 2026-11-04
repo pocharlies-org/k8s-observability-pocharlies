@@ -1,0 +1,576 @@
+"""
+Tool Context Capture with Automatic Summarization
+
+This module provides automatic summarization of tool results to reduce token usage in LLM context
+while preserving full output visibility for users.
+
+Key Features:
+1. **Automatic Summarization**: Tool outputs exceeding the configured token threshold are summarized
+2. **Dual Message System**: 
+   - Frontend receives full output via WebSocket (unchanged user experience)
+   - LLM context receives summarized version to save tokens
+3. **Internal Messages**: Summarized tool results use InternalToolMessage class with "internal" flag
+4. **Fallback Handling**: If summarization fails, content is truncated with error indication
+5. **Model Selection**: Uses TOOL_OUTPUT_SUMMARIZATION_MODEL for quick processing of large outputs
+
+Architecture:
+- Tool decorators send full output to frontend via WebSocket
+- ToolContextCapture intercepts tool results for LLM context  
+- Content over TOOL_CONTEXT_SUMMARIZATION_THRESHOLD_TOKENS triggers summarization
+- Summarized content marked as "internal" and hidden from UI
+- LLM gets concise summaries while users see complete data
+
+Usage:
+- Completely automatic and transparent
+- No changes needed to existing tools
+- Thresholds are configurable through TOOL_CONTEXT_* and TOOL_OUTPUT_* environment variables
+"""
+
+import json
+import logging
+import threading
+from datetime import datetime, timezone
+from typing import Dict, Any, List, Optional
+from ..llm import LLMManager
+from .llm_usage_tracker import LLMUsageTracker
+from utils.db.connection_pool import db_pool
+from utils.auth.stateless_auth import set_rls_context
+from chat.backend.agent.utils.tool_call_history import OUTPUT_EXCERPT_MAX_CHARS
+from chat.backend.agent.utils.tool_output_cap import (
+    MAX_SUMMARIZATION_INPUT_CHARS,
+    _positive_int_env,
+)
+from utils.text.text_utils import truncate
+# Import langchain components - direct imports for LangChain 1.2.6+
+from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
+from langchain_core.callbacks import BaseCallbackHandler
+
+class InternalToolMessage(ToolMessage):
+    """A tool message that is for internal LLM consumption only and should not be displayed in the UI."""
+    
+    def __init__(self, content: str, tool_call_id: str = "", **kwargs):
+        super().__init__(content=content, tool_call_id=tool_call_id, **kwargs)
+        # Ensure internal flag is in additional_kwargs
+        if not hasattr(self, 'additional_kwargs'):
+            self.additional_kwargs = {}
+        self.additional_kwargs["internal"] = True
+
+logger = logging.getLogger(__name__)
+
+TOOL_CONTEXT_SUMMARIZATION_THRESHOLD_TOKENS = _positive_int_env(
+    "TOOL_CONTEXT_SUMMARIZATION_THRESHOLD_TOKENS", 10_000
+)
+
+# --------------------------------------------------------------------------------------
+# Token counting utility (delegates to LLMUsageTracker for context management only)
+# --------------------------------------------------------------------------------------
+def count_tokens(text: str, model: str = "gpt-4o") -> int:
+    """Count tokens in text using LLMUsageTracker (for context management, not billing)."""
+    return LLMUsageTracker.count_tokens(text, model)
+
+class ToolContextCapture:
+    """Captures complete tool interactions for LLM context history."""
+    
+    def __init__(self, session_id: str, user_id: str, incident_id: Optional[str] = None, org_id: Optional[str] = None):
+        self.session_id = session_id
+        self.user_id = user_id
+        self.incident_id = incident_id
+        self.org_id = org_id
+        if self.incident_id and not self.org_id:
+            try:
+                from utils.auth.stateless_auth import get_org_id_for_user
+                self.org_id = get_org_id_for_user(user_id)
+            except Exception as e:
+                logger.warning(f"Failed to resolve org_id for user {user_id}, execution-step persistence disabled: {e}")
+        self._persist_steps = bool(self.incident_id and self.org_id)
+        self.current_tool_calls = {}  # Track ongoing tool calls
+        # Append-only audit log of completed tool calls. current_tool_calls is GC'd
+        # after 60s of staleness, so consumers that run later (e.g. orchestrator
+        # sub-agents that finish after 2+ minutes) cannot rely on it for history.
+        self.tool_history: list = []
+        self.collected_tool_messages = []  # Store tool messages for batch addition
+        self.tool_execution_signatures = set()  # Track unique tool executions to prevent duplicates
+        # Map message content to correct tool_call_id (survives LangGraph mutations)
+        self.content_to_tool_id = {}  # Map: content_hash → tool_call_id
+        # Lock to guard concurrent access to current_tool_calls from concurrent threads/tasks
+        self.lock = threading.Lock()
+        # Enforce sequential tool execution per session
+        self.execution_lock = threading.Lock()
+
+    # ------------------------------------------------------------------
+    # execution_steps persistence (only for incident-linked sessions)
+    # ------------------------------------------------------------------
+
+    def _record_step_start(self, tool_name: str, tool_input: Any, tool_call_id: str | None = None) -> Optional[int]:
+        """INSERT a running execution_step row. Returns the row id or None."""
+        if not self._persist_steps:
+            return None
+        try:
+            input_json = json.dumps(tool_input) if isinstance(tool_input, dict) else json.dumps(str(tool_input))
+            with db_pool.get_admin_connection() as conn:
+                with conn.cursor() as cur:
+                    set_rls_context(cur, conn, self.user_id, log_prefix="[ToolCapture:start]")
+                    cur.execute(
+                        """INSERT INTO execution_steps
+                           (incident_id, session_id, org_id, step_index, tool_name,
+                            tool_call_id, tool_input, status, started_at)
+                           SELECT %s, %s, %s,
+                                  COALESCE(MAX(step_index), 0) + 1,
+                                  %s, %s, %s, 'running', %s
+                           FROM execution_steps WHERE incident_id = %s
+                           RETURNING id""",
+                        (self.incident_id, self.session_id, self.org_id,
+                         tool_name, tool_call_id, input_json,
+                         datetime.now(timezone.utc), self.incident_id),
+                    )
+                    row_id = cur.fetchone()[0]
+                conn.commit()
+            return row_id
+        except Exception:
+            logger.exception("Failed to record execution_step start")
+            return None
+
+    @staticmethod
+    def _output_indicates_error(output: str) -> bool:
+        """Check if tool output content contains error indicators regardless of whether
+        a Python exception was raised. Covers all providers (Datadog, AWS, GCP, Azure, etc.)."""
+        if not output:
+            return False
+        try:
+            parsed = json.loads(output)
+            if isinstance(parsed, dict):
+                if "error" in parsed:
+                    return True
+                if parsed.get("success") is False:
+                    return True
+                if parsed.get("status") == "error":
+                    return True
+                errors = parsed.get("errors")
+                if isinstance(errors, list) and len(errors) > 0:
+                    return True
+        except (json.JSONDecodeError, TypeError, ValueError):
+            # Non-JSON output — treat as not having explicit error indicators
+            logger.debug("Non-JSON tool output, skipping structured error check")
+        return False
+
+    def _record_step_end(self, step_id: Optional[int], output: str, is_error: bool = False):
+        """UPDATE an execution_step row with completion data."""
+        if step_id is None:
+            return
+        try:
+            from utils.db.connection_pool import db_pool
+            now = datetime.now(timezone.utc)
+            truncated_output = output[:10240] if output else ""
+
+            if not is_error:
+                is_error = self._output_indicates_error(output)
+
+            status = "error" if is_error else "success"
+            error_msg = None
+            if is_error:
+                error_msg = (output[:2048] if output else None)
+
+            with db_pool.get_admin_connection() as conn:
+                with conn.cursor() as cur:
+                    set_rls_context(cur, conn, self.user_id, log_prefix="[ToolCapture:end]")
+                    cur.execute(
+                        """UPDATE execution_steps
+                           SET status = %s,
+                               completed_at = %s,
+                               duration_ms = (EXTRACT(EPOCH FROM (%s - started_at)) * 1000)::int,
+                               tool_output = %s,
+                               error_message = %s
+                           WHERE id = %s""",
+                        (status, now, now, truncated_output, error_msg, step_id),
+                    )
+                conn.commit()
+        except Exception:
+            logger.exception("Failed to record execution_step end")
+        
+    def capture_tool_start(self, tool_name: str, tool_input: Any, tool_call_id: Optional[str] = None) -> str:
+        """Capture the start of a tool execution with improved ID management."""    
+        
+        # Create a normalized signature for this tool execution to detect duplicates
+        # Use sorted JSON to ensure consistent signature regardless of dict key order
+        import json
+        try:
+            normalized_input = json.dumps(tool_input, sort_keys=True) if isinstance(tool_input, dict) else str(tool_input)
+        except (TypeError, ValueError):
+            normalized_input = str(tool_input)
+        tool_signature = f"{tool_name}_{normalized_input}"
+        
+        # Check if we already have a similar tool execution in progress
+        # Only reuse if the exact same tool with exact same input is already running
+        with self.lock: # Use lock for concurrent access
+            for existing_call_id, call_info in self.current_tool_calls.items():
+                try:
+                    normalized_existing_input = json.dumps(call_info['input'], sort_keys=True) if isinstance(call_info['input'], dict) else str(call_info['input'])
+                except (TypeError, ValueError):
+                    normalized_existing_input = str(call_info['input'])
+                existing_signature = f"{call_info['tool_name']}_{normalized_existing_input}"
+                if existing_signature == tool_signature:
+                    time_diff = (datetime.now(timezone.utc) - call_info['start_time']).total_seconds()
+                    if time_diff < 30:
+                        if "step_id" not in call_info:
+                            call_info["step_id"] = self._record_step_start(
+                                tool_name, tool_input, tool_call_id=existing_call_id
+                            )
+                        logger.info(f"Detected duplicate tool execution for {tool_name}, reusing existing call_id: {existing_call_id}")
+                        return existing_call_id
+                    else:
+                        logger.warning(f"Found stale tool call for {tool_name} (age: {time_diff}s), creating new one")
+        
+        logger.info(f"TOOL CAPTURE: Capturing tool start: {tool_name} with ID {tool_call_id}")
+        # Store the tool call for completion later
+        self.current_tool_calls[tool_call_id] = {
+            "tool_name": tool_name,
+            "input": tool_input,
+            "start_time": datetime.now(timezone.utc),
+            "call_id": tool_call_id,
+            "signature": tool_signature,
+            "step_id": self._record_step_start(tool_name, tool_input, tool_call_id=tool_call_id),
+        }
+        
+        logger.info(f"Captured tool start: {tool_name} with ID {tool_call_id}")
+        return tool_call_id
+    
+    def capture_tool_end(self, tool_call_id: str, output: str, is_error: bool = False):
+        """Capture tool completion for LLM context. 
+        Important for cancelled chats since this removes and tracks running tool calls."""
+        logger.debug(f"capture_tool_end called: tool_call_id={tool_call_id}, output_length={len(output)}")
+        
+        if tool_call_id not in self.current_tool_calls:
+            logger.warning(f"Tool call {tool_call_id} not found in captured calls")
+            return
+            
+        tool_info = self.current_tool_calls[tool_call_id]
+        # Compute excerpt outside the lock — pure string processing, no shared state.
+        output_excerpt = truncate(output, OUTPUT_EXCERPT_MAX_CHARS)
+        # Mirror _record_step_end's payload-shape classification so the history
+        # entry (and downstream rca_findings.tool_call_history) matches the
+        # execution_steps row's status.
+        is_err_bool = bool(is_error) or self._output_indicates_error(output)
+        completed_at_iso = datetime.now(timezone.utc).isoformat()
+        tool_name = tool_info["tool_name"]
+        tool_input = tool_info["input"]
+
+        # Mutate shared dict + append-only history under the lock to avoid races
+        # with concurrent sub-agents.
+        with self.lock:
+            tool_info["output_excerpt"] = output_excerpt
+            tool_info["is_error"] = is_err_bool
+            tool_info["completed_at"] = completed_at_iso
+
+            start_time = tool_info.get("start_time")
+            try:
+                # Idempotent: agent.py's on_chat_model_end may have already pre-populated
+                # an empty stub for this tool_call_id. Update it in place if present so
+                # the extractor doesn't see two rows per call.
+                started_iso = start_time.isoformat() if start_time else None
+                updated = False
+                for existing in reversed(self.tool_history):
+                    if existing.get("tool_call_id") == tool_call_id and not existing.get("completed_at"):
+                        existing["tool_name"] = tool_name
+                        existing["input"] = tool_input
+                        existing["output_excerpt"] = output_excerpt
+                        existing["is_error"] = is_err_bool
+                        if started_iso and not existing.get("started_at"):
+                            existing["started_at"] = started_iso
+                        existing["completed_at"] = completed_at_iso
+                        updated = True
+                        break
+                if not updated:
+                    if len(self.tool_history) >= 256:
+                        self.tool_history.pop(0)
+                    self.tool_history.append({
+                        "tool_call_id": tool_call_id,
+                        "tool_name": tool_name,
+                        "input": tool_input,
+                        "output_excerpt": output_excerpt,
+                        "is_error": is_err_bool,
+                        "started_at": started_iso,
+                        "completed_at": completed_at_iso,
+                    })
+            except Exception:
+                logger.debug("tool_history append failed", exc_info=True)
+        run_id = tool_info.get("run_id")  # Get the run_id from the tool info
+        
+        self._record_step_end(tool_info.get("step_id"), output, is_error)
+        
+        logger.debug(f"Tool info: {tool_name}, input: {tool_input}, run_id: {run_id}")
+        
+        # Create the tool call message (for agent flow)
+        tool_call_msg = AIMessage(
+            content="",
+            additional_kwargs={
+                "tool_calls": [{
+                    "id": tool_call_id,
+                    "function": {
+                        "name": tool_name,
+                        "arguments": json.dumps(tool_input) if isinstance(tool_input, dict) else str(tool_input)
+                    },
+                    "type": "function"
+                }]
+            },
+            id=run_id
+        )
+        
+        # Store original content for potential summarization
+        original_content = output
+        
+        # Store summarized content separately - DON'T create InternalToolMessage for agent flow
+        content_tokens = count_tokens(original_content)
+        if content_tokens > TOOL_CONTEXT_SUMMARIZATION_THRESHOLD_TOKENS:
+            logger.info(f" Tool output length {content_tokens} tokens exceeds {TOOL_CONTEXT_SUMMARIZATION_THRESHOLD_TOKENS} token threshold, summarizing for LLM context")
+            try:
+                from ..llm import ModelConfig
+                # Cap content before sending to summarization to prevent context overflow.
+                # LLMManager.summarize() also caps internally, but truncating here avoids
+                # passing multi-MB strings through the call stack unnecessarily.
+                content_to_summarize = original_content
+                if len(content_to_summarize) > MAX_SUMMARIZATION_INPUT_CHARS:
+                    logger.warning(f"Truncating tool output from {len(content_to_summarize)} to {MAX_SUMMARIZATION_INPUT_CHARS} chars before summarization")
+                    content_to_summarize = content_to_summarize[:MAX_SUMMARIZATION_INPUT_CHARS] + "\n\n[Truncated before summarization]"
+                llm = LLMManager()
+                summary = llm.summarize(
+                    content_to_summarize, model=ModelConfig.TOOL_OUTPUT_SUMMARIZATION_MODEL,
+                    user_id=self.user_id, session_id=self.session_id,
+                )
+                summarized_content = summary + '\n\n[Summarized from longer output]'
+                summary_tokens = count_tokens(summarized_content)
+                logger.debug(f" SUMMARIZATION CREATED: {content_tokens} -> {summary_tokens} tokens")
+                logger.debug(f" SUMMARY CONTENT: {summarized_content[:200]}...")
+                
+                self._store_summarized_result(
+                    tool_call_id,
+                    run_id,
+                    {
+                        'original_output': original_content,
+                        'summarized_output': summarized_content,
+                        'tool_name': tool_name,
+                        'tool_input': tool_input,
+                    },
+                )
+                logger.debug(f"Stored summarized content separately - will NOT go through agent flow")
+                
+            except Exception as e:
+                logger.error(f"Failed to summarize tool output: {e}, using truncation instead")
+                truncated_content = original_content[:5000] + '\n\n[Truncated due to summarization error]'
+                self._store_summarized_result(
+                    tool_call_id,
+                    run_id,
+                    {
+                        'original_output': original_content,
+                        'summarized_output': truncated_content,
+                        'tool_name': tool_name,
+                        'tool_input': tool_input,
+                    },
+                )
+        
+        # Always create regular ToolMessage with original content for agent flow
+        # Use tool_call_id (call_xxx format) NOT run_id (run-xxx format)
+        # This ensures proper matching in workflow._associate_tool_calls_with_output
+        tool_result_msg = ToolMessage(
+            content=original_content,
+            tool_call_id=tool_call_id  # Must use tool_call_id for proper UI association
+        )
+        
+        # DEBUG: Verify tool_call_id is correct immediately after creation
+        logger.info(f"CREATED ToolMessage for {tool_name}: tool_call_id={tool_call_id}, actual_id={tool_result_msg.tool_call_id}")
+        
+        # LangGraph mutates tool_call_id during state updates for parallel tools
+        # Store mapping from content hash to tool_call_id for restoration
+        import hashlib
+        content_hash = hashlib.md5(original_content.encode('utf-8')).hexdigest()
+        self.content_to_tool_id[content_hash] = str(tool_call_id)
+        logger.info(f"STORED content mapping: {content_hash[:16]}... → {tool_call_id}")
+        
+        # Set tool_call_id normally (will be corrupted by LangGraph, but we have content mapping)
+        tool_result_msg.tool_call_id = str(tool_call_id)
+        
+        # Add both messages to collected messages for state (agent will see original content)
+        self.collected_tool_messages.extend([tool_call_msg, tool_result_msg])
+        logger.info(f"AFTER APPEND: ToolMessage has tool_call_id={tool_result_msg.tool_call_id}, content_hash={content_hash[:16]}...")
+        logger.debug(f"Collected tool messages - total collected: {len(self.collected_tool_messages)}")
+        
+        # CRITICAL FIX: Mark as completed but DON'T remove yet
+        # The with_completion_notification wrapper needs to access this entry for matching
+        # The wrapper will mark it as 'completed' and then the cleanup happens there
+        # This prevents the race condition where tool is removed before wrapper can process it
+        logger.debug(f"Current tool calls: {self.current_tool_calls} and tool_call_id: {tool_call_id}")
+        with self.lock: # Use lock for concurrent access
+            if tool_call_id in self.current_tool_calls:
+                tool_signature = self.current_tool_calls[tool_call_id]['signature']
+                self.tool_execution_signatures.add(tool_signature)
+                # Mark as completed but keep in current_tool_calls for wrapper matching
+                self.current_tool_calls[tool_call_id]['completed'] = True
+                self.current_tool_calls[tool_call_id]['completion_time'] = datetime.now()
+                logger.debug(f"Marked tool call {tool_call_id} as completed (but kept in tracking for wrapper), remaining active: {len([k for k, v in self.current_tool_calls.items() if not v.get('completed')])}")
+    
+    def _cleanup_stale_completed_calls(self):
+        """Remove completed tool calls that have been sitting in tracking for too long.
+        This is a safety mechanism in case the wrapper didn't clean them up."""
+        MAX_STALE_SECONDS = 60  # Clean up after 1 minute
+        
+        with self.lock:
+            stale_ids = []
+            now = datetime.now()
+            
+            for call_id, call_info in self.current_tool_calls.items():
+                if call_info.get('completed'):
+                    completion_time = call_info.get('completion_time')
+                    if completion_time:
+                        age_seconds = (now - completion_time).total_seconds()
+                        if age_seconds > MAX_STALE_SECONDS:
+                            stale_ids.append(call_id)
+            
+            for call_id in stale_ids:
+                del self.current_tool_calls[call_id]
+                logger.warning(f"Cleaned up stale completed tool call {call_id} (age > {MAX_STALE_SECONDS}s)")
+            
+            if stale_ids:
+                logger.info(f"Cleaned up {len(stale_ids)} stale completed tool calls")
+
+    def _store_summarized_result(self, tool_call_id: Optional[str], run_id: Optional[str], payload: Dict[str, Any]):
+        """Store summarized tool output under both tool_call_id and run_id for compatibility."""
+        if not hasattr(self, 'summarized_tool_results'):
+            self.summarized_tool_results = {}
+
+        if tool_call_id:
+            self.summarized_tool_results[tool_call_id] = payload
+        if run_id and run_id != tool_call_id:
+            self.summarized_tool_results[run_id] = payload
+    
+    def get_content_to_tool_id_mapping(self):
+        """Get the content hash to tool_call_id mapping for restoration."""
+        return self.content_to_tool_id.copy()
+    
+    def get_collected_tool_messages(self):
+        """Get all collected tool messages and clear the collection."""
+        messages = self.collected_tool_messages.copy()
+        self.collected_tool_messages.clear()
+        
+        # Clean up stale completed tool calls that weren't cleaned up by wrapper
+        # This prevents memory leaks from orphaned entries
+        self._cleanup_stale_completed_calls()
+        
+        logger.debug(f"get_collected_tool_messages called with {len(messages)} total messages")
+        
+        # DEBUG: Log all ToolMessage IDs and check additional_kwargs
+        for i, msg in enumerate(messages):
+            if isinstance(msg, ToolMessage):
+                has_kwargs = hasattr(msg, 'additional_kwargs')
+                backup_id = msg.additional_kwargs.get('_original_tool_call_id') if has_kwargs else None
+                logger.info(f"GET_COLLECTED MESSAGE {i}: ToolMessage tool_call_id={msg.tool_call_id}, has_kwargs={has_kwargs}, backup={backup_id}")
+        
+        # Separate internal and external messages
+        external_messages = []
+        internal_messages = []
+        
+        for i, msg in enumerate(messages):
+            is_internal = False
+            if hasattr(msg, 'additional_kwargs') and msg.additional_kwargs:
+                is_internal = msg.additional_kwargs.get('internal', False)
+            
+            msg_type = type(msg).__name__
+            logger.debug(f"Message {i}: type={msg_type}, has_additional_kwargs={hasattr(msg, 'additional_kwargs')}, internal={is_internal}")
+            
+            if is_internal:
+                internal_messages.append(msg)
+                logger.debug(f"INTERNAL MESSAGE DETECTED: {msg_type} - FILTERING OUT FROM WEBSOCKET")
+                logger.debug(f"Internal message content preview: {msg.content[:100]}...")
+            else:
+                external_messages.append(msg)
+                logger.debug(f"External message: {msg_type} - will go to WebSocket")
+                
+        # DON'T call LLMContextManager.save_context_history() - this might be causing the leak
+        # Instead, just keep internal messages for LLM context in memory
+        if internal_messages:
+            logger.info(f"CRITICAL: {len(internal_messages)} internal messages detected - SHOULD NOT reach frontend")
+            # Store them in a class attribute for later use by LLM context
+            if not hasattr(self, 'internal_messages_for_llm'):
+                self.internal_messages_for_llm = []
+            self.internal_messages_for_llm.extend(internal_messages)
+        
+        # CANCELLATION FIX: Handle tools that were interrupted mid-execution
+        # These tools are still in current_tool_calls but have no ToolMessage
+        # Create "cancelled" ToolMessages for them so UI doesn't show "running" forever
+        with self.lock:
+            # Extract tool_call_ids from existing ToolMessages
+            existing_tool_call_ids = set()
+            for msg in external_messages:
+                if isinstance(msg, ToolMessage) and hasattr(msg, 'tool_call_id'):
+                    existing_tool_call_ids.add(msg.tool_call_id)
+            
+            # Find interrupted tools (in current_tool_calls but no ToolMessage)
+            interrupted_tools = []
+            for call_id, tool_info in list(self.current_tool_calls.items()):
+                if call_id not in existing_tool_call_ids:
+                    # This tool was interrupted - has no ToolMessage
+                    interrupted_tools.append((call_id, tool_info))
+                    logger.warning(f"INTERRUPTED TOOL DETECTED: {call_id} ({tool_info.get('tool_name')}) - creating cancellation message")
+            
+            # Create cancellation messages for interrupted tools
+            for call_id, tool_info in interrupted_tools:
+                tool_name = tool_info.get('tool_name', 'unknown')
+                tool_input = tool_info.get('input', {})
+                run_id = tool_info.get('run_id')
+                
+                # Close the persisted execution_step so it doesn't stay 'running' forever
+                cancellation_output = json.dumps({
+                    "success": False,
+                    "cancelled": True,
+                    "message": "Tool execution was cancelled before completion",
+                })
+                self._record_step_end(tool_info.get("step_id"), cancellation_output, is_error=True)
+                
+                # Create AIMessage with tool call (parent message)
+                tool_call_msg = AIMessage(
+                    content="",
+                    additional_kwargs={
+                        "tool_calls": [{
+                            "id": call_id,
+                            "function": {
+                                "name": tool_name,
+                                "arguments": json.dumps(tool_input) if isinstance(tool_input, dict) else str(tool_input)
+                            },
+                            "type": "function"
+                        }]
+                    },
+                    id=run_id
+                )
+                
+                # Create ToolMessage with cancellation status
+                cancellation_result = {
+                    "success": False,
+                    "cancelled": True,
+                    "message": "Tool execution was cancelled before completion",
+                    "tool_name": tool_name,
+                    "input": tool_input
+                }
+                
+                tool_result_msg = ToolMessage(
+                    content=json.dumps(cancellation_result),
+                    tool_call_id=call_id
+                )
+                
+                # Add both messages to external_messages
+                external_messages.extend([tool_call_msg, tool_result_msg])
+                logger.info(f"Created cancellation ToolMessage for interrupted tool {call_id} ({tool_name})")
+                
+                # Remove from current_tool_calls
+                del self.current_tool_calls[call_id]
+        
+        # Return only external messages that can be safely added to state and sent via WebSocket
+        logger.info(f"FINAL RESULT: Returning {len(external_messages)} external messages (filtered out {len(internal_messages)} internal, added {len(interrupted_tools)} cancellation messages)")
+        logger.info(f"External messages types: {[type(msg).__name__ for msg in external_messages]}")
+        
+        return external_messages
+    
+    def capture_agent_response(self, response_text: str):
+        """Capture the final agent response after tool executions."""
+        # REMOVED: This method was causing duplicate saves
+        # The workflow's final save operation already includes all messages including agent responses
+        # Keeping this would load existing context, add the response, and save again - causing duplication
+        logger.info(f"Skipping duplicate agent response capture - handled by workflow final save")
+        pass

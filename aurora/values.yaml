@@ -42,22 +42,24 @@ fullnameOverride: aurora
 # mismo commit desplegasen binarios distintos, y en un sistema que investiga
 # incidentes eso es justo lo que no quieres.
 #
-# OJO con qué es esta imagen (INFRA-326, 2026-10-03): NO es la prebuilt de
-# Arvo — es un PUENTE DOCUMENTADO que construimos nosotros (workflow
-# `aurora · bridge image`): `sha-e35121a` (build manual del 20-08 del commit
-# upstream e35121a + los 3 commits del tool-output aún no mergeados aguas
-# arriba) + el parche de Arvo-AI/aurora#688 (timeout del juez de guardarraíles
-# configurable; sin él `GUARDRAILS_LLM_TIMEOUT_SECONDS` de abajo es inerte y el
-# juez caduca a 10 s hardcodeados). Base, parche, hashes y PLAN DE RETIRADA:
-# images/aurora/bridge/README.md. Al fusionarse #688 aguas arriba: retirar el
-# puente, sudar a la imagen upstream y decidir ahí los knobs TOOL_OUTPUT_*.
+# OJO con qué es esta imagen (INFRA-324/INFRA-1157, 2026-11-04): NO es la prebuilt
+# de Arvo tal cual — es un FORK DOCUMENTADO que construimos nosotros (workflow
+# `aurora · bridge image`): la base upstream `aurora-server:1.2.20` (commit
+# 40dfd6d, pineada por digest) + los DOS conjuntos de parches registrados
+# (tool-output = Arvo-AI/aurora#602, OPEN; timeout del juez = Arvo-AI/aurora#688,
+# OPEN — sin él `GUARDRAILS_LLM_TIMEOUT_SECONDS` de abajo es inerte y el juez
+# caduca a 10 s hardcodeados). El bump a 1.2.20 trae además el time limit de la
+# tarea de resumen (Arvo-AI/aurora#610: time_limit=420/soft 330), que es lo que
+# desatasca los incidentes varados en `summarizing`. Base, ficheros, hashes y
+# RETIRADA (por merge aguas arriba, no por fecha): images/aurora/bridge/README.md.
+# Cambio de contenido = sufijo nuevo en el tag (ahora `-p688b`), nunca reescritura.
 #
 # Al subir la versión del chart en apps/aurora.yaml, revisar el puente (puede
 # que el bump limpio ya esté disponible).
 # ---------------------------------------------------------------------------
 image:
   registry: ghcr.io/pocharlies-org
-  tag: "sha-e35121a-p688"
+  tag: "sha-40dfd6d-p688b"
 
 # ---------------------------------------------------------------------------
 # Infra compartida en vez de la del chart. Ahorra ~4GB y evita duplicar bases de
@@ -211,11 +213,10 @@ config:
   # INFRA-326, vista por security en la entrega). Las capas SigmaHQ y de
   # política, intactas.
   #
-  # GUARDRAILS_LLM_TIMEOUT_SECONDS: sin efecto en la imagen actual (sha-e35121a
-  # tiene el 10 s hardcodeado); se lo traga el chart sin más y empieza a valer
-  # el día que la imagen incluya el PR aguas arriba Arvo-AI/aurora#688 (timeout
-  # configurable, default 10). Se deja puesto aquí para que el bump de imagen
-  # aplique el holgado de una sola vez, sin otro PR.
+  # GUARDRAILS_LLM_TIMEOUT_SECONDS: VALE desde el tag -p688 del fork (que ya
+  # llevaba el parche Arvo-AI/aurora#688, timeout configurable, default 10);
+  # con la base anterior sin parche (sha-e35121a pelada) los 10 s estaban
+  # hardcodeados y este valor era inerte.
   # ------------------------------------------------------------------------
   GUARDRAILS_ENABLED: "true"
   GUARDRAILS_SIGMA_ENABLED: "true"
