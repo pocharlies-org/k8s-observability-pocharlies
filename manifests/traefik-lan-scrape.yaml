@@ -1,0 +1,49 @@
+# INFRA-1153: trae a VictoriaMetrics el contador de peticiones de la puerta LAN
+# (traefik-lan) para poder vigilar los 401/403 de autenticación del brain.
+#
+# Por qué hace falta: la única señal que existe del 403 silencioso del cutover de
+# bóvedas (SC-4466: synapse-adapter-brain en sauvage siguió escribiendo a la bóveda
+# personal con la clave compartida retirada -> push-ingest 403 -> todos los
+# workflows family/* muertos ~10 h) es el contador por servicio+code de Traefik.
+# Ni la app del brain (src/api/health.py no emite un contador de auth: sólo
+# brain_v2_up/health/uptime) ni ningún scrape previo llevaban esa serie a VM: no
+# había NI UN traefik_* en el __name__ de vmsingle. Sin esta serie la alerta
+# BrainDoorAuthFailure (rules.yaml) no puede existir.
+#
+# Traefik expone métricas por defecto (args del Deployment: --metrics.prometheus=true,
+# entrypoint metrics=:9100) y el Service `traefik-lan-metrics` (ClusterIP, puerto
+# `metrics` 9100) ya existía sin consumidor. vmagent tiene los selectores vacíos ->
+# descubre este objeto de cualquier namespace (patrón rabbitmq-scrape.yaml).
+#
+# Cardinalidad: el endpoint completo son ~6200 líneas, de las que ~4200 son las
+# familias de histogramas de duración (el gasto). Se conserva SOLO el contador
+# `traefik_service_requests_total` (483 series medidas en el endpoint vivo): es lo
+# único que mira la alerta. Los histogramas y el resto de familias se descartan con
+# el `keep` de abajo — mismo criterio que los `family` de rabbitmq-detailed: acotar
+# al consumo real de la regla.
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMServiceScrape
+metadata:
+  name: traefik-lan-door
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: brain-door-metrics
+spec:
+  namespaceSelector:
+    matchNames: ["traefik-lan"]
+  # `component: metrics` + `name: traefik` casan sólo el Service dedicado de
+  # métricas (traefik-lan-metrics), no el Service LoadBalancer de tráfico.
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: metrics
+      app.kubernetes.io/name: traefik
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: 30s
+      scrapeTimeout: 15s
+      metricRelabelConfigs:
+        # Deja únicamente el contador de peticiones por service/code/method/protocol.
+        - sourceLabels: [__name__]
+          regex: "traefik_service_requests_total"
+          action: keep

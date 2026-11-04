@@ -2890,3 +2890,73 @@ spec:
               buildctl --addr unix:///run/user/1000/buildkit/buildkitd.sock du` para ver la
               caché y `... prune` para podarla; si el GC (buildkitd.toml, SC-2759) no está
               podando, revisar el ConfigMap buildkitd-amd64-config.
+
+---
+# INFRA-1153: alerta de fallos de autenticación (401/403) en la puerta del brain.
+#
+# Nace del problema SC-4467 (keep-causa synapse-workflow-failures). Dos cutovers de
+# bóvedas del brain (INFRA-554 y INFRA-759 fase C) dejaron consumidores de la clave
+# compartida sin migrar y en ambos la rotura tardó horas en verse: el 403 de
+# push-ingest (SC-4466) asomó ~10 h después por la alerta SYNW de workflows, porque
+# no existía ninguna alerta de 401/403 en la puerta (el grupo pocharlies.brain-ingest
+# sólo miraba fallos de CronJobs).
+#
+# La señal es el contador por servicio+code de traefik-lan (la puerta real por la que
+# entran push-ingest y la API del brain: brain-ingest-k8s.lan.e-dani.com y
+# brain-k8s.lan.e-dani.com, ambos ingressClassName traefik-lan). Traído a VM por el
+# scrape manifests/traefik-lan-scrape.yaml (sin él no había NI UN traefik_* en VM).
+# El regex `skirmshop-brain-prod-.*` cubre las dos patas de la puerta medidas en el
+# endpoint vivo: `...-skirmshop-brain-80@kubernetes` (API) y
+# `...-skirmshop-brain-ingest-80@kubernetes` (push-ingest, la del incidente: 316 403).
+#
+# Guarda de pipeline (SC-2938 / PR #141, mismo patrón que SynapseWorkflowFailed): el
+# vmagent es de 1 réplica y tras un corte la serie renace y VictoriaMetrics lee el
+# primer punto como arranque desde 0 -> increase() fabrica el salto. Se exige que el
+# testigo del scrape lleve TODA la ventana presente (20 muestras a 30s en 10m); durante
+# un hueco del pipeline manda ScrapePathGap y esto calla. Sin la guarda, un reinicio
+# del vmagent encendería esta alerta con 0 fallos reales.
+#
+# Umbral `> 0`: cualquier 401/403 NUEVO en la puerta del brain en 10 min con el scrape
+# sano. Es deliberadamente sensible (warning, no critical): el coste del 403 silencioso
+# fue ~10 h de workflows muertos; un aviso de más en la puerta es barato. Para retirar
+# una excepción de clave compartida sin esto, ver el runbook brain-cutover-consumidores.
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMRule
+metadata:
+  name: pocharlies-brain-door
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/component: alerting
+spec:
+  groups:
+    - name: pocharlies.brain-door
+      rules:
+        - alert: BrainDoorAuthFailure
+          expr: |
+            (
+              sum by (service, code) (
+                increase(traefik_service_requests_total{service=~"skirmshop-brain-prod-.*", code=~"40[13]"}[10m])
+              ) > 0
+            )
+            and on() (min(count_over_time(vm_promscrape_active_scrapers[10m])) >= 20)
+          for: 2m
+          labels:
+            severity: warning
+            area: security
+            component: brain-door
+          annotations:
+            summary: >-
+              Autenticación fallando en la puerta del brain: {{ $value }} peticiones
+              {{ $labels.code }} a {{ $labels.service }} en 10 min
+            description: >-
+              Traefik (puerta LAN del brain) ha devuelto {{ $labels.code }} a
+              {{ $labels.service }} en los últimos 10 minutos (con el scrape sano,
+              guarda SC-2938). Es el modo de fallo del cutover de bóvedas de SC-4466:
+              un consumidor sigue usando una clave retirada o mal sembrada y la puerta
+              falla cerrada, rompiendo sus push-ingest/workflows en silencio. Identifica
+              el emisor: si es un consumidor fuera del clúster (unit systemd en sauvage,
+              hook, host), comprueba que tiene su clave de instancia en
+              api_key_credential_by_instance y la credencial en
+              /etc/synapse/credentials/ (runbook brain-cutover-consumidores). Si acabas
+              de retirar una excepción de clave compartida, vuelve al runbook: el barrido
+              de consumidores a 7 días no se hizo completo.
