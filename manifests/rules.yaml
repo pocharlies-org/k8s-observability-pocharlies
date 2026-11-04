@@ -2908,6 +2908,12 @@ spec:
 # El regex `skirmshop-brain-prod-.*` cubre las dos patas de la puerta medidas en el
 # endpoint vivo: `...-skirmshop-brain-80@kubernetes` (API) y
 # `...-skirmshop-brain-ingest-80@kubernetes` (push-ingest, la del incidente: 316 403).
+# ATENCIÓN al label: el operator de VictoriaMetrics reserva `service` (lo pone al
+# nombre del Service scrapeado, aquí `traefik-lan-metrics`) y MUEVE el `service` real
+# de Traefik a `exported_service`. Por eso el matcher y el `by` van sobre
+# `exported_service`, no sobre `service`: filtrar por `service` no casaría NUNCA (el
+# `service` en VM es siempre `traefik-lan-metrics`). Verificado en vivo: las series del
+# brain salen como exported_service="skirmshop-brain-prod-...".
 #
 # Guarda de pipeline (SC-2938 / PR #141, mismo patrón que SynapseWorkflowFailed): el
 # vmagent es de 1 réplica y tras un corte la serie renace y VictoriaMetrics lee el
@@ -2934,8 +2940,8 @@ spec:
         - alert: BrainDoorAuthFailure
           expr: |
             (
-              sum by (service, code) (
-                increase(traefik_service_requests_total{service=~"skirmshop-brain-prod-.*", code=~"40[13]"}[10m])
+              sum by (exported_service, code) (
+                increase(traefik_service_requests_total{exported_service=~"skirmshop-brain-prod-.*", code=~"40[13]"}[10m])
               ) > 0
             )
             and on() (min(count_over_time(vm_promscrape_active_scrapers[10m])) >= 20)
@@ -2947,10 +2953,10 @@ spec:
           annotations:
             summary: >-
               Autenticación fallando en la puerta del brain: {{ $value }} peticiones
-              {{ $labels.code }} a {{ $labels.service }} en 10 min
+              {{ $labels.code }} a {{ $labels.exported_service }} en 10 min
             description: >-
               Traefik (puerta LAN del brain) ha devuelto {{ $labels.code }} a
-              {{ $labels.service }} en los últimos 10 minutos (con el scrape sano,
+              {{ $labels.exported_service }} en los últimos 10 minutos (con el scrape sano,
               guarda SC-2938). Es el modo de fallo del cutover de bóvedas de SC-4466:
               un consumidor sigue usando una clave retirada o mal sembrada y la puerta
               falla cerrada, rompiendo sus push-ingest/workflows en silencio. Identifica

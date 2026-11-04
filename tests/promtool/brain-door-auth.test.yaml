@@ -13,7 +13,7 @@ tests:
     input_series:
       - series: 'vm_promscrape_active_scrapers{job="vmagent-vm-victoria-metrics-k8s-stack",type="azure_sd_configs"}'
         values: '1x80'
-      - series: 'traefik_service_requests_total{service="skirmshop-brain-prod-skirmshop-brain-ingest-80@kubernetes",code="403",method="POST",protocol="http"}'
+      - series: 'traefik_service_requests_total{exported_service="skirmshop-brain-prod-skirmshop-brain-ingest-80@kubernetes",code="403",method="POST",protocol="http"}'
         values: '0x31 3x49'
     alert_rule_test:
       - eval_time: 14m
@@ -26,7 +26,7 @@ tests:
               severity: warning
               area: security
               component: brain-door
-              service: skirmshop-brain-prod-skirmshop-brain-ingest-80@kubernetes
+              exported_service: skirmshop-brain-prod-skirmshop-brain-ingest-80@kubernetes
               code: "403"
             exp_annotations:
               summary: "Autenticación fallando en la puerta del brain: 3 peticiones 403 a skirmshop-brain-prod-skirmshop-brain-ingest-80@kubernetes en 10 min"
@@ -36,7 +36,7 @@ tests:
     input_series:
       - series: 'vm_promscrape_active_scrapers{job="vmagent-vm-victoria-metrics-k8s-stack",type="azure_sd_configs"}'
         values: '1x80'
-      - series: 'traefik_service_requests_total{service="skirmshop-brain-prod-skirmshop-brain-80@kubernetes",code="401",method="GET",protocol="http"}'
+      - series: 'traefik_service_requests_total{exported_service="skirmshop-brain-prod-skirmshop-brain-80@kubernetes",code="401",method="GET",protocol="http"}'
         values: '0x31 1x49'
     alert_rule_test:
       - eval_time: 18m
@@ -46,7 +46,7 @@ tests:
               severity: warning
               area: security
               component: brain-door
-              service: skirmshop-brain-prod-skirmshop-brain-80@kubernetes
+              exported_service: skirmshop-brain-prod-skirmshop-brain-80@kubernetes
               code: "401"
             exp_annotations:
               summary: "Autenticación fallando en la puerta del brain: 1 peticiones 401 a skirmshop-brain-prod-skirmshop-brain-80@kubernetes en 10 min"
@@ -56,7 +56,7 @@ tests:
     input_series:
       - series: 'vm_promscrape_active_scrapers{job="vmagent-vm-victoria-metrics-k8s-stack",type="azure_sd_configs"}'
         values: '1x11 _x30 1x40'
-      - series: 'traefik_service_requests_total{service="skirmshop-brain-prod-skirmshop-brain-ingest-80@kubernetes",code="403",method="POST",protocol="http"}'
+      - series: 'traefik_service_requests_total{exported_service="skirmshop-brain-prod-skirmshop-brain-ingest-80@kubernetes",code="403",method="POST",protocol="http"}'
         values: '3x11 _x30 3x40'
     alert_rule_test:
       - eval_time: 22m
