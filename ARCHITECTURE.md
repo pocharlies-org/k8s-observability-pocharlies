@@ -157,15 +157,28 @@ igual). Necesita Postgres: sin `AURORA_TEST_PG_DSN` se salta en local y **falla 
   imagen incluya Arvo-AI/aurora#688 — hoy el 10 s está hardcodeado y el juez caducaba y fallaba cerrado en el 279/329 de
   los `on_prem_kubectl`, INFRA-326). El juez sigue activo y fail-closed; sólo cambia su modelo y su espera. La key
   `aurora-rca` ganó `qwen38-off` en su allowlist (BBDD de LiteLLM, `/key/update` con lista completa).
-- `2026-10-03` · **Puente de imagen `aurora-server:sha-e35121a-p688`** (INFRA-326, aprobado por el CTO): lo desplegado
-  ya era un fork temporal — `sha-e35121a` es un build manual del 20-08 (`15a52db`) de `arvo-ai/aurora@e35121a` + 3
-  commits del tool-output sin mergear aguas arriba, y ahí el timeout del juez sigue hardcodeado. El puente = esa misma
-  imagen + el parche de Arvo-AI/aurora#688 (diff `a6fbc9b6…10116`; `config.py` `cb0327fd…`, `command_safety.py`
-  `bc237bfd…`), construido en GitOps por `.github/workflows/aurora-bridge-image.yml` (`arc-k8s` + buildkitd remotos,
-  multi-arch sin QEMU; espeja también `aurora-frontend:…-p688`, que el chart compone del mismo tag). Base, hashes y
-  aplicación reproducible: `images/aurora/bridge/README.md`. **Retirada obligatoria** al fusionarse #688: bump upstream
-  + borrar `images/aurora/bridge/`, esta entrada y los tags `-p688`; en ese bump se decide la pata tool-output
-  (knobs `TOOL_OUTPUT_*` vs cap fijo 40 k). Si #688 sigue OPEN el 2026-11-02, escalar al CTO — no se reconvierte en
-  fork permanente.
+- `2026-11-04` · **Fork documentado `aurora-server:sha-e35121a-p688`** (INFRA-324, veredicto del architect
+  nota-architect-puente.md; reescribe la entrada de puente de INFRA-326 — la escalada al CTO que esa entrada
+  prescribía para el 2026-11-02 queda cumplida con el veredicto, y su sello es el merge de este registro):
+  lo desplegado no es un puente con caducidad, es un **fork propio con dos conjuntos de parches registrados**.
+  Base `sha-e35121a` = build manual del 20-08 (`15a52db`) de `arvo-ai/aurora@e35121a`. Conjuntos:
+  **(1) tool-output** — 3 commits sin mergear aguas arriba (`d46f89e`, `ffc1b24`, `e35121a`), PR aguas arriba
+  Arvo-AI/aurora#602 «feat: make tool output limits configurable» (OPEN, sin actividad desde el 20-08); sin
+  ella el upstream fija `PASS_THROUGH_CHARS = 40_000` y los knobs `TOOL_OUTPUT_*` de `aurora/values.yaml`
+  quedan inertes. **(2) timeout del juez** — el diff de Arvo-AI/aurora#688 (OPEN, última actividad 03-10)
+  sobre `config.py` (`cb0327fd…`) y `command_safety.py` (`bc237bfd…`), diff `a6fbc9b6…10116`: hace legible
+  `GUARDRAILS_LLM_TIMEOUT_SECONDS`; sin él los 30 s desplegados son inertes y el juez caducaba a 10 s
+  fail-closed (279/329 `on_prem_kubectl` en 7 días, INFRA-326; 33 % con el juez actual, spec INFRA-324).
+  Build reproducible por digest en GitOps: `.github/workflows/aurora-bridge-image.yml` (`arc-k8s` + buildkitd
+  remotos, multi-arch sin QEMU; espeja también `aurora-frontend:…-p688`, que el chart compone del mismo tag);
+  base, hashes y aplicación reproducible: `images/aurora/bridge/README.md`. **Retirada por merge aguas arriba,
+  no por fecha**: la fusión de cada PR retira su conjunto (rebase o caída del parche); con la de #688 se
+  decide la pata `TOOL_OUTPUT_*` (knobs vs cap fijo 40 k); con ambas fusionadas, el fork desaparece (bump
+  upstream + borrar `images/aurora/bridge/`, esta entrada y los tags `-p688`). Regla permanente: el fork no se
+  extiende más allá de los dos conjuntos registrados — un cambio de contenido sube sufijo (`-p688b`) en
+  workflow, values y README, nunca reescribe el tag. El disparador de la retirada es un mecanismo, no una
+  fecha: el vigía de drift sobre Arvo-AI/aurora (registro upstream-autoupdate, en `dgx-infra` — fuera de este
+  repo; su alta se tramita aparte, ver PR de INFRA-1157) convierte cada merge en la tarea de rebase del
+  conjunto correspondiente.
 
 Última verificación contra el código: 2026-10-03 · 09373a7 (origin/main)
