@@ -74,6 +74,10 @@ resources:
   # mismo motivo que arc-scrape.yaml: los scrapes y reglas de plataforma viven en este repo.
   - manifests/frigate-scrape.yaml
   - manifests/frigate-rules.yaml
+  # INFRA-1153: scrape del contador por servicio+code de traefik-lan (la puerta del
+  # brain) para la alerta BrainDoorAuthFailure de rules.yaml. El scrape va aquí, como
+  # arc/frigate: los scrapes de plataforma viven en este repo.
+  - manifests/traefik-lan-scrape.yaml
   # DGX-1401: alerta del disco de mac-build (off-cluster, series empujadas por su
   # LaunchAgent com.e-dani.disk-metric — dgx-infra scripts/mac-build-disk-metric.sh).
   - manifests/mac-build-disk-rules.yaml

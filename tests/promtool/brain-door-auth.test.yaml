@@ -1,0 +1,67 @@
+# INFRA-1153: BrainDoorAuthFailure (grupo pocharlies.brain-door) sólo arde si el
+# scrape lleva toda la ventana presente (guarda SC-2938). Testigo:
+# min(count_over_time(vm_promscrape_active_scrapers[10m])) >= 20 (30s: 20 muestras).
+# Intervalo 30s para igualar la densidad real. Cubre las dos verificaciones del
+# criterio: clave mala (403 nuevo con scrape vivo) -> arde; reinicio del vmagent
+# (renacimiento tras hueco con contador plano) -> no arde.
+rule_files:
+  - brain-door.rules.yaml
+evaluation_interval: 30s
+tests:
+  - interval: 30s
+    name: "403 nuevo en push-ingest con scrape continuo - dispara (clave retirada)"
+    input_series:
+      - series: 'vm_promscrape_active_scrapers{job="vmagent-vm-victoria-metrics-k8s-stack",type="azure_sd_configs"}'
+        values: '1x80'
+      - series: 'traefik_service_requests_total{service="skirmshop-brain-prod-skirmshop-brain-ingest-80@kubernetes",code="403",method="POST",protocol="http"}'
+        values: '0x31 3x49'
+    alert_rule_test:
+      - eval_time: 14m
+        alertname: BrainDoorAuthFailure
+        exp_alerts: []
+      - eval_time: 18m
+        alertname: BrainDoorAuthFailure
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              area: security
+              component: brain-door
+              service: skirmshop-brain-prod-skirmshop-brain-ingest-80@kubernetes
+              code: "403"
+            exp_annotations:
+              summary: "Autenticación fallando en la puerta del brain: 3 peticiones 403 a skirmshop-brain-prod-skirmshop-brain-ingest-80@kubernetes en 10 min"
+              description: "Traefik (puerta LAN del brain) ha devuelto 403 a skirmshop-brain-prod-skirmshop-brain-ingest-80@kubernetes en los últimos 10 minutos (con el scrape sano, guarda SC-2938). Es el modo de fallo del cutover de bóvedas de SC-4466: un consumidor sigue usando una clave retirada o mal sembrada y la puerta falla cerrada, rompiendo sus push-ingest/workflows en silencio. Identifica el emisor: si es un consumidor fuera del clúster (unit systemd en sauvage, hook, host), comprueba que tiene su clave de instancia en api_key_credential_by_instance y la credencial en /etc/synapse/credentials/ (runbook brain-cutover-consumidores). Si acabas de retirar una excepción de clave compartida, vuelve al runbook: el barrido de consumidores a 7 días no se hizo completo."
+  - interval: 30s
+    name: "401 en la API del brain con scrape continuo - dispara"
+    input_series:
+      - series: 'vm_promscrape_active_scrapers{job="vmagent-vm-victoria-metrics-k8s-stack",type="azure_sd_configs"}'
+        values: '1x80'
+      - series: 'traefik_service_requests_total{service="skirmshop-brain-prod-skirmshop-brain-80@kubernetes",code="401",method="GET",protocol="http"}'
+        values: '0x31 1x49'
+    alert_rule_test:
+      - eval_time: 18m
+        alertname: BrainDoorAuthFailure
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              area: security
+              component: brain-door
+              service: skirmshop-brain-prod-skirmshop-brain-80@kubernetes
+              code: "401"
+            exp_annotations:
+              summary: "Autenticación fallando en la puerta del brain: 1 peticiones 401 a skirmshop-brain-prod-skirmshop-brain-80@kubernetes en 10 min"
+              description: "Traefik (puerta LAN del brain) ha devuelto 401 a skirmshop-brain-prod-skirmshop-brain-80@kubernetes en los últimos 10 minutos (con el scrape sano, guarda SC-2938). Es el modo de fallo del cutover de bóvedas de SC-4466: un consumidor sigue usando una clave retirada o mal sembrada y la puerta falla cerrada, rompiendo sus push-ingest/workflows en silencio. Identifica el emisor: si es un consumidor fuera del clúster (unit systemd en sauvage, hook, host), comprueba que tiene su clave de instancia en api_key_credential_by_instance y la credencial en /etc/synapse/credentials/ (runbook brain-cutover-consumidores). Si acabas de retirar una excepción de clave compartida, vuelve al runbook: el barrido de consumidores a 7 días no se hizo completo."
+  - interval: 30s
+    name: "renacimiento de la serie tras hueco del vmagent con contador plano - NO dispara (fabricación increase)"
+    input_series:
+      - series: 'vm_promscrape_active_scrapers{job="vmagent-vm-victoria-metrics-k8s-stack",type="azure_sd_configs"}'
+        values: '1x11 _x30 1x40'
+      - series: 'traefik_service_requests_total{service="skirmshop-brain-prod-skirmshop-brain-ingest-80@kubernetes",code="403",method="POST",protocol="http"}'
+        values: '3x11 _x30 3x40'
+    alert_rule_test:
+      - eval_time: 22m
+        alertname: BrainDoorAuthFailure
+        exp_alerts: []
+      - eval_time: 24m
+        alertname: BrainDoorAuthFailure
+        exp_alerts: []
