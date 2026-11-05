@@ -42,6 +42,9 @@ resources:
   - manifests/alertmanager-config.yaml
   - manifests/probes.yaml
   - manifests/rules.yaml
+  # INFRA-1187: KubePodNotReady/KubeContainerWaiting con `workload` (reemplazo
+  # del chart) para agrupar deployment-degraded por workload.
+  - manifests/pod-workload-rules.yaml
   # INFRA-1031 (SC-3623): alerta de hueco del camino de scrape (vmagent→vmsingle)
   # y evidencia RCA de 90 días (vmsingle-rca + vmalert-rca).
   - manifests/scrape-path-rules.yaml

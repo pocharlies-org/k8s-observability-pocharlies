@@ -68,6 +68,9 @@ spec:
           labels:
             severity: critical
             area: kubernetes
+            # INFRA-1187: la regla `deployment-degraded` de Keep agrupa por
+            # [namespace, workload]; toda alerta de la regla lleva `workload`.
+            workload: "{{ $labels.deployment }}"
           annotations:
             summary: "Deployment unavailable"
             description: "{{ $labels.namespace }}/{{ $labels.deployment }} has fewer available replicas than desired."
@@ -198,6 +201,9 @@ spec:
           labels:
             severity: critical
             area: kubernetes
+            # INFRA-1187: agrupación por workload en `deployment-degraded` (ver
+            # KubernetesDeploymentUnavailable arriba).
+            workload: "{{ $labels.statefulset }}"
           annotations:
             summary: "StatefulSet unavailable"
             description: "{{ $labels.namespace }}/{{ $labels.statefulset }} has fewer ready replicas than desired."
