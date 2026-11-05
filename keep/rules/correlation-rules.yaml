@@ -172,6 +172,11 @@ rules:
   # La cobertura la sigue dando llm-plane (ver verify-notification-coverage.py).
   # INFRA-1031: ScrapePathGap y VmagentRemoteWriteFailing tienen regla propia
   # (camino-de-scrape, más abajo) y se excluyen aquí para no abrir dos incidentes.
+  # SC-4645: SreDevopsChainProbe igual (regla propia: sre-chain-probe). Es la sonda
+  # que dispara una persona a mano y puede fallar la severidad del disparo (contract:
+  # warning); con critical montaba un «Crítico en N/A» fantasma — no lleva label
+  # namespace y la red agrupa por él (CRIT-18469, 05/11). La cobertura la sigue
+  # dando sre-chain-probe, cuyo CEL no mira la severidad.
   - ruleName: critical-safety-net
     celQuery: >-
       (severity == "critical" || labels.severity == "page") && !(
@@ -190,7 +195,8 @@ rules:
                  "KubeletInstanceUnreachable", "TargetDown", "BlackboxProbeDown",
                  "ScrapePoolHasNoTargets", "TooManyScrapeErrors", "AlertingRulesError",
                  "TooManyLogs", "LitellmNotReady", "AtlassianMcpToolDown",
-                 "ScrapePathGap", "VmagentRemoteWriteFailing"]
+                 "ScrapePathGap", "VmagentRemoteWriteFailing",
+                 "SreDevopsChainProbe"]
       )
     sqlQuery:
       sql: "((severity = :severity_1))"
@@ -500,8 +506,15 @@ rules:
 
   # Sonda de extremo a extremo de la cadena Alertmanager -> Keep -> Aurora ->
   # Hermes sre-devops. Solo la dispara quien prueba la cadena a mano (amtool con
-  # alertname=SreDevopsChainProbe, severity=warning); no hay regla de
-  # Prometheus que la emita.
+  # alertname=SreDevopsChainProbe); no hay regla de Prometheus que la emita.
+  # Como se dispara (SC-4645, 05/11): desde INFRA-882 el despacho a Aurora es SOLO
+  # de incidentes critical, asi que para probar la cadena HASTA Aurora/Hermes el
+  # disparo va con severity=critical (con warning se queda en el incidente PROBE y
+  # Aurora no entra). Lleva entonces la etiqueta `test=<ticket>` (SC-4171): sin ella
+  # ops-watch abre Request del incidente PROBE como de cualquier firing. Y por eso
+  # mismo la sonda esta excluida de critical-safety-net arriba: con critical no debe
+  # montar ademas un «Critico en N/A» fantasma (CRIT-18469) — esta regla es su regla
+  # de dominio (INVARIANTE 1) y su CEL no mira la severidad.
   - ruleName: sre-chain-probe
     celQuery: 'name == "SreDevopsChainProbe"'
     sqlQuery:

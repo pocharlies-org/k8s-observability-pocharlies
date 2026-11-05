@@ -152,8 +152,10 @@ CREATE INDEX CONCURRENTLY IF NOT EXISTS aurora_dispatches_alertfp_idx
 2. **Deploy**: merge del PR (ArgoCD `keep`); comprobar que Keep cargó el
    workflow nuevo y re-ejecutar el `UPDATE … alert_fingerprint` del paso 1
    (cubre filas que el workflow viejo insertó en la ventana).
-3. **Prueba viva**: `SreDevopsChainProbe` (warning) → una fila con
-   `fingerprint = substr(md5(keep_incident_id::text),1,16)`,
+3. **Prueba viva**: `SreDevopsChainProbe` (critical, con etiqueta `test=<ticket>`;
+   desde INFRA-882 el despacho es solo de critical — con warning no hay fila — y la
+   etiqueta evita que ops-watch abra Request del incidente PROBE, SC-4171/SC-4645) →
+   una fila con `fingerprint = substr(md5(keep_incident_id::text),1,16)`,
    `alert_fingerprint` poblado y `previous_keep_incident_id` NULL; repetida
    dentro de 6 h → sin fila nueva.
 4. **Contract** (solo tras 3 verde):
