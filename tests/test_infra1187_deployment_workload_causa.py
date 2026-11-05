@@ -22,21 +22,12 @@ Pines:
 Hermetic: sin kubectl ni red.
 """
 
-import importlib.util
-from pathlib import Path
 import re
 import unittest
 
 import yaml
 
-REPO = Path(__file__).resolve().parents[1]
-RULES = REPO / "keep" / "rules" / "correlation-rules.yaml"
-
-_spec = importlib.util.spec_from_file_location(
-    "verify_notification_coverage", REPO / "scripts" / "verify-notification-coverage.py"
-)
-coverage = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(coverage)
+from keep_correlation import RULES, coverage
 
 # Las 7 familias de la regla. Añadir una aquí exige darle `workload` en su
 # VMRule (o en la copia del chart vía defaultRules.rules.<X>.spec.labels), o
