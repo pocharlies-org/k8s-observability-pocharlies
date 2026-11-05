@@ -10,18 +10,21 @@ incidentes por la misma alerta. Las comprobaciones compartidas viven en
 ``keep_correlation.CorrelationContract``. Hermetic: no kubectl, no network.
 """
 
-from pathlib import Path
 import unittest
+from pathlib import Path
 
 from keep_correlation import CorrelationContract
 
-REPO = Path(__file__).resolve().parents[1]
-
 
 class MacBuildLivenessCorrelationTests(CorrelationContract, unittest.TestCase):
+    # La casa la regla mac-build-disk existente (misma familia, prefijo MBD): por eso
+    # RULE apunta ahí y no hay regla nueva — el celQuery `startsWith("MacBuild")` de
+    # arriba ya la cubre, y tests/test_dgx1401_macbuild_correlation.py sigue vigilando
+    # la de disco sobre su propio VMRule.
     RULE = "mac-build-disk"
-    VMRULE_FILE = REPO / "manifests" / "mac-build-liveness-rules.yaml"
     VMRULE = "pocharlies-mac-build-liveness"
+    VMRULE_FILE = (Path(__file__).resolve().parents[1]
+                   / "manifests" / "mac-build-liveness-rules.yaml")
     INCIDENT_NAME = "mac-build: {{ alertname }}"
 
     def test_severidad(self):
