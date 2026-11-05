@@ -17,15 +17,15 @@ aviso lo decide una regla de correlación de `keep/rules/correlation-rules.yaml`
 
 | destino hoy | series | % |
 |---|---:|---:|
-| keep | 346 | 97% |
+| keep | 347 | 97% |
 | **BLACKHOLE (se descarta)** | 9 | 3% |
-| **TOTAL** | **355** | 100% |
+| **TOTAL** | **356** | 100% |
 
 ### Taxonomía de severidad realmente emitida
 
 | valor | series | ¿lo contempla el árbol? |
 |---|---:|---|
-| `warning` | 211 | sí — catch-all → `keep` |
+| `warning` | 212 | sí — catch-all → `keep` |
 | `critical` | 134 | sí — `severity = critical` |
 | `info` | 8 | **no** — cae al receiver raíz |
 | `none` | 2 | **no** — cae al receiver raíz |
@@ -280,7 +280,7 @@ despiertan a nadie pese a llamarse `page`.
 | `PostgresSharedInstancesNotReady` | `critical` | keep |  |
 | `PostgresSharedMetricsMissing` | `warning` | keep |  |
 
-### Rabbitmq (15)
+### Rabbitmq (16)
 
 | alertname | sev | destino hoy | firing |
 |---|---|---|---:|
@@ -289,10 +289,11 @@ despiertan a nadie pese a llamarse `page`.
 | `RabbitmqContactSyncBacklogAfterWindow` | `warning` | keep |  |
 | `RabbitmqDlqGrowth` | `warning` | keep |  |
 | `RabbitmqExpensesBacklogAfterWindow` | `warning` | keep |  |
-| `RabbitmqFunctionalQueueNoConsumer` | `warning` | keep | 1 |
+| `RabbitmqFunctionalQueueNoConsumer` | `warning` | keep | 3 |
 | `RabbitmqHeadMessageStale` | `critical` | keep |  |
 | `RabbitmqMemoryAlarmActive` | `critical` | keep |  |
 | `RabbitmqMemoryHigh` | `critical` | keep |  |
+| `RabbitmqMessagingMediaBacklogAfterWindow` | `warning` | keep |  |
 | `RabbitmqMnesiaPartitionStuck` | `critical` | keep |  |
 | `RabbitmqNodeScrapeBlackout` | `critical` | keep |  |
 | `RabbitmqPeersMetricMissing` | `critical` | keep |  |
@@ -365,17 +366,17 @@ despiertan a nadie pese a llamarse `page`.
 
 | alertname | sev | destino hoy | firing |
 |---|---|---|---:|
-| `TargetDown` | `warning` | keep |  |
+| `TargetDown` | `warning` | keep | 1 |
 
 ### TooMany (7)
 
 | alertname | sev | destino hoy | firing |
 |---|---|---|---:|
-| `TooManyLogs` | `warning` | keep |  |
+| `TooManyLogs` | `warning` | keep | 1 |
 | `TooManyMissedIterations` | `warning` | keep |  |
 | `TooManyRemoteWriteErrors` | `warning` | keep |  |
 | `TooManyRestarts` | `critical` | keep |  |
-| `TooManyScrapeErrors` | `warning` | keep |  |
+| `TooManyScrapeErrors` | `warning` | keep | 1 |
 | `TooManyTSIDMisses` | `critical` | keep |  |
 | `TooManyWriteErrors` | `warning` | keep |  |
 
@@ -403,8 +404,8 @@ despiertan a nadie pese a llamarse `page`.
 | `AffiliateAppRestartSpike` | `critical` | keep |  |
 | `AgentGatewayRouteErrorRateHigh` | `warning` | keep |  |
 | `AlertingRulesError` | `warning` | keep |  |
-| `AnalisisPuertaCerrada` | `warning` | keep |  |
-| `AnalisisRevisorParado` | `warning` | keep |  |
+| `AnalisisPuertaCerrada` | `warning` | keep | 1 |
+| `AnalisisRevisorParado` | `warning` | keep | 4 |
 | `AnalisisSinMetricas` | `warning` | keep |  |
 | `AtlassianMcpToolDown` | `critical` | keep |  |
 | `AuroraRcaCoverageAbsent` | `warning` | keep |  |
@@ -430,7 +431,7 @@ despiertan a nadie pese a llamarse `page`.
 | `ConcurrentInsertsHitTheLimit` | `warning` | keep |  |
 | `ConfigurationReloadFailure` | `warning` | keep |  |
 | `CorreoBridgeMensajesPerdidos` | `warning` | keep |  |
-| `DashProductorAusente` | `warning` | keep | 11 |
+| `DashProductorAusente` | `warning` | keep | 12 |
 | `DeepSeekTpSpinWaitSuspected` | `critical` | keep |  |
 | `DiskRunsOutOfSpace` | `critical` | keep |  |
 | `DiskRunsOutOfSpaceIn3Days` | `critical` | keep |  |
@@ -444,7 +445,7 @@ despiertan a nadie pese a llamarse `page`.
 | `HighQueueDepth` | `warning` | keep |  |
 | `IndexDBRecordsDrop` | `critical` | keep |  |
 | `InfoInhibitor` | `none` | **BLACKHOLE** | 4 |
-| `K8sCronJobFailed` | `warning` | keep | 1 |
+| `K8sCronJobFailed` | `warning` | keep |  |
 | `KeepBackendAbsent` | `critical` | keep |  |
 | `KeepBackendNotSpread` | `warning` | keep |  |
 | `KeepIngestionDown` | `critical` | keep |  |
@@ -458,7 +459,7 @@ despiertan a nadie pese a llamarse `page`.
 | `MacBuildDiskLowOrFilling` | `critical` | keep |  |
 | `MacBuildDiskMetricStale` | `critical` | keep |  |
 | `MacBuildUnreachable` | `warning` | keep |  |
-| `MacBuildUnreachableOrBridgeDown` | `critical` | keep |  |
+| `MacBuildUnreachableOrBridgeDown` | `critical` | keep | 1 |
 | `MetadataCacheUtilizationIsTooHigh` | `warning` | keep |  |
 | `MetricNameStatsCacheUtilizationIsTooHigh` | `warning` | keep |  |
 | `OnePasswordQuotaBurn` | `warning` | keep |  |
@@ -529,7 +530,7 @@ despiertan a nadie pese a llamarse `page`.
 | `TooHighSlowInsertsRate` | `warning` | keep |  |
 | `UPSBatteryLow` | `critical` | keep |  |
 | `UPSLowCharge` | `critical` | keep |  |
-| `UPSMetricsAbsent` | `critical` | keep |  |
+| `UPSMetricsAbsent` | `critical` | keep | 1 |
 | `UPSOnBattery` | `critical` | keep |  |
 | `UPSReplaceBattery` | `critical` | keep |  |
 | `VllmLaneRestartLoop` | `critical` | keep |  |

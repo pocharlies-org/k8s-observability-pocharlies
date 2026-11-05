@@ -1202,12 +1202,27 @@ spec:
           # adapter.telegram.ingress NO se excluye: medido el 17-10 tiene
           # consumidor (synapse_adapter_telegram); si muere, esta alerta es la
           # única señal — sacarla la cegaría (es lo que esta Request combate).
+          #
+          # Colas del adaptador multimedia EXCLUIDAS (2026-11-05, SC-4664):
+          # mismo caso que contact-sync y expenses. Su consumidor es el
+          # Deployment synapse-adapter-messaging-media, gestionado por el KEDA
+          # ScaledObject keda-synapse-adapter-messaging-media (trigger cron
+          # 03:30-07:30 Europe/Madrid, minReplicas 0): summarize_attachments,
+          # upload_topic_attachments, send_topic_photo, save_attachments y
+          # audit_correos_weights (su SYNAPSE_COMMAND_ACTIONS en
+          # k8s-synapse-pocharlies/k8s/adapters/deployment-adapter-messaging-media.yaml).
+          # Fuera de la ventana hay SIEMPRE consumers==0; un mensaje publicado
+          # de día dispara la alerta hasta la ventana siguiente (medido 05-11:
+          # summarize_attachments vacía hasta las 08:00Z y con 26 ready a las
+          # 11:30Z, SYNP-18488; la ventana drenó contact_sync a 0 el 04-11 y el
+          # 05-11). Su señal de fallo real es
+          # RabbitmqMessagingMediaBacklogAfterWindow, tras la de expenses.
           expr: |
             (
               max by (vhost, queue) (
                 rabbitmq_detailed_queue_consumers{
                   vhost="/synapse",
-                  queue!~"dlq\\..+|archive\\..+|adapter\\.[^.]+|adapter\\.messaging\\.whatsapp_contact_sync|adapter\\.expenses(\\..+)?|synapse\\.unroutable"
+                  queue!~"dlq\\..+|archive\\..+|adapter\\.[^.]+|adapter\\.messaging\\.(whatsapp_contact_sync|summarize_attachments|upload_topic_attachments|send_topic_photo|save_attachments|audit_correos_weights)|adapter\\.expenses(\\..+)?|synapse\\.unroutable"
 
                 }
               ) == 0
@@ -1217,7 +1232,7 @@ spec:
               max by (vhost, queue) (
                 rabbitmq_detailed_queue_messages_ready{
                   vhost="/synapse",
-                  queue!~"dlq\\..+|archive\\..+|adapter\\.[^.]+|adapter\\.messaging\\.whatsapp_contact_sync|adapter\\.expenses(\\..+)?|synapse\\.unroutable"
+                  queue!~"dlq\\..+|archive\\..+|adapter\\.[^.]+|adapter\\.messaging\\.(whatsapp_contact_sync|summarize_attachments|upload_topic_attachments|send_topic_photo|save_attachments|audit_correos_weights)|adapter\\.expenses(\\..+)?|synapse\\.unroutable"
 
                 }
               ) > 0
@@ -1287,6 +1302,41 @@ spec:
           annotations:
             summary: "expenses adapter backlog survived its cron window ({{ $labels.queue }})"
             description: "Queue {{ $labels.queue }} still has ready messages after the 03:30-07:30 Europe/Madrid cron window of the expenses adapter. Check `kubectl -n synapse get scaledobject keda-synapse-adapter-expenses` and the pod logs from the window; the consumer is KEDA-cronned, its absence outside the window is by design."
+
+        - alert: RabbitmqMessagingMediaBacklogAfterWindow
+          # Fallo del consumidor cron del adaptador multimedia (añadida
+          # 2026-11-05, SC-4664, junto a la exclusión de sus cinco colas de
+          # RabbitmqFunctionalQueueNoConsumer): mismo patrón que las de
+          # contact-sync y expenses — el consumidor es el Deployment
+          # synapse-adapter-messaging-media, escalado 0→1 por el ScaledObject
+          # keda-synapse-adapter-messaging-media (cron 03:30-07:30
+          # Europe/Madrid); consume las cinco acciones de su
+          # SYNAPSE_COMMAND_ACTIONS. Si al final de la ventana (05:00-06:59 UTC,
+          # cubre el fin del drain en invierno y verano) queda ready en
+          # cualquiera de ellas, la ventana de esta mañana no drenó: KEDA no
+          # escaló, el pod murió al arrancar o el adaptador no consume.
+          # Medido 05-11: en régimen normal summarize_attachments está vacía
+          # hasta el amanecer y crece de día (0 ready a las 08:00Z, 26 a las
+          # 11:30Z); la ventana drenó whatsapp_contact_sync a 0 el 04-11 y el
+          # 05-11.
+          expr: |
+            (
+              max by (vhost, queue) (
+                rabbitmq_detailed_queue_messages_ready{
+                  vhost="/synapse",
+                  queue=~"adapter\\.messaging\\.(summarize_attachments|upload_topic_attachments|send_topic_photo|save_attachments|audit_correos_weights)"
+                }
+              ) > 0
+            )
+            and on() (hour() >= 5 and hour() < 7)
+          for: 15m
+          labels:
+            severity: warning
+            area: messaging
+            component: shared-rabbitmq
+          annotations:
+            summary: "messaging-media adapter backlog survived its cron window ({{ $labels.queue }})"
+            description: "Queue {{ $labels.queue }} still has ready messages after the 03:30-07:30 Europe/Madrid cron window of the messaging-media adapter. Check `kubectl -n synapse get scaledobject keda-synapse-adapter-messaging-media` and the pod logs from the window; the consumer is KEDA-cronned, its absence outside the window is by design."
 
         # --- critical: cluster membership / partition ----------------------
         # Added after the 2026-07-10 01:08Z split-brain (P1): a Tailscale flap
