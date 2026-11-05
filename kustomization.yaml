@@ -11,6 +11,9 @@ resources:
   - apps/aurora-kubectl-agent.yaml
   - manifests/ingressroutes.yaml
   - manifests/keep-secrets.yaml
+  # INFRA-1175: credenciales del object store de OVH para Loki (el chart no tiene
+  # existingSecret para S3; Loki las lee del entorno con -config.expand-env=true).
+  - manifests/loki-ovh-creds.yaml
   - manifests/aurora-secrets.yaml
   - manifests/aurora-kubectl-agent.yaml
   - manifests/aurora-storage.yaml
