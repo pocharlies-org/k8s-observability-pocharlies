@@ -67,9 +67,9 @@ image:
 # ---------------------------------------------------------------------------
 services:
   postgres:
-    enabled: false   # -> postgres-shared (CNPG, 2 instancias, backup a MinIO)
+    enabled: false   # -> postgres-shared (CNPG, 2 instancias, backup a OVH)
   minio:
-    enabled: false   # -> minio-s3.minio, bucket `aurora` con usuario propio
+    enabled: false   # -> OVH Object Storage, bucket `aurora-pocharlies` (INFRA-1175)
   vault:
     enabled: false   # -> vault.vault, mount KV `aurora` con política acotada
   memgraph:
@@ -91,11 +91,13 @@ config:
   POSTGRES_DB: aurora
   POSTGRES_SSLMODE: prefer
 
-  # --- S3 en MinIO ---
-  STORAGE_BUCKET: aurora
-  STORAGE_ENDPOINT_URL: http://minio-s3.minio.svc.cluster.local:9000
-  STORAGE_USE_SSL: "false"
-  STORAGE_VERIFY_SSL: "false"
+  # --- S3 en OVH Object Storage (INFRA-1175; antes la MinIO de sauvage) ---
+  # Path-style: el bucket NO va en el host, así que el nombre del bucket es el del
+  # final `-pocharlies` (OVH lo comparte con todo el mundo).
+  STORAGE_BUCKET: aurora-pocharlies
+  STORAGE_ENDPOINT_URL: https://s3.sbg.io.cloud.ovh.net
+  STORAGE_USE_SSL: "true"
+  STORAGE_VERIFY_SSL: "true"
 
   # --- Vault: mount propio, no el compartido ---
   # `aurora` es un mount KV v2 distinto de `secret`, y el token de Aurora está
