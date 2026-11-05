@@ -1,6 +1,6 @@
 # Matriz de routing de alertas — estado actual y destino en Keep
 
-Generado el 2026-11-01 por `scripts/alert_routing.py matrix` desde las VMRules del
+Generado el 2026-11-05 por `scripts/alert_routing.py matrix` desde las VMRules del
 clúster `x86-k3s` y las definidas en `manifests/` (SC-1835), simulando el
 matching de Alertmanager sobre `VMAlertmanagerConfig monitoring/synapse-webhook`.
 
@@ -17,16 +17,16 @@ aviso lo decide una regla de correlación de `keep/rules/correlation-rules.yaml`
 
 | destino hoy | series | % |
 |---|---:|---:|
-| keep | 355 | 98% |
-| **BLACKHOLE (se descarta)** | 9 | 2% |
-| **TOTAL** | **364** | 100% |
+| keep | 346 | 97% |
+| **BLACKHOLE (se descarta)** | 9 | 3% |
+| **TOTAL** | **355** | 100% |
 
 ### Taxonomía de severidad realmente emitida
 
 | valor | series | ¿lo contempla el árbol? |
 |---|---:|---|
-| `warning` | 215 | sí — catch-all → `keep` |
-| `critical` | 139 | sí — `severity = critical` |
+| `warning` | 211 | sí — catch-all → `keep` |
+| `critical` | 134 | sí — `severity = critical` |
 | `info` | 8 | **no** — cae al receiver raíz |
 | `none` | 2 | **no** — cae al receiver raíz |
 
@@ -36,10 +36,10 @@ LibrePlay, Tracking) que nunca se alineó con el resto.
 
 ## Hallazgos accionables
 
-1. **9 series (2%) no pueden notificar a nadie.**
+1. **9 series (3%) no pueden notificar a nadie.**
    Descontando los heartbeats (InfoInhibitor, Watchdog), son 8
    series ciegas; 1 de ellas están disparadas ahora mismo
-   (2 instancias activas).
+   (1 instancias activas).
    `Watchdog` e `InfoInhibitor` deben seguir sin notificar, pero **sí** tienen que
    llegar a Keep: son la señal de que la ingesta sigue viva.
 
@@ -101,6 +101,12 @@ despiertan a nadie pese a llamarse `page`.
 | `ImageStudioStaleCurrentRecurring` | `warning` | keep |  |
 | `ImageStudioWorkerDown` | `warning` | keep |  |
 
+### Keycloak (1)
+
+| alertname | sev | destino hoy | firing |
+|---|---|---|---:|
+| `KeycloakRoleDriftConsecutiveFailures` | `warning` | keep |  |
+
 ### Krea2 (3)
 
 | alertname | sev | destino hoy | firing |
@@ -141,7 +147,7 @@ despiertan a nadie pese a llamarse `page`.
 | `KubeNodePressure` | `info` | **BLACKHOLE** |  |
 | `KubeNodeReadinessFlapping` | `warning` | keep |  |
 | `KubeNodeUnreachable` | `warning` | keep |  |
-| `KubePdbNotEnoughHealthyPods` | `warning` | keep |  |
+| `KubePdbNotEnoughHealthyPods` | `warning` | keep | 2 |
 | `KubePersistentVolumeErrors` | `critical` | keep |  |
 | `KubePersistentVolumeFillingUp` | `critical` | keep |  |
 | `KubePersistentVolumeFillingUp` | `warning` | keep |  |
@@ -205,30 +211,11 @@ despiertan a nadie pese a llamarse `page`.
 | `LabelsValkeyRejectedConnections` | `critical` | keep |  |
 | `LabelsValkeyScrapeTargetsLow` | `warning` | keep |  |
 
-### LibrePlay (14)
-
-| alertname | sev | destino hoy | firing |
-|---|---|---|---:|
-| `LibrePlayDependencyDown` | `critical` | keep |  |
-| `LibrePlayDependencyLatencyHigh` | `warning` | keep |  |
-| `LibrePlayDeploymentUnavailable` | `critical` | keep |  |
-| `LibrePlayMetricsScrapeMissing` | `critical` | keep |  |
-| `LibrePlayPostgresUnavailable` | `critical` | keep |  |
-| `LibrePlayQueueBacklogHigh` | `warning` | keep |  |
-| `LibrePlayQueueFailures` | `warning` | keep |  |
-| `LibrePlaySLOErrorBudgetBurnFast` | `critical` | keep |  |
-| `LibrePlaySLOErrorBudgetBurnMedium` | `critical` | keep |  |
-| `LibrePlaySLOErrorBudgetBurnSlow` | `warning` | keep |  |
-| `LibrePlaySyntheticAvailabilityBudgetLow` | `warning` | keep |  |
-| `LibrePlaySyntheticDown` | `critical` | keep |  |
-| `LibrePlaySyntheticLatencyHigh` | `warning` | keep |  |
-| `LibrePlayWorkerOrWebRestarting` | `warning` | keep |  |
-
 ### Longhorn (6)
 
 | alertname | sev | destino hoy | firing |
 |---|---|---|---:|
-| `LonghornNodeSchedulingDisabled` | `warning` | keep | 1 |
+| `LonghornNodeSchedulingDisabled` | `warning` | keep |  |
 | `LonghornOrphanReplicasStale` | `warning` | keep |  |
 | `LonghornOrphanWatchNotRunning` | `warning` | keep |  |
 | `LonghornTooFewSchedulableNodes` | `warning` | keep |  |
@@ -239,7 +226,7 @@ despiertan a nadie pese a llamarse `page`.
 
 | alertname | sev | destino hoy | firing |
 |---|---|---|---:|
-| `MCPBackendCrashLooping` | `warning` | keep | 2 |
+| `MCPBackendCrashLooping` | `warning` | keep | 1 |
 | `MCPBackendMemNearLimit` | `warning` | keep |  |
 | `MCPBackendOOMKilled` | `critical` | keep |  |
 | `MCPGatewayDown` | `critical` | keep |  |
@@ -269,7 +256,7 @@ despiertan a nadie pese a llamarse `page`.
 | `NodeFilesystemSpaceFillingUp` | `warning` | keep |  |
 | `NodeHighNumberConntrackEntriesUsed` | `warning` | keep |  |
 | `NodeMemoryHighUtilization` | `warning` | keep |  |
-| `NodeMemoryMajorPagesFaults` | `warning` | keep | 1 |
+| `NodeMemoryMajorPagesFaults` | `warning` | keep |  |
 | `NodeNetworkInterfaceFlapping` | `warning` | keep |  |
 | `NodeNetworkReceiveErrs` | `warning` | keep |  |
 | `NodeNetworkTransmitErrs` | `warning` | keep |  |
@@ -329,7 +316,7 @@ despiertan a nadie pese a llamarse `page`.
 
 | alertname | sev | destino hoy | firing |
 |---|---|---|---:|
-| `ScrapePoolHasNoTargets` | `warning` | keep |  |
+| `ScrapePoolHasNoTargets` | `warning` | keep | 1 |
 
 ### Sii (6)
 
@@ -339,7 +326,7 @@ despiertan a nadie pese a llamarse `page`.
 | `SiiInvoicingFunctionalFailure` | `warning` | keep |  |
 | `SiiInvoicingTelemetryMissing` | `warning` | keep |  |
 | `SiiMonthlyReportCronStale` | `critical` | keep |  |
-| `SiiMonthlyReportFailed` | `warning` | keep | 1 |
+| `SiiMonthlyReportFailed` | `warning` | keep |  |
 | `SiiMonthlyReportTelemetryMissing` | `warning` | keep |  |
 
 ### Synapse (27)
@@ -361,8 +348,8 @@ despiertan a nadie pese a llamarse `page`.
 | `SynapseJanitorStalled` | `warning` | keep |  |
 | `SynapseOperatorRestarts` | `critical` | keep |  |
 | `SynapseOrphanIndexEntries` | `critical` | keep |  |
-| `SynapseOutboxExhausted` | `warning` | keep | 1 |
-| `SynapseOutboxOldestStale` | `warning` | keep | 1 |
+| `SynapseOutboxExhausted` | `warning` | keep |  |
+| `SynapseOutboxOldestStale` | `warning` | keep |  |
 | `SynapsePollFaultedBacklog` | `warning` | keep |  |
 | `SynapseReconcileApplyFailed` | `critical` | keep |  |
 | `SynapseReconcileApplyPartial` | `critical` | keep |  |
@@ -371,24 +358,24 @@ despiertan a nadie pese a llamarse `page`.
 | `SynapseScheduledWorkflowStalled` | `warning` | keep |  |
 | `SynapseScheduledWorkflowStalledDaily` | `warning` | keep |  |
 | `SynapseScheduledWorkflowStalledWeekly` | `warning` | keep |  |
-| `SynapseUnroutableMessages` | `warning` | keep |  |
+| `SynapseUnroutableMessages` | `warning` | keep | 7 |
 | `SynapseWorkflowFailed` | `warning` | keep |  |
 
 ### Target (1)
 
 | alertname | sev | destino hoy | firing |
 |---|---|---|---:|
-| `TargetDown` | `warning` | keep | 2 |
+| `TargetDown` | `warning` | keep |  |
 
 ### TooMany (7)
 
 | alertname | sev | destino hoy | firing |
 |---|---|---|---:|
-| `TooManyLogs` | `warning` | keep | 1 |
+| `TooManyLogs` | `warning` | keep |  |
 | `TooManyMissedIterations` | `warning` | keep |  |
 | `TooManyRemoteWriteErrors` | `warning` | keep |  |
 | `TooManyRestarts` | `critical` | keep |  |
-| `TooManyScrapeErrors` | `warning` | keep | 1 |
+| `TooManyScrapeErrors` | `warning` | keep |  |
 | `TooManyTSIDMisses` | `critical` | keep |  |
 | `TooManyWriteErrors` | `warning` | keep |  |
 
@@ -404,7 +391,7 @@ despiertan a nadie pese a llamarse `page`.
 | `TrackingIngestionSilent` | `warning` | keep |  |
 | `TrackingPage404Spike` | `critical` | keep |  |
 
-### otros (141 — 3 ciegas)
+### otros (145 — 3 ciegas)
 
 | alertname | sev | destino hoy | firing |
 |---|---|---|---:|
@@ -417,7 +404,7 @@ despiertan a nadie pese a llamarse `page`.
 | `AgentGatewayRouteErrorRateHigh` | `warning` | keep |  |
 | `AlertingRulesError` | `warning` | keep |  |
 | `AnalisisPuertaCerrada` | `warning` | keep |  |
-| `AnalisisRevisorParado` | `warning` | keep | 1 |
+| `AnalisisRevisorParado` | `warning` | keep |  |
 | `AnalisisSinMetricas` | `warning` | keep |  |
 | `AtlassianMcpToolDown` | `critical` | keep |  |
 | `AuroraRcaCoverageAbsent` | `warning` | keep |  |
@@ -425,15 +412,17 @@ despiertan a nadie pese a llamarse `page`.
 | `BackupRecoveryKitStale` | `critical` | keep |  |
 | `BackupWeeklySnapshotStale` | `critical` | keep |  |
 | `BgePoolLatencyAboveGate` | `critical` | keep |  |
+| `BrainDoorAuthFailure` | `warning` | keep |  |
 | `BrainIngestConsecutiveFailures` | `warning` | keep |  |
 | `BrainWindowsMassDeleteRefused` | `warning` | keep |  |
 | `BrainWindowsPassStale` | `warning` | keep |  |
+| `BuildkitAmd64CacheHigh` | `critical` | keep |  |
 | `CIPoolSaturated` | `warning` | keep |  |
 | `CIQueueExporterBlind` | `warning` | keep |  |
 | `CIQueueJobQueuedTooLong` | `warning` | keep |  |
 | `CIQueueLabelWithoutPool` | `warning` | keep |  |
 | `CIRunnerNoProgress` | `warning` | keep |  |
-| `CPUThrottlingHigh` | `info` | **BLACKHOLE** | 2 |
+| `CPUThrottlingHigh` | `info` | **BLACKHOLE** | 1 |
 | `CertManagerCertificateMetricsMissing` | `critical` | keep |  |
 | `CertificateExpiresSoon` | `warning` | keep |  |
 | `CertificateNotReady` | `critical` | keep |  |
@@ -441,7 +430,7 @@ despiertan a nadie pese a llamarse `page`.
 | `ConcurrentInsertsHitTheLimit` | `warning` | keep |  |
 | `ConfigurationReloadFailure` | `warning` | keep |  |
 | `CorreoBridgeMensajesPerdidos` | `warning` | keep |  |
-| `DashProductorAusente` | `warning` | keep | 9 |
+| `DashProductorAusente` | `warning` | keep | 11 |
 | `DeepSeekTpSpinWaitSuspected` | `critical` | keep |  |
 | `DiskRunsOutOfSpace` | `critical` | keep |  |
 | `DiskRunsOutOfSpaceIn3Days` | `critical` | keep |  |
@@ -454,7 +443,7 @@ despiertan a nadie pese a llamarse `page`.
 | `GpuArbiterStateObservationUnavailable` | `warning` | keep |  |
 | `HighQueueDepth` | `warning` | keep |  |
 | `IndexDBRecordsDrop` | `critical` | keep |  |
-| `InfoInhibitor` | `none` | **BLACKHOLE** | 1 |
+| `InfoInhibitor` | `none` | **BLACKHOLE** | 4 |
 | `K8sCronJobFailed` | `warning` | keep | 1 |
 | `KeepBackendAbsent` | `critical` | keep |  |
 | `KeepBackendNotSpread` | `warning` | keep |  |
@@ -468,6 +457,8 @@ despiertan a nadie pese a llamarse `page`.
 | `LogErrors` | `warning` | keep |  |
 | `MacBuildDiskLowOrFilling` | `critical` | keep |  |
 | `MacBuildDiskMetricStale` | `critical` | keep |  |
+| `MacBuildUnreachable` | `warning` | keep |  |
+| `MacBuildUnreachableOrBridgeDown` | `critical` | keep |  |
 | `MetadataCacheUtilizationIsTooHigh` | `warning` | keep |  |
 | `MetricNameStatsCacheUtilizationIsTooHigh` | `warning` | keep |  |
 | `OnePasswordQuotaBurn` | `warning` | keep |  |
