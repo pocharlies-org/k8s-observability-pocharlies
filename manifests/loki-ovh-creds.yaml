@@ -1,0 +1,46 @@
+---
+# INFRA-1175: credenciales S3 para que Loki escriba los chunks en Object Storage
+# de OVH (bucket `loki-chunks-pocharlies`). Antes iban en claro en
+# `loki/values.yaml` (`dibanez` / bootstrap de la MinIO de sauvage) y, al
+# renderizarse, se copiaban también al ConfigMap `loki` y al secret de release
+# de Helm: la rotación de esas claves es de `security`.
+#
+# El chart grafana/loki 7.0.0 no tiene `existingSecret` para el object store, así
+# que Loki lee estas dos claves del entorno (`-config.expand-env=true`, ver
+# `loki/values.yaml`) y por eso el Secret se llama como las variables.
+#
+# 1Password (vault k8s-pocharlies), item `ovh-object-storage-s3`:
+#   access_key / secret_key   -> usuario S3 `k8s-objectstore` del proyecto PCI de
+#                               OVH, gestionado desde el manager de OVH.
+#
+# Rotar: claves nuevas en el manager de OVH, actualizar el item, y REINICIAR
+# Loki — el `storage_config` se lee al arrancar; ESO refresca el Secret en
+# segundos pero el proceso viejo sigue con la clave antigua en memoria.
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: loki-ovh-creds
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: loki
+    app.kubernetes.io/component: object-storage-credentials
+    security.e-dani.com/rotation-class: object-storage
+spec:
+  refreshInterval: 24h
+  refreshPolicy: OnChange
+  secretStoreRef:
+    name: onepassword-connect
+    kind: ClusterSecretStore
+  target:
+    name: loki-ovh-creds
+    creationPolicy: Owner
+    deletionPolicy: Retain
+  data:
+    - secretKey: LOKI_S3_ACCESS_KEY_ID
+      remoteRef:
+        key: ovh-object-storage-s3
+        property: access_key
+    - secretKey: LOKI_S3_SECRET_ACCESS_KEY
+      remoteRef:
+        key: ovh-object-storage-s3
+        property: secret_key

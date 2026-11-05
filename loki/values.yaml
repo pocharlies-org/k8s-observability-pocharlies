@@ -1,6 +1,7 @@
-# Loki single-binary — logs stored in MinIO (S3) on sauvage
+# Loki single-binary — logs stored in OVH Object Storage (S3 compatible)
 # Helm chart: grafana/loki
-# Index local in Longhorn PVC; chunks in MinIO bucket loki-chunks
+# Index local in Longhorn PVC; chunks en el bucket OVH `loki-chunks-pocharlies`
+# (INFRA-1175: antes, la MinIO de sauvage).
 deploymentMode: SingleBinary
 
 loki:
@@ -19,24 +20,34 @@ loki:
   storage:
     type: s3
     bucketNames:
-      chunks: loki-chunks
-      ruler: loki-chunks
-      admin: loki-chunks
+      chunks: loki-chunks-pocharlies
+      ruler: loki-chunks-pocharlies
+      admin: loki-chunks-pocharlies
     s3:
-      endpoint: minio-s3.minio.svc.cluster.local:9000
-      region: us-east-1
-      # Credentials via ExternalSecret from Vault (loki-minio-creds)
-      # Fallback bootstrap values below — rotate via Vault after Phase 5
-      accessKeyId: dibanez
-      secretAccessKey: ChangeMe-MinIO-Bootstrap-2026!
+      # OVH Object Storage (región SBG, París). `s3ForcePathStyle` porque los
+      # buckets de OVH no resuelven por subdominio.
+      endpoint: s3.sbg.io.cloud.ovh.net
+      region: sbg
+      # El chart 7.0.0 NO tiene `existingSecret` para S3: estas dos claves se
+      # expanden desde el entorno del contenedor (`-config.expand-env=true`), y
+      # el entorno viene del Secret `loki-ovh-creds` que materializa el
+      # ExternalSecret `manifests/loki-ovh-creds.yaml`. La credencial vive solo
+      # en 1Password (item `ovh-object-storage-s3`).
+      #
+      # Las credenciales que había aquí estaban en claro en git (`dibanez` /
+      # bootstrap) y se filtraban además al ConfigMap `loki` y al secret de
+      # release de Helm: la rotación es de `security` (INFRA-1175, 47240).
+      accessKeyId: ${LOKI_S3_ACCESS_KEY_ID}
+      secretAccessKey: ${LOKI_S3_SECRET_ACCESS_KEY}
       s3ForcePathStyle: true
-      insecure: true
+      insecure: false
   limits_config:
     # INFRA-43 (INFRA-23 H1): los enforces del AgentGateway exigen responder qué
     # principals llamaron una ruta en las ultimas 72 h. 48h (bajada 2026-07-22 tras
     # auditoria de disco) no cubre la ventana; 7d deja margen sobre las 72 h.
     # Ingesta medida 2026-09-12: ~36 KB/s cluster (~3 GB/dia en crudo, chunks
-    # comprimidos en MinIO). Vigilar el HDD RAID de sauvage tras el primer ciclo.
+    # comprimidos en el object store). Con OVH de destino, el disco de savage
+    # deja de ser la pieza que vigilar.
     retention_period: 168h
     max_query_lookback: 168h
     # Do not accept samples that Loki can no longer retain or query.
@@ -47,13 +58,24 @@ loki:
   compactor:
     retention_enabled: true
     delete_request_store: s3
-    # MinIO runs on sauvage HDD RAID; lower compactor object-store walk
-    # pressure to avoid sustained ListObjects/md3 saturation.
+    # Intervalos conservadores heredados de la MinIO de sauvage (HDD RAID, el
+    # ListObjects lo saturaba). Se mantienen con OVH: no hay medida que pida
+    # bajarlos y el `retention_delete_worker_count` alto vuelve a castigar el
+    # ancho de banda de subida de la casa.
     compaction_interval: 30m
     retention_delete_worker_count: 5
 
 singleBinary:
   replicas: 1
+  # INFRA-1175: las credenciales de `loki.storage.s3` se leen del entorno. Sin
+  # `-config.expand-env=true` Loki tomaría literal el `${...}` y no escribiría
+  # ningún chunk. El Secret lo materializa el ExternalSecret
+  # `manifests/loki-ovh-creds.yaml` (ns `monitoring`).
+  extraArgs:
+    - -config.expand-env=true
+  extraEnvFrom:
+    - secretRef:
+        name: loki-ovh-creds
   # 2026-10-27 (SC-2884): el GC de Go aprieta al acercarse a 2600MiB en vez de
   # dejar que el cgroup (limite 3Gi) mate al proceso. Go 1.24 (loki 3.6.7) lo soporta.
   extraEnv:
