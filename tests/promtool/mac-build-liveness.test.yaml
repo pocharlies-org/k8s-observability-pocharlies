@@ -1,0 +1,77 @@
+# Casos de la VMRule pocharlies-mac-build-liveness (promtool test rules, DGX-1440).
+# Las series las empuja la sonda mac-build-liveness del x86 (timer de 1 min:
+# tailscale ping + initialize MCP por el túnel 8815), de ahí el interval. La ocurrencia
+# que las motiva: tailscaled muerto en mac-build 15 h sin aviso con los runners de
+# GitHub online (DGX-1432). Las anotaciones esperadas son las de la VMRule: si alguien
+# cambia el texto, cambia aqui tambien (se regeneran del manifiesto).
+rule_files:
+- mac-build-liveness.rules.yaml
+evaluation_interval: 1m
+tests:
+- interval: 1m
+  name: sano (tailnet y puente respondiendo) -> no salta nada
+  input_series:
+  - series: mac_build_tailnet_up{host="mac-build"}
+    values: 1x12
+  - series: mac_build_bridge_up{host="mac-build"}
+    values: 1x12
+  alert_rule_test:
+  - eval_time: 10m
+    alertname: MacBuildUnreachableOrBridgeDown
+    exp_alerts: []
+- interval: 1m
+  name: tailscaled muerto (tailnet=0, el caso del 03-11) -> salta pasados los 5 min del `for`
+  input_series:
+  - series: mac_build_tailnet_up{host="mac-build"}
+    values: 0x12
+  - series: mac_build_bridge_up{host="mac-build"}
+    values: 1x12
+  alert_rule_test:
+  - eval_time: 4m
+    alertname: MacBuildUnreachableOrBridgeDown
+    exp_alerts: []
+  - eval_time: 6m
+    alertname: MacBuildUnreachableOrBridgeDown
+    exp_alerts:
+    - &id001
+      exp_labels:
+        severity: critical
+        area: monitoring
+        host: mac-build
+      exp_annotations:
+        summary: 'mac-build no responde por tailnet/ssh o el puente iphone MCP (8815) no responde: builds y pruebas de ux parados'
+        description: 'La sonda mac-build-liveness del x86 (timer de 1 min) lleva >= 5 min viendo mac_build_tailnet_up=0 (tailscale ping muerto — el 03-11 tailscaled murió en el Mac con los runners de GitHub aún "online": el diagnóstico es runner-online-vs-tailnet-muerto, skill `mac-ops`), mac_build_bridge_up=0 (el initialize MCP por el túnel mac-pruebas-tunnel no responde: servidor com.e-dani.iphone-mcp en el Mac, o el propio túnel), o la serie ausente (la sonda misma está muerta: `systemctl --user status mac-build-liveness.timer` en el x86). Comprobación de 1 minuto: reiniciar Tailscale en el Mac; si está apagado, encender e iniciar sesión (sin auto-login por FileVault). Runbook: skill `mac-ops`.'
+- interval: 1m
+  name: puente iphone MCP caído (tailnet sano, initialize sin respuesta) -> salta igual
+  input_series:
+  - series: mac_build_tailnet_up{host="mac-build"}
+    values: 1x12
+  - series: mac_build_bridge_up{host="mac-build"}
+    values: 0x12
+  alert_rule_test:
+  - eval_time: 6m
+    alertname: MacBuildUnreachableOrBridgeDown
+    exp_alerts:
+    - *id001
+- interval: 1m
+  name: espícula (un minuto a 0 y vuelve) -> el `for` de 5 min no deja que dispare
+  input_series:
+  - series: mac_build_tailnet_up{host="mac-build"}
+    values: 1x12
+  - series: mac_build_bridge_up{host="mac-build"}
+    values: 1x4 0 1x7
+  alert_rule_test:
+  - eval_time: 10m
+    alertname: MacBuildUnreachableOrBridgeDown
+    exp_alerts: []
+- interval: 1m
+  name: 'sonda muerta (sin series: timer parado o x86 caído) -> absent() dispara a los 5 min (INFRA-849: vigilancia ciega = incidente)'
+  input_series: []
+  alert_rule_test:
+  - eval_time: 4m
+    alertname: MacBuildUnreachableOrBridgeDown
+    exp_alerts: []
+  - eval_time: 6m
+    alertname: MacBuildUnreachableOrBridgeDown
+    exp_alerts:
+    - *id001

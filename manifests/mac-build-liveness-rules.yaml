@@ -1,0 +1,91 @@
+# DGX-1440 — vivacidad de mac-build (Mac de compilaciones, off-cluster): tailnet y puente iphone MCP.
+#
+# Fuente: `mac_build_tailnet_up` y `mac_build_bridge_up` que empuja cada 1 min la sonda
+# mac-build-liveness del x86 (libexec/mac-build-liveness.sh + timer mac-build-liveness,
+# x86-host-runtime-pocharlies, instalada con su install.sh). El push va a
+# https://vm.lan.e-dani.com/api/v1/import/prometheus, igual que el emisor del disco
+# (manifests/mac-build-disk-rules.yaml): el ingress de VM admite el tailnet directo y no
+# hay scrape — el Mac no escucha nada, sólo empuja (y aquí ni eso: la sonda vive en el
+# x86 porque tiene que estar SIEMPRE encendida, SC-4378).
+#
+# La ocurrencia que la motiva (DGX-1432, documentada en DGX-1409 P5): sobre las 19:00 del
+# 03-11 tailscaled en mac-build murió en silencio — el Mac encendido y con red local (los
+# runners de GitHub seguían "online"), pero sin tailnet no había ssh ni túnel 8815 y el
+# arreglo era físico. Nadie se enteró hasta 15 h después, con la revisión ux de DGX-799
+# bloqueada. Los guardas del puente (watchdog de simuladores, KeepAlive del servidor,
+# Restart=always del túnel) viven al otro lado del tailnet y no pueden verlo.
+#
+# Qué cubre cada serie:
+#   mac_build_tailnet_up — tailscale ping al tailnet (sin respaldo ssh: el ssh usa el
+#     mismo tailnet y taparía el caso exacto que hay que ver, tailscaled muerto).
+#   mac_build_bridge_up  — TCP 127.0.0.1:8815 + `initialize` MCP por el túnel
+#     mac-pruebas-tunnel (lo que ve la sesión ux/qa desde el lado del consumidor; el TCP
+#     solo no basta: DGX-1370 — el list pasaba con el servidor roto).
+# El `absent()` de las dos es el hueco de siempre (INFRA-849): sonda muerta = vigilancia
+# ciega, y con el timer de 1 min una ausencia de 5 min solo se explica por timer parado
+# o x86 caído, ambas incidente.
+#
+# Relación con MacBuildUnreachable (arriba, en mac-build-disk-rules.yaml, `for: 12h`,
+# warning): aquélla es la señal de «el portátil lleva medio día dormido», el uso normal
+# de Dani; ésta es la vía rápida que pide la Request — aviso en menos de 15 min desde la
+# caída, que es lo que faltó el 03-11. Las dos conviven: awake y tailnet_up son series
+# distintas (la primera con respaldo ssh, esta sin él) y la 12 h no se toca.
+#
+# Enrutado, en dos pasos y los dos hacen falta (como mac-build-disk-rules.yaml):
+#   1. Alertmanager: el catch-all `receiver: keep` la entrega a Keep (sin ruta nueva por
+#      alertname; `python3 scripts/alert_routing.py matrix`).
+#   2. Keep solo notifica INCIDENTES: la regla `mac-build-disk` de
+#      keep/rules/correlation-rules.yaml (celQuery `name.startsWith("MacBuild")`, prefijo
+#      MBD) la convierte en incidente — misma familia y mismo destinatario que las de
+#      disco (patrón node-degraded: `MacBuild` está excluida de `critical-safety-net`, y
+#      tests/test_dgx1440_macbuild_liveness_correlation.py lo vigila).
+#
+# Carril de pruebas de disparo (SC-4171): empujar el sintético CON la etiqueta `test`
+# (su valor, la clave del ticket) manteniéndolo vivo ≥ 8 min — el `for` son 5 min y la
+# muestra vale 5 min — y ops-watch aparca el MBD como «Prueba declarada <marcador>» sin
+# abrir Request. Al terminar, borrar SOLO la serie sintética (match por `test`, NUNCA
+# `host="mac-build"` a secas: eso borra también la real y el absent() abre incidente):
+#   curl -X POST 'https://vm.lan.e-dani.com/api/v1/admin/tsdb/delete_series?match[]=mac_build_bridge_up{test="DGX-XXXX"}'
+# Runbook completo: skill `mac-ops`.
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMRule
+metadata:
+  name: pocharlies-mac-build-liveness
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: mac-build
+    app.kubernetes.io/component: alerting
+spec:
+  groups:
+    - name: pocharlies.mac-build-liveness
+      rules:
+        # `for: 5m` con sonda cada 1 min: la primera lectura a 0 llega al minuto de la
+        # caída y el `for` se cumple al minuto 5-6; vmalert evalúa cada 20 s y el
+        # group_interval hacia Keep es de 15 s — aviso en menos de 15 min medido desde
+        # la caída, que es el criterio de la Request (el 03-11 fueron 15 h).
+        - alert: MacBuildUnreachableOrBridgeDown
+          expr: |
+            (mac_build_tailnet_up{host="mac-build"} == 0)
+              or
+            (mac_build_bridge_up{host="mac-build"} == 0)
+              or
+            absent(mac_build_tailnet_up{host="mac-build"})
+              or
+            absent(mac_build_bridge_up{host="mac-build"})
+          for: 5m
+          labels:
+            severity: critical
+            area: monitoring
+          annotations:
+            summary: "mac-build no responde por tailnet/ssh o el puente iphone MCP (8815) no responde: builds y pruebas de ux parados"
+            description: >-
+              La sonda mac-build-liveness del x86 (timer de 1 min) lleva >= 5 min viendo
+              mac_build_tailnet_up=0 (tailscale ping muerto — el 03-11 tailscaled murió en
+              el Mac con los runners de GitHub aún "online": el diagnóstico es
+              runner-online-vs-tailnet-muerto, skill `mac-ops`), mac_build_bridge_up=0 (el
+              initialize MCP por el túnel mac-pruebas-tunnel no responde: servidor
+              com.e-dani.iphone-mcp en el Mac, o el propio túnel), o la serie ausente (la
+              sonda misma está muerta: `systemctl --user status mac-build-liveness.timer`
+              en el x86). Comprobación de 1 minuto: reiniciar Tailscale en el Mac; si está
+              apagado, encender e iniciar sesión (sin auto-login por FileVault). Runbook:
+              skill `mac-ops`.
