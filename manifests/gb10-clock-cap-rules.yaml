@@ -1,0 +1,61 @@
+# INFRA-1186 — el hard-halt térmico de los Sparks se anuncia antes de ocurrir.
+#
+# Por qué existe. `services/gb10-gpu-clock-cap` (dgx-infra) fijaba el reloj GB10 a
+# 2200 MHz solo al arrancar y no lo reaplicaba: dgx3 hard-haltó el 04-11 a las
+# 06:15Z con 97 °C, GPU al 96 % y SM clock a 2457 MHz (contador de apagados
+# inseguros NVMe 27→28, nota de SC-4584 / SC-4666). Cada halt tumba el nodo y con
+# él el deployment fijado por hostname (qwen38-flash-next-worker-dgx3), y
+# recuperarlo exige a una persona delante de la caja (sin encendido remoto).
+# El arreglo reaplica el cap cada 5 min desde systemd; esta regla es la señal de
+# que el cap NO está sujetando: si el reloj raspado supera el cap de forma
+# sostenida, el lock se pierde más rápido de lo que el timer lo repone (o el
+# enforcement no corre) y el halt térmico es inminente bajo carga.
+#
+# La métrica está VERIFICADA en VictoriaMetrics el 05-11, no copiada de la doc:
+# DCGM_FI_DEV_SM_CLOCK raspada del dcgm-exporter, con Hostname en
+# {dgx3, gx10-ec3d, nvidia-dgx, ubuntu}. Se filtran los tres Sparks: `ubuntu`
+# es la RTX 3080 Ti, sin cap. Con el lock puesto el reloj no supera 2200 ni bajo
+# carga (medido: 2190 MHz al 96 % tras reaplicar); en reposo aparca por debajo
+# del cap esté el lock como esté — no hay falso negativo térmico porque en reposo
+# no hay riesgo.
+#
+# El `for: 10m` es el doble del intervalo del timer (5 min): una pérdida normal
+# del cap queda reparada antes de disparar; solo dispara si el cap sigue perdido
+# tras dos pasadas del enforcement, que es el caso que necesita a alguien mirando.
+#
+# Enrutado: catch-all de Alertmanager → Keep → Aurora (sin tocar Alertmanager).
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMRule
+metadata:
+  name: pocharlies-gb10-clock-cap
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: gb10-gpu-clock-cap
+    app.kubernetes.io/component: alerting
+spec:
+  groups:
+    - name: pocharlies.gb10-clock-cap
+      rules:
+        # El reloj del GB10 pasa del cap de forma sostenida: el lock -lgc no está
+        # sujetando y el hard-halt térmico llega (dgx3: 2457 MHz → halt a 97 °C).
+        - alert: SparkGpuClockOverCap
+          expr: |
+            max by (Hostname) (DCGM_FI_DEV_SM_CLOCK{
+              Hostname=~"nvidia-dgx|gx10-ec3d|dgx3"
+            }) > 2200
+          for: 10m
+          labels:
+            severity: critical
+            area: gpu
+            component: gb10-gpu-clock-cap
+          annotations:
+            summary: "Spark con el reloj GPU por encima del cap de 2200 MHz"
+            description: >-
+              El SM clock raspado por DCGM supera 2200 MHz sostenido 10 min en el
+              nodo afectado: el cap térmico del GB10 no está sujetando (timer
+              gb10-gpu-clock-cap parado, o el driver pierde el lock más rápido de
+              lo que se repone). Es la firma medida antes del hard-halt de dgx3
+              del 04-11 (2457 MHz, 97 °C). Comprobar en el host: `systemctl
+              list-timers <host>-gpu-clock-cap.timer`, `journalctl -t
+              <host>-gpu-clock-cap -n 20` y `nvidia-smi -lgc 0,2200` a mano; si el
+              reloj no baja, bajar la carga del nodo antes de que halte.
