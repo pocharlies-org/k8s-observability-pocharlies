@@ -32,6 +32,30 @@ defaultRules:
     # LlmResidentDeploymentUnavailable (llm, 2 h).
     KubeDeploymentReplicasMismatch:
       create: false
+    # INFRA-1187: reemplazadas por pocharlies-pod-workload
+    # (manifests/pod-workload-rules.yaml). La copia del chart agrega
+    # by(namespace, pod) y no sabe quién es el owner del pod, así que no puede
+    # llevar `workload`; la regla `deployment-degraded` agrupa por
+    # [namespace, workload] y Keep da huella «none» a la alerta a la que le
+    # falte cualquier criterio (rulesengine._calc_rule_fingerprint), así que
+    # sin reemplazo los síntomas de pod volverían a un incidente genérico. Las
+    # copias nuevas conservan expr/for/severity y mapean el workload con
+    # kube_pod_owner → kube_replicaset_owner.
+    KubePodNotReady:
+      create: false
+    KubeContainerWaiting:
+      create: false
+    # INFRA-1187: `workload` para que deployment-degraded agrupe por workload.
+    # El valor es plantilla de vmalert (se evalúa por serie al disparar la
+    # alerta), no de Helm: values.yaml no se renderiza como template.
+    KubeStatefulSetReplicasMismatch:
+      spec:
+        labels:
+          workload: "{{ $labels.statefulset }}"
+    KubePdbNotEnoughHealthyPods:
+      spec:
+        labels:
+          workload: "{{ $labels.poddisruptionbudget }}"
   groups:
     etcd:
       create: false

@@ -59,7 +59,7 @@ tests:
       - eval_time: 30m
         alertname: KubernetesDeploymentUnavailable
         exp_alerts:
-          - exp_labels: {severity: critical, area: kubernetes, namespace: skirmshop, deployment: picker}
+          - exp_labels: {severity: critical, area: kubernetes, namespace: skirmshop, deployment: picker, workload: picker}
             exp_annotations:
               summary: "Deployment unavailable"
               description: "skirmshop/picker has fewer available replicas than desired."

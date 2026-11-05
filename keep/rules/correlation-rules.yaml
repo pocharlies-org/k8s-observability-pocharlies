@@ -217,10 +217,28 @@ rules:
   # =========================================================================
   # KUBERNETES / INFRA
   # =========================================================================
-  # El patrón que está pasando ahora mismo: control-nexus, comfyui y ltx tienen a
-  # la vez KubernetesDeploymentUnavailable (critical), KubeDeploymentReplicas-
-  # Mismatch, KubePodNotReady y KubeContainerWaiting. 4 síntomas de un deployment
-  # que no levanta: 1 incidente por namespace, no 4 mensajes.
+  # El patrón: un deployment que no levanta dispara a la vez
+  # KubernetesDeploymentUnavailable (critical), KubeDeploymentReplicasMismatch,
+  # KubePodNotReady y KubeContainerWaiting. 4 síntomas de UN workload: 1
+  # incidente por workload, no 4 mensajes — y no 1 incidente por namespace.
+  #
+  # INFRA-1187: se agrupa por [namespace, workload] porque la granularidad del
+  # incidente es la granularidad de la causa: ops-watch deriva `keep-causa` del
+  # sha1 del nombre del incidente, y con `[namespace]` cualquier workload
+  # degradado del ns caía en la misma causa (medido: rollout de stt-turbo,
+  # vaivén de ollaya-cpu y sidecar de nginx — tres fallos ajenos— bajo
+  # deployment-degraded:aaab90c902; SC-2641/SC-4666). `workload` la traen TODAS
+  # las alertas de la regla: deployment/statefulset/PDB por plantilla en su
+  # VMRule (manifests/rules.yaml, victoria-metrics/values.yaml) y los síntomas
+  # de pod por el join kube_pod_owner→kube_replicaset_owner de
+  # pocharlies-pod-workload (manifests/pod-workload-rules.yaml). No se puede
+  # agrupar por [namespace, deployment, statefulset]: Keep da huella «none» a
+  # la alerta a la que le falte CUALQUIER criterio (rulesengine.
+  # _calc_rule_fingerprint) y ninguna alerta lleva las dos etiquetas → todo el
+  # mundo al mismo cubo «none», peor que el estado actual.
+  #
+  # El `alertname` NO entra al nombre: los 4 síntomas del mismo workload son la
+  # misma causa (propósito original de la regla); lo que separa es el workload.
   - ruleName: deployment-degraded
     celQuery: >-
       name in ["KubernetesDeploymentUnavailable", "KubeDeploymentReplicasMismatch",
@@ -228,20 +246,23 @@ rules:
                "KubeStatefulSetReplicasMismatch", "KubernetesStatefulSetUnavailable",
                "KubePdbNotEnoughHealthyPods"]
     sqlQuery:
-      sql: "((name in (:name_1, :name_2, :name_3, :name_4)))"
+      sql: "((name in (:name_1, :name_2, :name_3, :name_4, :name_5, :name_6, :name_7)))"
       params:
         name_1: KubernetesDeploymentUnavailable
         name_2: KubeDeploymentReplicasMismatch
         name_3: KubePodNotReady
         name_4: KubeContainerWaiting
+        name_5: KubeStatefulSetReplicasMismatch
+        name_6: KubernetesStatefulSetUnavailable
+        name_7: KubePdbNotEnoughHealthyPods
     timeframeInSeconds: 900
     timeUnit: minutes
-    groupingCriteria: [namespace]
+    groupingCriteria: [namespace, workload]
     createOn: any
     resolveOn: all_resolved
     incidentPrefix: DEPL
-    incidentNameTemplate: "Deployment degradado en {{ namespace }}"
-    groupDescription: Síntomas de workload que no arranca, por namespace.
+    incidentNameTemplate: "Deployment degradado en {{ namespace }} · {{ workload }}"
+    groupDescription: Síntomas de workload que no arranca, por workload.
 
   # SIN agrupar por nodo, y no por gusto: estas alertas no traen etiqueta `node`.
   # Sólo hay `instance` (IP:puerto del pod de node-exporter) y `pod`, y las dos
