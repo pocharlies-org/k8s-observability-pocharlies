@@ -3040,21 +3040,24 @@ spec:
           # para librar la GPU al reranker/embedder (anotación
           # `e-dani.com/parado-por`, "se levanta a petición") y libreplay-web
           # dormido desde hace meses. Sin el guard cada parada abre un incidente
-          # MON (MON-18508: frigate + libreplay-web a la vez). El lado izquierdo
-          # parsea `serviceScrape/<ns>/<nombre>/<puerto>` en namespace+deployment
-          # y excluye los cuyo Deployment tiene spec.replicas == 0; los pools que
-          # no siguen la convención (podScrape, nombre ≠ Deployment) siguen
+          # MON (MON-18508: frigate + libreplay-web a la vez). `scrape_job` es
+          # `serviceScrape/<ns-del-VMServiceScrape>/<nombre>/<puerto>` (medido en
+          # vivo: el segundo tramo NO es el namespace del objetivo), así que el
+          # guard toma el nombre — que por convención de la casa coincide con el
+          # Deployment (frigate→frigate, libreplay-web→libreplay-web) — y excluye
+          # los pools cuyo Deployment tiene spec.replicas == 0. Los pools que no
+          # siguen la convención (podScrape, service ≠ deployment) siguen
           # avisando. Con kube-state-metrics caído la derecha queda vacía y la
-          # alerta salta igual: se falla hacia avisar, nunca hacia callar.
+          # alerta salta igual: se falla hacia avisar, nunca hacia callar. El
+          # único falso silencio posible es un Deployment homónimo parado en otro
+          # namespace; los nombres de la casa van cualificados (libreplay-web,
+          # no web) y el caso se comprueba con `kubectl get deploy -A`.
           expr: |
             label_replace(
-              label_replace(
-                sum(vm_promscrape_scrape_pool_targets) without (status, instance, pod) == 0,
-                "deployment", "$2", "scrape_job", "serviceScrape/([^/]+)/([^/]+)/.*"
-              ),
-              "namespace", "$1", "scrape_job", "serviceScrape/([^/]+)/([^/]+)/.*"
+              sum(vm_promscrape_scrape_pool_targets) without (status, instance, pod) == 0,
+              "deployment", "$1", "scrape_job", "serviceScrape/[^/]+/([^/]+)/.*"
             )
-              unless on(namespace, deployment)
+              unless on(deployment)
             kube_deployment_spec_replicas == 0
           for: 30m
           labels:
@@ -3068,7 +3071,7 @@ spec:
               mala configuración (selector, Service borrado, VMServiceScrape
               apuntando a un nombre que ya no existe):
               https://docs.victoriametrics.com/victoriametrics/vmagent/#debugging-scrape-targets.
-              Si el Deployment debería estar parado, escalarlo a 0 calla esta
-              alerta (y `kubectl -n {{ $labels.namespace }} get deploy
-              {{ $labels.deployment }} -o jsonpath='{.metadata.annotations}'`
-              dice quién lo paró y por qué).
+              Si el Deployment `{{ $labels.deployment }}` debería estar parado,
+              escalarlo a 0 calla esta alerta (y `kubectl get deploy -A | grep
+              {{ $labels.deployment }}` + las anotaciones dicen quién lo paró y
+              por qué).

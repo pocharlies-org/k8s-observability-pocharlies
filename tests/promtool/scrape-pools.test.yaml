@@ -2,9 +2,10 @@
 # La copia del chart (desactivada en victoria-metrics/values.yaml) disparaba con
 # pools de Deployments parados a mano — MON-18508 abrió con frigate (parado el
 # 05-11 para librar la GPU, anotación `e-dani.com/parado-por`) y libreplay-web
-# (dormido). La copia de la casa guarda por kube_deployment_spec_replicas
-# (patrón SC-4712): caídas reales siguen avisando, paradas a mano no, y sin
-# serie de kube-state-metrics se falla hacia avisar.
+# (dormido). `scrape_job` es `serviceScrape/<ns-del-VMServiceScrape>/<nombre>/
+# <puerto>` (medido en vivo), así que el guard toma el nombre por convención
+# nombre=Deployment (patrón SC-4712): caídas reales siguen avisando, paradas a
+# mano no, y sin serie de kube-state-metrics se falla hacia avisar.
 rule_files:
   - scrape-pools.rules.yaml
 evaluation_interval: 1m
@@ -12,9 +13,9 @@ tests:
   - interval: 1m
     name: pool de serviceScrape vacío con el Deployment queriendo 1 réplica dispara tras el for
     input_series:
-      - series: 'vm_promscrape_scrape_pool_targets{job="vmagent-vm-victoria-metrics-k8s-stack", scrape_job="serviceScrape/monitoring/frigate/0", instance="10.42.6.133:8429", status="discovered"}'
+      - series: 'vm_promscrape_scrape_pool_targets{job="vmagent-vm-victoria-metrics-k8s-stack", namespace="monitoring", scrape_job="serviceScrape/monitoring/frigate/0", instance="10.42.6.133:8429", status="discovered"}'
         values: '0x40'
-      - series: 'kube_deployment_spec_replicas{namespace="monitoring", deployment="frigate"}'
+      - series: 'kube_deployment_spec_replicas{namespace="frigate", deployment="frigate"}'
         values: '1x40'
     alert_rule_test:
       - eval_time: 29m
@@ -26,19 +27,31 @@ tests:
           - exp_labels:
               severity: warning
               job: vmagent-vm-victoria-metrics-k8s-stack
+              namespace: monitoring
               scrape_job: serviceScrape/monitoring/frigate/0
               deployment: frigate
-              namespace: monitoring
             exp_annotations:
               summary: "Vmagent tiene un scrape_pool con 0 targets configurados/descubiertos"
-              description: "Vmagent \"vmagent-vm-victoria-metrics-k8s-stack\" tiene el scrape_pool \"serviceScrape/monitoring/frigate/0\" con 0 targets descubiertos y el Deployment correspondiente quiere más de 0 réplicas. Suele ser una mala configuración (selector, Service borrado, VMServiceScrape apuntando a un nombre que ya no existe): https://docs.victoriametrics.com/victoriametrics/vmagent/#debugging-scrape-targets. Si el Deployment debería estar parado, escalarlo a 0 calla esta alerta (y `kubectl -n monitoring get deploy frigate -o jsonpath='{.metadata.annotations}'` dice quién lo paró y por qué)."
+              description: "Vmagent \"vmagent-vm-victoria-metrics-k8s-stack\" tiene el scrape_pool \"serviceScrape/monitoring/frigate/0\" con 0 targets descubiertos y el Deployment correspondiente quiere más de 0 réplicas. Suele ser una mala configuración (selector, Service borrado, VMServiceScrape apuntando a un nombre que ya no existe): https://docs.victoriametrics.com/victoriametrics/vmagent/#debugging-scrape-targets. Si el Deployment `frigate` debería estar parado, escalarlo a 0 calla esta alerta (y `kubectl get deploy -A | grep frigate` + las anotaciones dicen quién lo paró y por qué)."
 
   - interval: 1m
     name: parada a mano (Deployment a 0 réplicas) no dispara
     input_series:
-      - series: 'vm_promscrape_scrape_pool_targets{job="vmagent-vm-victoria-metrics-k8s-stack", scrape_job="serviceScrape/monitoring/frigate/0", instance="10.42.6.133:8429", status="discovered"}'
+      - series: 'vm_promscrape_scrape_pool_targets{job="vmagent-vm-victoria-metrics-k8s-stack", namespace="monitoring", scrape_job="serviceScrape/monitoring/frigate/0", instance="10.42.6.133:8429", status="discovered"}'
         values: '0x40'
-      - series: 'kube_deployment_spec_replicas{namespace="monitoring", deployment="frigate"}'
+      - series: 'kube_deployment_spec_replicas{namespace="frigate", deployment="frigate"}'
+        values: '0x40'
+    alert_rule_test:
+      - eval_time: 31m
+        alertname: ScrapePoolHasNoTargets
+        exp_alerts: []
+
+  - interval: 1m
+    name: parada a mano del deployment homónimo del VMServiceScrape (libreplay) no dispara
+    input_series:
+      - series: 'vm_promscrape_scrape_pool_targets{job="vmagent-vm-victoria-metrics-k8s-stack", namespace="monitoring", scrape_job="serviceScrape/libreplay/libreplay-web/0", instance="10.42.6.133:8429", status="discovered"}'
+        values: '0x40'
+      - series: 'kube_deployment_spec_replicas{namespace="libreplay", deployment="libreplay-web"}'
         values: '0x40'
     alert_rule_test:
       - eval_time: 31m
@@ -48,7 +61,7 @@ tests:
   - interval: 1m
     name: sin serie de kube-state-metrics se falla hacia avisar
     input_series:
-      - series: 'vm_promscrape_scrape_pool_targets{job="vmagent-vm-victoria-metrics-k8s-stack", scrape_job="serviceScrape/monitoring/frigate/0", instance="10.42.6.133:8429", status="discovered"}'
+      - series: 'vm_promscrape_scrape_pool_targets{job="vmagent-vm-victoria-metrics-k8s-stack", namespace="monitoring", scrape_job="serviceScrape/monitoring/frigate/0", instance="10.42.6.133:8429", status="discovered"}'
         values: '0x40'
     alert_rule_test:
       - eval_time: 31m
@@ -57,19 +70,19 @@ tests:
           - exp_labels:
               severity: warning
               job: vmagent-vm-victoria-metrics-k8s-stack
+              namespace: monitoring
               scrape_job: serviceScrape/monitoring/frigate/0
               deployment: frigate
-              namespace: monitoring
             exp_annotations:
               summary: "Vmagent tiene un scrape_pool con 0 targets configurados/descubiertos"
-              description: "Vmagent \"vmagent-vm-victoria-metrics-k8s-stack\" tiene el scrape_pool \"serviceScrape/monitoring/frigate/0\" con 0 targets descubiertos y el Deployment correspondiente quiere más de 0 réplicas. Suele ser una mala configuración (selector, Service borrado, VMServiceScrape apuntando a un nombre que ya no existe): https://docs.victoriametrics.com/victoriametrics/vmagent/#debugging-scrape-targets. Si el Deployment debería estar parado, escalarlo a 0 calla esta alerta (y `kubectl -n monitoring get deploy frigate -o jsonpath='{.metadata.annotations}'` dice quién lo paró y por qué)."
+              description: "Vmagent \"vmagent-vm-victoria-metrics-k8s-stack\" tiene el scrape_pool \"serviceScrape/monitoring/frigate/0\" con 0 targets descubiertos y el Deployment correspondiente quiere más de 0 réplicas. Suele ser una mala configuración (selector, Service borrado, VMServiceScrape apuntando a un nombre que ya no existe): https://docs.victoriametrics.com/victoriametrics/vmagent/#debugging-scrape-targets. Si el Deployment `frigate` debería estar parado, escalarlo a 0 calla esta alerta (y `kubectl get deploy -A | grep frigate` + las anotaciones dicen quién lo paró y por qué)."
 
   - interval: 1m
     name: pool que no sigue la convención serviceScrape (podScrape) sigue avisando aunque haya deployments parados
     input_series:
-      - series: 'vm_promscrape_scrape_pool_targets{job="vmagent-vm-victoria-metrics-k8s-stack", scrape_job="podScrape/kube-system/coredns/0", instance="10.42.6.133:8429", status="discovered"}'
+      - series: 'vm_promscrape_scrape_pool_targets{job="vmagent-vm-victoria-metrics-k8s-stack", namespace="monitoring", scrape_job="podScrape/kube-system/coredns/0", instance="10.42.6.133:8429", status="discovered"}'
         values: '0x40'
-      - series: 'kube_deployment_spec_replicas{namespace="monitoring", deployment="frigate"}'
+      - series: 'kube_deployment_spec_replicas{namespace="frigate", deployment="frigate"}'
         values: '0x40'
     alert_rule_test:
       - eval_time: 31m
@@ -78,17 +91,18 @@ tests:
           - exp_labels:
               severity: warning
               job: vmagent-vm-victoria-metrics-k8s-stack
+              namespace: monitoring
               scrape_job: podScrape/kube-system/coredns/0
             exp_annotations:
               summary: "Vmagent tiene un scrape_pool con 0 targets configurados/descubiertos"
-              description: "Vmagent \"vmagent-vm-victoria-metrics-k8s-stack\" tiene el scrape_pool \"podScrape/kube-system/coredns/0\" con 0 targets descubiertos y el Deployment correspondiente quiere más de 0 réplicas. Suele ser una mala configuración (selector, Service borrado, VMServiceScrape apuntando a un nombre que ya no existe): https://docs.victoriametrics.com/victoriametrics/vmagent/#debugging-scrape-targets. Si el Deployment debería estar parado, escalarlo a 0 calla esta alerta (y `kubectl -n  get deploy  -o jsonpath='{.metadata.annotations}'` dice quién lo paró y por qué)."
+              description: "Vmagent \"vmagent-vm-victoria-metrics-k8s-stack\" tiene el scrape_pool \"podScrape/kube-system/coredns/0\" con 0 targets descubiertos y el Deployment correspondiente quiere más de 0 réplicas. Suele ser una mala configuración (selector, Service borrado, VMServiceScrape apuntando a un nombre que ya no existe): https://docs.victoriametrics.com/victoriametrics/vmagent/#debugging-scrape-targets. Si el Deployment `` debería estar parado, escalarlo a 0 calla esta alerta (y `kubectl get deploy -A | grep ` + las anotaciones dicen quién lo paró y por qué)."
 
   - interval: 1m
     name: pool con targets no dispara
     input_series:
-      - series: 'vm_promscrape_scrape_pool_targets{job="vmagent-vm-victoria-metrics-k8s-stack", scrape_job="serviceScrape/monitoring/frigate/0", instance="10.42.6.133:8429", status="discovered"}'
+      - series: 'vm_promscrape_scrape_pool_targets{job="vmagent-vm-victoria-metrics-k8s-stack", namespace="monitoring", scrape_job="serviceScrape/monitoring/frigate/0", instance="10.42.6.133:8429", status="discovered"}'
         values: '1x40'
-      - series: 'kube_deployment_spec_replicas{namespace="monitoring", deployment="frigate"}'
+      - series: 'kube_deployment_spec_replicas{namespace="frigate", deployment="frigate"}'
         values: '1x40'
     alert_rule_test:
       - eval_time: 31m
