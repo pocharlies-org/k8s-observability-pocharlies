@@ -56,6 +56,15 @@ defaultRules:
       spec:
         labels:
           workload: "{{ $labels.poddisruptionbudget }}"
+    # Reemplazada por pocharlies-vmagent-scrape-pools (manifests/rules.yaml): la
+    # copia del chart dispara también con pools de Deployments parados a mano
+    # (spec.replicas 0), que no son una mala configuración — MON-18508 abrió con
+    # frigate (parado el 05-11 para librar la GPU al reranker/embedder, anotación
+    # `e-dani.com/parado-por`) y libreplay-web (dormido). La copia de la casa
+    # guarda por kube_deployment_spec_replicas (patrón SC-4712) y falla hacia
+    # avisar si kube-state-metrics no responde.
+    ScrapePoolHasNoTargets:
+      create: false
   groups:
     etcd:
       create: false

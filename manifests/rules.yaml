@@ -3022,3 +3022,53 @@ spec:
               /etc/synapse/credentials/ (runbook brain-cutover-consumidores). Si acabas
               de retirar una excepción de clave compartida, vuelve al runbook: el barrido
               de consumidores a 7 días no se hizo completo.
+---
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMRule
+metadata:
+  name: pocharlies-vmagent-scrape-pools
+  namespace: monitoring
+spec:
+  groups:
+    - name: pocharlies.vmagent-scrape-pools
+      rules:
+        - alert: ScrapePoolHasNoTargets
+          # Copia de la regla homónima del chart (desactivada en
+          # victoria-metrics/values.yaml) con el guard de parada a mano (patrón
+          # SC-4712, #170): un pool de un Deployment escalado a 0 réplicas no es
+          # una mala configuración, es una decisión — frigate parado el 05-11
+          # para librar la GPU al reranker/embedder (anotación
+          # `e-dani.com/parado-por`, "se levanta a petición") y libreplay-web
+          # dormido desde hace meses. Sin el guard cada parada abre un incidente
+          # MON (MON-18508: frigate + libreplay-web a la vez). El lado izquierdo
+          # parsea `serviceScrape/<ns>/<nombre>/<puerto>` en namespace+deployment
+          # y excluye los cuyo Deployment tiene spec.replicas == 0; los pools que
+          # no siguen la convención (podScrape, nombre ≠ Deployment) siguen
+          # avisando. Con kube-state-metrics caído la derecha queda vacía y la
+          # alerta salta igual: se falla hacia avisar, nunca hacia callar.
+          expr: |
+            label_replace(
+              label_replace(
+                sum(vm_promscrape_scrape_pool_targets) without (status, instance, pod) == 0,
+                "deployment", "$2", "scrape_job", "serviceScrape/([^/]+)/([^/]+)/.*"
+              ),
+              "namespace", "$1", "scrape_job", "serviceScrape/([^/]+)/([^/]+)/.*"
+            )
+              unless on(namespace, deployment)
+            kube_deployment_spec_replicas == 0
+          for: 30m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Vmagent tiene un scrape_pool con 0 targets configurados/descubiertos"
+            description: >-
+              Vmagent "{{ $labels.job }}" tiene el scrape_pool
+              "{{ $labels.scrape_job }}" con 0 targets descubiertos y el
+              Deployment correspondiente quiere más de 0 réplicas. Suele ser una
+              mala configuración (selector, Service borrado, VMServiceScrape
+              apuntando a un nombre que ya no existe):
+              https://docs.victoriametrics.com/victoriametrics/vmagent/#debugging-scrape-targets.
+              Si el Deployment debería estar parado, escalarlo a 0 calla esta
+              alerta (y `kubectl -n {{ $labels.namespace }} get deploy
+              {{ $labels.deployment }} -o jsonpath='{.metadata.annotations}'`
+              dice quién lo paró y por qué).
