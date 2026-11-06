@@ -66,25 +66,36 @@ spec:
         # owner_kind!="Job" se conserva tal cual: los pods sin owner y los de
         # Job tampoco disparaban antes. La segunda rama (`unless`) mantiene
         # disparando a los pods cuyo owner no se mapea, sin etiqueta workload.
+        # SC-4763 (DEPL-18565): los pods de la ventana creative de dgx3
+        # (dgx3-provision, comfyui-image-cache) están a 0 con la ventana cerrada y
+        # el eje dgx3 los sube a 1 al abrirla; el aprovisionador no queda Ready
+        # hasta tener los pesos en sitio (dgx3_mode.py: OPEN_TIMEOUT_S 2 h, ~30 min
+        # medidos la primera vez). Su no-Ready durante la apertura es el diseño.
+        # La cobertura de una provisión colgada de verdad la pone Dgx3ProvisionStuck
+        # (dgx-infra k8s/monitoring/dgx3-provision, 2 h).
         - alert: KubePodNotReady
           expr: |
             (
-              sum by (namespace, pod) (
-                max by (namespace, pod) (kube_pod_status_phase{job="kube-state-metrics",phase=~"Pending|Unknown"} > 0)
-                * on (namespace, pod) group_left ()
-                topk by (namespace, pod) (1, max by (namespace, pod, owner_kind) (kube_pod_owner{job="kube-state-metrics",owner_kind!="Job"}))
+              (
+                sum by (namespace, pod) (
+                  max by (namespace, pod) (kube_pod_status_phase{job="kube-state-metrics",phase=~"Pending|Unknown"} > 0)
+                  * on (namespace, pod) group_left ()
+                  topk by (namespace, pod) (1, max by (namespace, pod, owner_kind) (kube_pod_owner{job="kube-state-metrics",owner_kind!="Job"}))
+                )
+                * on (namespace, pod) group_left (workload) kube:pod_workload:info
               )
-              * on (namespace, pod) group_left (workload) kube:pod_workload:info
-            )
-            or
-            (
-              sum by (namespace, pod) (
-                max by (namespace, pod) (kube_pod_status_phase{job="kube-state-metrics",phase=~"Pending|Unknown"} > 0)
-                * on (namespace, pod) group_left ()
-                topk by (namespace, pod) (1, max by (namespace, pod, owner_kind) (kube_pod_owner{job="kube-state-metrics",owner_kind!="Job"}))
+              or
+              (
+                sum by (namespace, pod) (
+                  max by (namespace, pod) (kube_pod_status_phase{job="kube-state-metrics",phase=~"Pending|Unknown"} > 0)
+                  * on (namespace, pod) group_left ()
+                  topk by (namespace, pod) (1, max by (namespace, pod, owner_kind) (kube_pod_owner{job="kube-state-metrics",owner_kind!="Job"}))
+                )
+                unless on (namespace, pod) kube:pod_workload:info
               )
-              unless on (namespace, pod) kube:pod_workload:info
             )
+            unless on (namespace, pod)
+            kube:pod_workload:info{namespace="comfyui",workload=~"dgx3-provision|comfyui-image-cache"}
           for: 15m
           labels:
             severity: warning

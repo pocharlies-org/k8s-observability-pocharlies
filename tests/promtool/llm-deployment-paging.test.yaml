@@ -63,3 +63,25 @@ tests:
             exp_annotations:
               summary: "Deployment unavailable"
               description: "skirmshop/picker has fewer available replicas than desired."
+  # SC-4763 (DEPL-18565): la ventana creative de dgx3 sube el aprovisionador y la
+  # caché de imágenes a 1 y no quedan Ready hasta tener los pesos en sitio
+  # (dgx3_mode.py: OPEN_TIMEOUT_S 2 h). Medido 06-11: spec=1 desde 07:26Z, Ready
+  # 07:47Z → la genérica de 15 min montaba un incidente DEPL en cada apertura.
+  - interval: 10m
+    name: aprovisionador de la ventana dgx3 (pesos bajando 30 min) no dispara la genérica
+    input_series:
+      - series: 'kube_deployment_spec_replicas{namespace="comfyui",deployment="dgx3-provision"}'
+        values: '1x40'
+      - series: 'kube_deployment_status_replicas_available{namespace="comfyui",deployment="dgx3-provision"}'
+        values: '0x40'
+      - series: 'kube_deployment_spec_replicas{namespace="comfyui",deployment="comfyui-image-cache"}'
+        values: '1x40'
+      - series: 'kube_deployment_status_replicas_available{namespace="comfyui",deployment="comfyui-image-cache"}'
+        values: '0x40'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: KubernetesDeploymentUnavailable
+        exp_alerts: []
+      - eval_time: 190m
+        alertname: KubernetesDeploymentUnavailable
+        exp_alerts: []

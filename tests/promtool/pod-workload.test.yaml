@@ -113,3 +113,41 @@ tests:
       - eval_time: 61m
         alertname: KubeContainerWaiting
         exp_alerts: []
+  # SC-4763 (DEPL-18565): el aprovisionador y la caché de imágenes de la ventana
+  # creative de dgx3 no quedan Ready durante la apertura (bajan decenas de GB;
+  # dgx3_mode.py OPEN_TIMEOUT_S 2 h). Su no-Ready es el diseño: la cobertura de
+  # una provisión colgada la pone Dgx3ProvisionStuck (dgx-infra, 2 h).
+  - interval: 1m
+    name: pod de la ventana dgx3 (dgx3-provision) Pending 25 min NO dispara KubePodNotReady
+    input_series:
+      - series: 'kube_pod_status_phase{job="kube-state-metrics",namespace="comfyui",pod="dgx3-provision-6b9-abcde",phase="Pending"}'
+        values: '1x40'
+      - series: 'kube_pod_owner{job="kube-state-metrics",namespace="comfyui",pod="dgx3-provision-6b9-abcde",owner_kind="ReplicaSet",owner_name="dgx3-provision-6b9"}'
+        values: '1x40'
+      - series: 'kube_replicaset_owner{job="kube-state-metrics",namespace="comfyui",replicaset="dgx3-provision-6b9",owner_kind="Deployment",owner_name="dgx3-provision",owner_is_controller="true"}'
+        values: '1x40'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: KubePodNotReady
+        exp_alerts: []
+  - interval: 1m
+    name: un pod normal del mismo namespace comfyui SÍ dispara (la exclusión va por nombre)
+    input_series:
+      - series: 'kube_pod_status_phase{job="kube-state-metrics",namespace="comfyui",pod="krea2-dataset-store-7d9-abcde",phase="Pending"}'
+        values: '1x40'
+      - series: 'kube_pod_owner{job="kube-state-metrics",namespace="comfyui",pod="krea2-dataset-store-7d9-abcde",owner_kind="ReplicaSet",owner_name="krea2-dataset-store-7d9"}'
+        values: '1x40'
+      - series: 'kube_replicaset_owner{job="kube-state-metrics",namespace="comfyui",replicaset="krea2-dataset-store-7d9",owner_kind="Deployment",owner_name="krea2-dataset-store",owner_is_controller="true"}'
+        values: '1x40'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: KubePodNotReady
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              namespace: comfyui
+              pod: krea2-dataset-store-7d9-abcde
+              workload: krea2-dataset-store
+            exp_annotations:
+              summary: "Pod has been in a non-ready state for more than 15 minutes."
+              description: "Pod comfyui/krea2-dataset-store-7d9-abcde has been in a non-ready state for longer than 15 minutes."
