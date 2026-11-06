@@ -48,6 +48,9 @@ resources:
   # INFRA-1031 (SC-3623): alerta de hueco del camino de scrape (vmagent→vmsingle)
   # y evidencia RCA de 90 días (vmsingle-rca + vmalert-rca).
   - manifests/scrape-path-rules.yaml
+  # INFRA-1186: SparkGpuClockOverCap — el reloj del GB10 por encima del cap de
+  # 2200 MHz es la firma medida antes del hard-halt térmico de los Sparks.
+  - manifests/gb10-clock-cap-rules.yaml
   - manifests/rca-retention.yaml
   # INFRA-954: destino de las métricas empujadas (push) — hoy el gauge de
   # expiración del watch Gmail que publica el CronJob synapse-gmail-watch-renew.
