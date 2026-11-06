@@ -33,11 +33,17 @@ spec:
         # Sin scrape que responda 5 min: o Frigate está caído (el Deployment es `Recreate`: un rollout normal deja
         # el pod fuera ~1-3 min, por eso el `for`) o el vmagent no llega al 5000. Las dos ramas hacen falta: con el
         # pod sin Ready el endpoint desaparece y no hay `up == 0`, solo ausencia.
+        # El `unless` excluye la parada a mano: escalar el Deployment a 0 es una decisión consciente (así se libró
+        # la GPU para el reranker/embedder el 05-11, anotación `e-dani.com/parado-por`), y FRG-18130/FRG-18531
+        # demuestran que sin ella cada parada abre un incidente y una Request. Con kube-state-metrics caído la
+        # derecha queda vacía y la alerta sigue saltando: se falla hacia avisar, nunca hacia callar.
         - alert: FrigateCaido
           expr: |
-            up{job="frigate", namespace="frigate"} == 0
+            (up{job="frigate", namespace="frigate"} == 0
               or
-            absent(up{job="frigate", namespace="frigate"})
+            absent(up{job="frigate", namespace="frigate"}))
+              unless on()
+            (max(kube_deployment_spec_replicas{namespace="frigate", deployment="frigate"}) == 0)
           for: 5m
           labels:
             severity: warning
@@ -46,10 +52,13 @@ spec:
             summary: "Frigate no responde: las cámaras de casa no se están grabando ni analizando"
             description: >-
               VictoriaMetrics lleva 5 min sin poder leer `/api/metrics` de Frigate (puerto 5000 del ns
-              `frigate`). Mirar primero `kubectl -n frigate get pods` y `kubectl -n frigate logs deploy/frigate`
-              (rollout, OOM, GPU ocupada por Krea2: el árbitro lo deja en `coexist`). Si el pod está `1/1`, el
-              culpable es la red: la NetworkPolicy `frigate` de k8s-frigate-pocharlies debe admitir al vmagent
-              del ns `monitoring` en el 5000. Mientras dure, ninguna alerta de cámara ve nada.
+              `frigate`) con el Deployment queriendo más de 0 réplicas. Mirar primero `kubectl -n frigate get
+              pods` y `kubectl -n frigate logs deploy/frigate` (rollout, OOM, GPU ocupada por Krea2: el árbitro
+              lo deja en `coexist`). Si el pod está `1/1`, el culpable es la red: la NetworkPolicy `frigate` de
+              k8s-frigate-pocharlies debe admitir al vmagent del ns `monitoring` en el 5000. Mientras dure,
+              ninguna alerta de cámara ve nada. (Con el Deployment a 0 réplicas —parada a mano— esta alerta no
+              salta; si debería estar arriba, `kubectl -n frigate get deploy frigate -o
+              jsonpath='{.metadata.annotations}'` dice quién lo paró y por qué.)
 
         # Inferencia por encima de 100 ms sostenida: la RTX da 1-2 dígitos de ms (criterio C2 de INFRA-701:
         # < 50 ms) y cientos si el detector cae a CPU. Solo se evalúa con alguna cámara real entregando frames:
