@@ -1,6 +1,6 @@
 # Matriz de routing de alertas — estado actual y destino en Keep
 
-Generado el 2026-11-05 por `scripts/alert_routing.py matrix` desde las VMRules del
+Generado el 2026-11-06 por `scripts/alert_routing.py matrix` desde las VMRules del
 clúster `x86-k3s` y las definidas en `manifests/` (SC-1835), simulando el
 matching de Alertmanager sobre `VMAlertmanagerConfig monitoring/synapse-webhook`.
 
@@ -39,7 +39,7 @@ LibrePlay, Tracking) que nunca se alineó con el resto.
 1. **9 series (3%) no pueden notificar a nadie.**
    Descontando los heartbeats (InfoInhibitor, Watchdog), son 8
    series ciegas; 1 de ellas están disparadas ahora mismo
-   (1 instancias activas).
+   (2 instancias activas).
    `Watchdog` e `InfoInhibitor` deben seguir sin notificar, pero **sí** tienen que
    llegar a Keep: son la señal de que la ingesta sigue viva.
 
@@ -147,7 +147,7 @@ despiertan a nadie pese a llamarse `page`.
 | `KubeNodePressure` | `info` | **BLACKHOLE** |  |
 | `KubeNodeReadinessFlapping` | `warning` | keep |  |
 | `KubeNodeUnreachable` | `warning` | keep |  |
-| `KubePdbNotEnoughHealthyPods` | `warning` | keep | 2 |
+| `KubePdbNotEnoughHealthyPods` | `warning` | keep |  |
 | `KubePersistentVolumeErrors` | `critical` | keep |  |
 | `KubePersistentVolumeFillingUp` | `critical` | keep |  |
 | `KubePersistentVolumeFillingUp` | `warning` | keep |  |
@@ -256,7 +256,7 @@ despiertan a nadie pese a llamarse `page`.
 | `NodeFilesystemSpaceFillingUp` | `warning` | keep |  |
 | `NodeHighNumberConntrackEntriesUsed` | `warning` | keep |  |
 | `NodeMemoryHighUtilization` | `warning` | keep |  |
-| `NodeMemoryMajorPagesFaults` | `warning` | keep |  |
+| `NodeMemoryMajorPagesFaults` | `warning` | keep | 1 |
 | `NodeNetworkInterfaceFlapping` | `warning` | keep |  |
 | `NodeNetworkReceiveErrs` | `warning` | keep |  |
 | `NodeNetworkTransmitErrs` | `warning` | keep |  |
@@ -289,7 +289,7 @@ despiertan a nadie pese a llamarse `page`.
 | `RabbitmqContactSyncBacklogAfterWindow` | `warning` | keep |  |
 | `RabbitmqDlqGrowth` | `warning` | keep |  |
 | `RabbitmqExpensesBacklogAfterWindow` | `warning` | keep |  |
-| `RabbitmqFunctionalQueueNoConsumer` | `warning` | keep | 3 |
+| `RabbitmqFunctionalQueueNoConsumer` | `warning` | keep | 1 |
 | `RabbitmqHeadMessageStale` | `critical` | keep |  |
 | `RabbitmqMemoryAlarmActive` | `critical` | keep |  |
 | `RabbitmqMemoryHigh` | `critical` | keep |  |
@@ -317,7 +317,7 @@ despiertan a nadie pese a llamarse `page`.
 
 | alertname | sev | destino hoy | firing |
 |---|---|---|---:|
-| `ScrapePoolHasNoTargets` | `warning` | keep | 1 |
+| `ScrapePoolHasNoTargets` | `warning` | keep |  |
 
 ### Sii (6)
 
@@ -360,7 +360,7 @@ despiertan a nadie pese a llamarse `page`.
 | `SynapseScheduledWorkflowStalledDaily` | `warning` | keep |  |
 | `SynapseScheduledWorkflowStalledWeekly` | `warning` | keep |  |
 | `SynapseUnroutableMessages` | `warning` | keep | 7 |
-| `SynapseWorkflowFailed` | `warning` | keep |  |
+| `SynapseWorkflowFailed` | `warning` | keep | 2 |
 
 ### Target (1)
 
@@ -405,7 +405,7 @@ despiertan a nadie pese a llamarse `page`.
 | `AgentGatewayRouteErrorRateHigh` | `warning` | keep |  |
 | `AlertingRulesError` | `warning` | keep |  |
 | `AnalisisPuertaCerrada` | `warning` | keep | 1 |
-| `AnalisisRevisorParado` | `warning` | keep | 4 |
+| `AnalisisRevisorParado` | `warning` | keep | 9 |
 | `AnalisisSinMetricas` | `warning` | keep |  |
 | `AtlassianMcpToolDown` | `critical` | keep |  |
 | `AuroraRcaCoverageAbsent` | `warning` | keep |  |
@@ -423,7 +423,7 @@ despiertan a nadie pese a llamarse `page`.
 | `CIQueueJobQueuedTooLong` | `warning` | keep |  |
 | `CIQueueLabelWithoutPool` | `warning` | keep |  |
 | `CIRunnerNoProgress` | `warning` | keep |  |
-| `CPUThrottlingHigh` | `info` | **BLACKHOLE** | 1 |
+| `CPUThrottlingHigh` | `info` | **BLACKHOLE** | 2 |
 | `CertManagerCertificateMetricsMissing` | `critical` | keep |  |
 | `CertificateExpiresSoon` | `warning` | keep |  |
 | `CertificateNotReady` | `critical` | keep |  |
@@ -431,7 +431,7 @@ despiertan a nadie pese a llamarse `page`.
 | `ConcurrentInsertsHitTheLimit` | `warning` | keep |  |
 | `ConfigurationReloadFailure` | `warning` | keep |  |
 | `CorreoBridgeMensajesPerdidos` | `warning` | keep |  |
-| `DashProductorAusente` | `warning` | keep | 12 |
+| `DashProductorAusente` | `warning` | keep | 84 |
 | `DeepSeekTpSpinWaitSuspected` | `critical` | keep |  |
 | `DiskRunsOutOfSpace` | `critical` | keep |  |
 | `DiskRunsOutOfSpaceIn3Days` | `critical` | keep |  |
@@ -454,12 +454,12 @@ despiertan a nadie pese a llamarse `page`.
 | `LitellmNotReady` | `critical` | keep |  |
 | `LlmPoolCapabilityUnavailable` | `critical` | keep |  |
 | `LlmResidentDeploymentUnavailable` | `critical` | keep |  |
-| `LlmResidentScaledToZero` | `critical` | keep |  |
+| `LlmResidentScaledToZero` | `critical` | keep | 1 |
 | `LogErrors` | `warning` | keep |  |
 | `MacBuildDiskLowOrFilling` | `critical` | keep |  |
 | `MacBuildDiskMetricStale` | `critical` | keep |  |
 | `MacBuildUnreachable` | `warning` | keep |  |
-| `MacBuildUnreachableOrBridgeDown` | `critical` | keep | 1 |
+| `MacBuildUnreachableOrBridgeDown` | `critical` | keep |  |
 | `MetadataCacheUtilizationIsTooHigh` | `warning` | keep |  |
 | `MetricNameStatsCacheUtilizationIsTooHigh` | `warning` | keep |  |
 | `OnePasswordQuotaBurn` | `warning` | keep |  |
