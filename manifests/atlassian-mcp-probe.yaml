@@ -242,7 +242,7 @@ spec:
     spec:
       containers:
         - name: probe
-          # python:3.12-slim — mismo precedente de imagen stdlib-del-repo (aurora-brain-kb-sync).
+          # python:3.12-slim — imagen stdlib, sin pip install.
           image: python:3.12-slim
           command: ["python", "/probe/probe.py"]
           ports: [{ name: metrics, containerPort: 9114 }]
