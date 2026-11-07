@@ -43,27 +43,36 @@ loki:
       insecure: false
   limits_config:
     # INFRA-43 (INFRA-23 H1): los enforces del AgentGateway exigen responder qué
-    # principals llamaron una ruta en las ultimas 72 h. 48h (bajada 2026-07-22 tras
-    # auditoria de disco) no cubre la ventana; 7d deja margen sobre las 72 h.
-    # Ingesta medida 2026-09-12: ~36 KB/s cluster (~3 GB/dia en crudo, chunks
-    # comprimidos en el object store). Con OVH de destino, el disco de savage
-    # deja de ser la pieza que vigilar.
-    retention_period: 168h
-    max_query_lookback: 168h
-    # Do not accept samples that Loki can no longer retain or query.
+    # principals llamaron una ruta en las últimas 72 h.
+    #
+    # RETENCIÓN BAJADA A 24 h por Dani el 2026-11-07 (INFRA-1175): «loki son logs,
+    # no guardes más de 24 h». Con 168 h el bucket llegó a 250.342 objetos de
+    # histórico; con 24 h, y tablas de índice de `period: 24h`, el compactor tira de
+    # la tabla entera, que es la forma consistente de borrar. Nunca `rclone delete` a
+    # mano por el bucket: índices apuntando a chunks borrados = consultas rotas.
+    #
+    # Lo que se pierde con 24 h, registrado: el enforce INFRA-43 / INFRA-23 H1 del
+    # AgentGateway necesitaba responder qué principals llamaron una ruta en las
+    # últimas 72 h. Esa ventana ya NO existe en Loki; o se saca de VictoriaMetrics, o
+    # se suben estos tres valores a 72 h. Es decisión de Dani por coste, reversible.
+    retention_period: 24h
+    max_query_lookback: 24h
+    # Coherente con la retención: no aceptar lo que Loki ya no puede retener ni consultar.
     reject_old_samples: true
-    reject_old_samples_max_age: 168h
+    reject_old_samples_max_age: 24h
     ingestion_rate_mb: 16
     ingestion_burst_size_mb: 32
   compactor:
     retention_enabled: true
     delete_request_store: s3
     # Intervalos conservadores heredados de la MinIO de sauvage (HDD RAID, el
-    # ListObjects lo saturaba). Se mantienen con OVH: no hay medida que pida
-    # bajarlos y el `retention_delete_worker_count` alto vuelve a castigar el
-    # ancho de banda de subida de la casa.
+    # ListObjects lo saturaba): el `compaction_interval` se queda en 30 m por eso,
+    # porque el ListObjects sigue siendo contra el object store. Los workers de
+    # borrado suben al default del chart (10): el primer barrido tras bajar la
+    # retención a 24 h tiene ~250k claves que eliminar y un DELETE contra OVH es
+    # una petición de ~50 ms, no ancho de banda.
     compaction_interval: 30m
-    retention_delete_worker_count: 5
+    retention_delete_worker_count: 10
 
 singleBinary:
   replicas: 1
