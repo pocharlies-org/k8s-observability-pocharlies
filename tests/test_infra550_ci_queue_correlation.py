@@ -26,8 +26,11 @@ class CiQueueCorrelationTests(CorrelationContract, unittest.TestCase):
     VMRULE = "pocharlies-arc-ci"
     INCIDENT_NAME = "Cola de CI: {{ alertname }}"
 
-    def test_the_vmrule_has_the_five_alerts(self):
-        self.assertEqual(len(self.alerts), 5, sorted(self.alerts))
+    def test_the_vmrule_has_the_seven_alerts(self):
+        # INFRA-1056: dos alertas de pool autoalojado (CIQueueSelfHostedJobQueuedTooLong
+        # y CIQueueNexusMacQueueStuck) se suman a las cinco de INFRA-550. Todas
+        # con prefijo CIQueue* → las enruta ci-queue-degraded al tema 1248.
+        self.assertEqual(len(self.alerts), 7, sorted(self.alerts))
 
 
 if __name__ == "__main__":

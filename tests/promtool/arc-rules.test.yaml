@@ -151,3 +151,69 @@ tests:
       - eval_time: 59m
         alertname: CIQueueExporterBlind
         exp_alerts: []
+
+  # INFRA-1056: pools autoalojados (runner propio no-ARC) con umbral propio.
+  - interval: 1m
+    name: pool autoalojado x86 >30min dispara su regla y NO la de ARC
+    input_series:
+      - series: 'ci_queue_oldest_queued_job_age_seconds{label="x86",pool="self-hosted",repo="repo-x"}'
+        values: '1900x10'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: CIQueueSelfHostedJobQueuedTooLong
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              area: infra
+              label: x86
+              pool: self-hosted
+              repo: repo-x
+            exp_annotations:
+              summary: "Un job espera más de 30 min a un runner autoalojado"
+              description: "El job más viejo en cola del pool autoalojado `x86` (repo `repo-x`) pasa de 30 min esperando runner. No es ARC: es un runner propio (x86, x86-hermes, …) que no coge jobs. Sospechar del host: `ssh x86 uptime` (¿reinició?), y en GitHub la lista de runners del repo https://github.com/pocharlies-org/repo-x/actions/runners (¿online?). Cola: https://github.com/pocharlies-org/repo-x/actions. Informe: `python3 scripts/ci_queue_report.py --org pocharlies-org --hours 2 --assert-self-hosted-max 1800` (k8s-gitops). Contexto: INFRA-1056."
+      # la regla ARC no debe cazar el pool autoalojado (umbral propio aparte)
+      - eval_time: 1m
+        alertname: CIQueueJobQueuedTooLong
+        exp_alerts: []
+
+  - interval: 1m
+    name: pool autoalojado x86 con cola corta (29 min) no dispara
+    input_series:
+      - series: 'ci_queue_oldest_queued_job_age_seconds{label="x86",pool="self-hosted",repo="repo-x"}'
+        values: '1700x10'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: CIQueueSelfHostedJobQueuedTooLong
+        exp_alerts: []
+
+  - interval: 1m
+    name: nexus-mac duerme; 5h no dispara ninguna (ni la de 30min, excluido)
+    input_series:
+      - series: 'ci_queue_oldest_queued_job_age_seconds{label="nexus-mac",pool="self-hosted",repo="repo-mac"}'
+        values: '18000x10'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: CIQueueNexusMacQueueStuck
+        exp_alerts: []
+      - eval_time: 1m
+        alertname: CIQueueSelfHostedJobQueuedTooLong
+        exp_alerts: []
+
+  - interval: 1m
+    name: nexus-mac >6h dispara su regla
+    input_series:
+      - series: 'ci_queue_oldest_queued_job_age_seconds{label="nexus-mac",pool="self-hosted",repo="repo-mac"}'
+        values: '25200x10'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: CIQueueNexusMacQueueStuck
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              area: infra
+              label: nexus-mac
+              pool: self-hosted
+              repo: repo-mac
+            exp_annotations:
+              summary: "Un build lleva más de 6 h esperando al nexus-mac"
+              description: "Un job del pool `nexus-mac` (repo `repo-mac`) lleva más de 6 h en cola. El Mac duerme y se despierta por WoL, así que una espera corta es normal; 6 h significa que el WoL no despierta la máquina, el mac está caído o el runner no está registrado. Mirar: WoL/ping al mac, `mac_build_*` (regla mac-build) y la lista de runners https://github.com/pocharlies-org/repo-mac/actions/runners. Contexto: INFRA-1056 (nexus-mac duerme: umbral alto a propósito)."
