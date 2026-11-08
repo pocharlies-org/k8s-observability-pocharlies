@@ -1,9 +1,9 @@
 """Contract for the CI-queue correlation rule (INFRA-550, P4 of INFRA-400).
 
-The five alerts of ``manifests/arc-rules.yaml`` arrive as ``warning`` and, without
+The alerts of ``manifests/arc-rules.yaml`` arrive as ``warning`` and, without
 a correlation rule, Keep records them and stays silent (Keep only notifies
 INCIDENTS): they never reached topic 1248. ``ci-queue-degraded`` turns them into
-one incident. The names are read from the live VMRule, not copied, so a sixth
+one incident. The names are read from the live VMRule, not copied, so a new
 ``CI*`` alert added later fails here until the rule covers it.
 
 The checks every such rule shares live in ``keep_correlation.CorrelationContract``;
