@@ -38,11 +38,14 @@ spec:
       rules:
         # C4: un job lleva >20 min en cola. Sin `for`: la edad ya es una
         # magnitud sostenida (crece sola); añadir for sumaría minutos al aviso.
-        # `pool!="github"`: la cola de los runners alojados de GitHub no es
-        # nuestra (no hay nada que arreglar en el cluster); el resto, pool ARC
-        # y label sin pool, sí avisa.
+        # `pool!~"github|self-hosted"`: la cola de los runners alojados de GitHub
+        # no es nuestra (no hay nada que arreglar en el cluster), y la de los
+        # pools autoalojados propios (x86, x86-hermes, nexus-mac…) tiene su
+        # propio umbral abajo (INFRA-1056): el ARC no puede mezclarlos (un runner
+        # único que duerme o un despliegue largo no son el mismo caso que un
+        # scale set ARC). El resto — pool ARC y label sin pool — sí avisa aquí.
         - alert: CIQueueJobQueuedTooLong
-          expr: ci_queue_oldest_queued_job_age_seconds{pool!="github"} > 1200
+          expr: ci_queue_oldest_queued_job_age_seconds{pool!~"github|self-hosted"} > 1200
           labels:
             severity: warning
             area: infra
@@ -56,6 +59,63 @@ spec:
               `python3 scripts/ci_queue_report.py --org pocharlies-org --hours 2`
               del repo k8s-gitops. Si la cola es de un label sin pool, salta
               CIQueueLabelWithoutPool con su propio aviso. Contexto: INFRA-400.
+
+        # INFRA-1056: un runner AUTOALOJADO propio deja de coger jobs (el x86 se
+        # reinició el 07-11 y «Hermes · despliegue ordenado» esperó 522 min y
+        # «Desplegar en x86» 130-136 min sin que nada avisara: el exporter los
+        # metía en `github` por mirar solo labels[0]=self-hosted). Ahora salen
+        # con pool="self-hosted" y su label (x86, x86-hermes, …). Umbral 30 min:
+        # estos runners viven en el x86, que está siempre encendido; un runner
+        # sano coge el job en segundos y una cola de más de 30 min significa que
+        # el runner está caído o atascado (el reinicio del 07-11 dejó colas de
+        # >2 h, muy por encima). 30 min supera además el despliegue más largo,
+        # así que un runner ocupado no dispara en falso. Cubre cualquier pool
+        # autoalojado nuevo salvo nexus-mac, que duerme y tiene su regla abajo.
+        # Sin `for`: la edad crece sola (patrón CIQueueJobQueuedTooLong).
+        - alert: CIQueueSelfHostedJobQueuedTooLong
+          expr: ci_queue_oldest_queued_job_age_seconds{pool="self-hosted",label!="nexus-mac"} > 1800
+          labels:
+            severity: warning
+            area: infra
+          annotations:
+            summary: "Un job espera más de 30 min a un runner autoalojado"
+            description: >-
+              El job más viejo en cola del pool autoalojado `{{ $labels.label }}`
+              (repo `{{ $labels.repo }}`) pasa de 30 min esperando runner. No es
+              ARC: es un runner propio (x86, x86-hermes, …) que no coge jobs.
+              Sospechar del host: `ssh x86 uptime` (¿reinició?), y en GitHub la
+              lista de runners del repo
+              https://github.com/pocharlies-org/{{ $labels.repo }}/actions/runners
+              (¿online?). Cola:
+              https://github.com/pocharlies-org/{{ $labels.repo }}/actions.
+              Informe: `python3 scripts/ci_queue_report.py --org pocharlies-org
+              --hours 2 --assert-self-hosted-max 1800` (k8s-gitops). Contexto:
+              INFRA-1056.
+
+        # nexus-mac (macbook-nexus-app): runner Mac ÚNICO que duerme y se
+        # despierta por WoL. Un build enviado mientras duerme espera de forma
+        # legítima a que despierte y arranque, y el Mac puede estar apagado a
+        # propósito horas. Umbral 6 h: por debajo es «duerme/WoL pendiente» (lo
+        # normal); por encima, algo está roto de verdad (WoL que no despierta,
+        # mac caído, runner sin registrar). Un umbral corto alertaría cada noche
+        # y perdería valor (criterio C1: «umbral que tenga en cuenta que duerme»).
+        # Si algún día aparece otro pool autoalojado que también duerma, hace
+        # falta su propia regla como esta (la de arriba lo cazaría a 30 min).
+        - alert: CIQueueNexusMacQueueStuck
+          expr: ci_queue_oldest_queued_job_age_seconds{pool="self-hosted",label="nexus-mac"} > 21600
+          labels:
+            severity: warning
+            area: infra
+          annotations:
+            summary: "Un build lleva más de 6 h esperando al nexus-mac"
+            description: >-
+              Un job del pool `nexus-mac` (repo `{{ $labels.repo }}`) lleva más
+              de 6 h en cola. El Mac duerme y se despierta por WoL, así que una
+              espera corta es normal; 6 h significa que el WoL no despierta la
+              máquina, el mac está caído o el runner no está registrado. Mirar:
+              WoL/ping al mac, `mac_build_*` (regla mac-build) y la lista de
+              runners https://github.com/pocharlies-org/{{ $labels.repo }}/actions/runners.
+              Contexto: INFRA-1056 (nexus-mac duerme: umbral alto a propósito).
 
         # C4: un job pide un label que no es pool ARC ni granja GitHub: espera
         # un runner que no existe (el caso hermes-agent 32-core, 86401 s).

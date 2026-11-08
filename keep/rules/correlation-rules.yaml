@@ -402,7 +402,7 @@ rules:
       Units de systemd del x86 en failed, por unit. El sensor es ops-watch
       (fuente `unidades`); el `resolved` lo emite la pasada que deja de verla.
 
-  # INFRA-550 (P4 de INFRA-400): cola y runners de CI atascados. Las 5 alertas
+  # INFRA-550 (P4 de INFRA-400): cola y runners de CI atascados. Las alertas
   # de manifests/arc-rules.yaml (VMRule pocharlies-arc-ci) llegan como
   # `warning`/area=infra y SIN esta regla no creaban incidente: Keep solo
   # notifica incidentes (cabecera de este fichero), así que nunca habrían
