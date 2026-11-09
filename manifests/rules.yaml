@@ -2724,7 +2724,7 @@ spec:
               BrainWindowsMassDeleteRefused cannot be trusted until it is fixed.
 ---
 # SC-1872 (05-10-2026): la compañía pasó 6,5 h parada y nada avisó. Si el supervisor muere, nadie lo ve: esta alerta
-# sale de sus métricas (job company-supervisor, x86 :19911, contrato http.metrics de x86-host-runtime) y va a
+# sale de sus métricas (job company-supervisor, paseo/company :19911, contrato http.metrics de x86-host-runtime) y va a
 # Keep (INFRA-912 retiró el backstop-telegram), sin depender de Hermes. SC-2374 quitó el buzón y los encargos, y con ellos sus dos alertas.
 apiVersion: operator.victoriametrics.com/v1beta1
 kind: VMRule
@@ -2747,8 +2747,8 @@ spec:
           annotations:
             summary: "Compañía: el supervisor lleva 15 min sin publicar métricas"
             description: >-
-              VictoriaMetrics no recibe company_encendida del job company-supervisor (x86 :19911). Mirar
-              `systemctl --user status jira-epic-trigger` en el x86 y el target en vmagent.
+              VictoriaMetrics no recibe company_encendida del job company-supervisor (paseo/company :19911). Mirar
+              `kubectl logs -n paseo company-0 -c supervisor` y el target en vmagent.
 
 ---
 apiVersion: operator.victoriametrics.com/v1beta1
