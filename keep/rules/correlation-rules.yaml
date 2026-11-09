@@ -87,9 +87,12 @@ rules:
 
   - ruleName: llm-plane
     incidentPrefix: LLM
+    # SparkGpuClockStuckLow (SC-5101): el 08-11 dgx3 estuvo ~14 h a 617 MHz con carga y no
+    # avisó — la VMRule existe (dgx-infra) pero ninguna regla de Keep la cubría.
     celQuery: |
-      name in ["LitellmNotReady", "GpuArbiterStateObservationUnavailable"]
-    sqlQuery: {"sql": "((name in (:name_1, :name_2)))", "params": {"name_1": "LitellmNotReady", "name_2": "GpuArbiterStateObservationUnavailable"}}
+      name in ["LitellmNotReady", "GpuArbiterStateObservationUnavailable",
+               "SparkGpuClockStuckLow"]
+    sqlQuery: {"sql": "((name in (:name_1, :name_2, :name_3)))", "params": {"name_1": "LitellmNotReady", "name_2": "GpuArbiterStateObservationUnavailable", "name_3": "SparkGpuClockStuckLow"}}
     groupingCriteria: []
     createOn: any
     resolveOn: all_resolved
