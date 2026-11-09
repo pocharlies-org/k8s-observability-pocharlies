@@ -2748,7 +2748,7 @@ spec:
             summary: "Compañía: el supervisor lleva 15 min sin publicar métricas"
             description: >-
               VictoriaMetrics no recibe company_encendida del job company-supervisor (paseo/company :19911). Mirar
-              `systemctl --user status jira-epic-trigger` en el x86 y el target en vmagent.
+              `kubectl logs -n paseo company-0 -c supervisor` y el target en vmagent.
 
 ---
 apiVersion: operator.victoriametrics.com/v1beta1
