@@ -14,6 +14,7 @@ fichero para que el árbol no se lea como el mapa completo.
 | `X86UnitFailed` | ops-watch `empujar_a_keep` (`x86-host-runtime-pocharlies`, fuente `unidades`) | `warning` | `unit` | `x86-unit-failed` → X86U | INFRA-405 |
 | `TrunkCIStale` | ops-watch `empujar_a_keep` (fuente `schedules`) | `warning` | `repo`+`workflow` | `trunk-ci-stale` → STALE | SC-2459 |
 | `AtlassianTokenExpiring` | ops-watch `empujar_a_keep` (fuente `tokens-atlassian`, inventario `libexec/atlassian-expiry.yaml`) | `warning` | `account` | `atlassian-token-expiry` → ATLTK | INFRA-1263 |
+| `ClaudeCuentasRenovarFallo` | `claude-cuentas-monitor` `_alerta_fallo` (`x86-host-runtime-pocharlies`, timer del x86 y bucle company-cron del pod company-0; contrato `keep.claude-cuentas-renovar-fallo.v1`). El hombre muerto de la VMRule `pocharlies-claude-cuentas` (su propia PR, posterior) dispara el mismo nombre por Alertmanager | `warning` | `cuenta` | `claude-cuentas-renovar-fallo` → CCRF | SC-5262 |
 | `BackupStateDegraded` | ops-watch `empujar_a_keep` (fuente `backups`, SC-3033) | `warning` | `objeto` | **sin regla de correlación: nunca forma incidente ni abre Request — hallazgo de INFRA-1263, pendiente de regla** | SC-3033 |
 
 `TrunkCIFailed` y `UpdateWatchFailed` dejaron de entrar en Keep (INFRA-882, 16-10): el CI en rojo y
