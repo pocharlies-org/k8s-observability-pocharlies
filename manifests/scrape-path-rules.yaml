@@ -32,9 +32,27 @@ spec:
           # guarda a propósito: count() sobre series vacías devuelve vacío, así
           # que en un arranque en frío (offset 1h sin datos) la comparación
           # queda vacía y la alerta no se dispara sin histórico que comparar.
+          # SC-5199 (10/11): `for:` subido de 5m a 15m — el umbral del hueco real
+          # de SC-3623. Medido sobre 30 días en rca:up:count (vmsingle-rca, 90 d):
+          # esta regla SOLO disparó en los dos simulacros de INFRA-1031 (10-30
+          # 22:47-23:03 y 10-31 01:05-01:22 UTC, huecos totales de 16-17 min);
+          # las Requests auto-cerradas «no había nada que arreglar» (SC-4984,
+          # SC-5084) eran falsos positivos del umbral viejo de
+          # VmagentRemoteWriteFailing (pending>0), ya corregido por SC-5084.
+          # Con 15m, un hueco que se auto-cura en minutos no abre Request.
+          # NO se exige corroboración con VmagentRemoteWriteFailing (el «y/o» de
+          # la Request): con vmagent MUERTO (el caso núcleo, OOMKilled SC-2907)
+          # RWF no dispara — sin proceso no hay errores ni backlog — y un AND
+          # cegaría justo lo que esta regla caza. RWF sigue como aviso temprano
+          # aparte; la duración sostenida es la corroboración.
+          # SIMULACROS: antes de escalar vmagent a 0, declarar la ventana —
+          # `ops-watch keep ventana <min> --cel 'name in ["ScrapePathGap",
+          # "VmagentRemoteWriteFailing"]' --nombre <clave>` (ventana de
+          # mantenimiento de Keep, suppress: true: queda auditada, no suena) o
+          # `ops-watch keep ack <incidente> --ticket <clave>` (SC-3810).
           expr: |
             (count(up) or vector(0)) <= 0.5 * count(up offset 1h)
-          for: 5m
+          for: 15m
           labels:
             severity: critical
             area: monitoring

@@ -67,7 +67,7 @@ tests:
                 (namespace="monitoring", app="vmagent").
 
   - interval: 1m
-    name: hueco total del camino — up desaparece del todo y ScrapePathGap dispara
+    name: hueco total del camino — up desaparece del todo y ScrapePathGap dispara a los 15 min (SC-5199)
     input_series:
       - series: 'up{job="j1"}'
         values: '1x70'
@@ -78,7 +78,12 @@ tests:
       - series: 'up{job="j4"}'
         values: '1x70'
     alert_rule_test:
+      # up se apaga tras el minuto 69; con lookback de 5 min la condición nace
+      # ~74m y con for: 15m dispara ~89m: a los 85 aún pending, a los 91 firing.
       - eval_time: 85m
+        alertname: ScrapePathGap
+        exp_alerts: []
+      - eval_time: 91m
         alertname: ScrapePathGap
         exp_alerts:
           - exp_labels:
@@ -95,6 +100,22 @@ tests:
                 app.kubernetes.io/name=vmagent` y el estado de vmsingle
                 (OOMKilled — SC-2907), y los logs en Loki
                 (namespace="monitoring").
+
+  - interval: 1m
+    name: SC-5199 — hueco de 10 min que se auto-cura no dispara (el caso de las Requests auto-cerradas)
+    input_series:
+      - series: 'up{job="j1"}'
+        values: '1x70 _x10 1x30'
+      - series: 'up{job="j2"}'
+        values: '1x70 _x10 1x30'
+      - series: 'up{job="j3"}'
+        values: '1x70 _x10 1x30'
+      - series: 'up{job="j4"}'
+        values: '1x70 _x10 1x30'
+    alert_rule_test:
+      - eval_time: 95m
+        alertname: ScrapePathGap
+        exp_alerts: []
 
   - interval: 1m
     name: sano — count(up) plano durante 2 h no dispara ScrapePathGap
