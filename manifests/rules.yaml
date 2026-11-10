@@ -1146,16 +1146,17 @@ spec:
           # bound messaging.skirmshop.draft_email — every publish was ack'd,
           # the app reported draft=queued, and the Gmail drafts never existed.
           #
-          # SKIRM-351 (C4, second cause): the sink only sees messages that were
-          # PUBLISHED. A command binding on the broker with no row in
-          # synapse.plugin_actions (a live consumer nobody registered, or a
-          # stale binding) is the same contract break in the other direction and
-          # never lands here — the engine's topology_watch (SKIRM-350) measures
-          # binding-vs-table and emits synapse_topology_drift{tenant}. Same
-          # alert, same alertmanager routing: both causes mean publisher,
-          # consumer and registry disagree. The gauge is not traffic — the
-          # drift fixture (synapse repo, scripts/ci/plugins_drift_fixture.py)
-          # proves it without publishing a single message.
+          # SKIRM-351 (C4) also ORed the topology-drift gauge into this alert.
+          # SC-4772 / SC-5206 (06-11-2026): that leg fired permanently because
+          # synapse.plugin_actions is EMPTY by design — SKIRM-207 left the real
+          # adapter migration out of scope and no plugin self-registers yet — so
+          # every command binding counted as drift (838 across 7 tenants) and the
+          # Keep rule synapse-control-plane opened a SYNC incident in every
+          # window. The drift leg now lives in its own alert
+          # SynapseTopologyDrift (severity info, gated out of Keep correlation)
+          # until the registry has a baseline; this alert keeps ONLY the
+          # unroutable-sink leg, unchanged: a message here is still a real
+          # contract break and still pages as warning.
           expr: |
             (
               rabbitmq_detailed_queue_messages_ready{
@@ -1163,18 +1164,42 @@ spec:
                 queue="synapse.unroutable"
               } > 0
             )
-            or
-            (
-              synapse_topology_drift > 0
-            )
           for: 1m
           labels:
             severity: warning
             area: messaging
             component: shared-rabbitmq
           annotations:
-            summary: "Synapse contract break: unroutable messages or topology drift"
-            description: "One alert, two causes. (1) Queue synapse.unroutable holds messages: a publisher used a routing key with no binding — inspect the payload headers (`source`, `connection_name`) and the routing key. (2) synapse_topology_drift > 0: the broker carries a command binding with no row in synapse.plugin_actions (a live consumer nobody registered, or a stale binding); the drifting tenant is in the alert's `tenant` label. Both mean publisher, consumer and registry disagree: reconcile them against libs/synapse-contracts/registry.yaml. Runbook: skill synapse-contracts."
+            summary: "Synapse contract break: unroutable messages"
+            description: "Queue synapse.unroutable holds messages: a publisher used a routing key with no binding — inspect the payload headers (`source`, `connection_name`) and the routing key, and reconcile them against libs/synapse-contracts/registry.yaml. Runbook: skill synapse-contracts."
+        - alert: SynapseTopologyDrift
+          # The other direction of the same contract break (SKIRM-351/C4): a
+          # command binding on the broker with no row in synapse.plugin_actions
+          # (a live consumer nobody registered, or a stale binding). The engine's
+          # topology_watch (SKIRM-350) measures binding-vs-table and emits
+          # synapse_topology_drift{tenant}. The gauge is not traffic — the drift
+          # fixture (synapse repo, scripts/ci/plugins_drift_fixture.py) proves it
+          # without publishing a single message.
+          #
+          # GATED TO INFO (SC-4772 / SC-5206): while synapse.plugin_actions has
+          # no baseline (SKIRM-207 has not migrated the real adapters and no
+          # plugin self-registers yet), EVERY binding reads as drift — this alert
+          # fires permanently and means nothing. It is excluded from the Keep
+          # rule synapse-control-plane so it opens no incident. When the registry
+          # gets its baseline (SKIRM-207 waves, see the calendar comment there),
+          # this alert goes back to severity warning next to
+          # SynapseUnroutableMessages: drift with a populated registry is again a
+          # real contract break.
+          expr: |
+            synapse_topology_drift > 0
+          for: 1m
+          labels:
+            severity: info
+            area: messaging
+            component: shared-rabbitmq
+          annotations:
+            summary: "Synapse topology drift (info: registry has no baseline yet)"
+            description: "synapse_topology_drift > 0: the broker carries a command binding with no row in synapse.plugin_actions; the drifting tenant is in the alert's `tenant` label. While the registry has no baseline (SKIRM-207) this is expected permanent noise, not a fault: it opens no Keep incident. Once SKIRM-207 populates the registry, promote this alert back to severity warning. Runbook: skill synapse-contracts."
         - alert: RabbitmqFunctionalQueueNoConsumer
           # A functional queue with messages waiting and zero consumers
           # attached. This is a dead handler. Buffers (which legitimately have

@@ -614,18 +614,25 @@ rules:
     incidentNameTemplate: "Synapse: {{ alertname }} {{ queue }}"
     groupDescription: Outbox, DLQ y colas del bus.
 
+  # SC-4772 / SC-5206: SynapseTopologyDrift queda fuera a propósito. Mientras
+  # synapse.plugin_actions no tenga línea base (SKIRM-207) el gauge arde
+  # siempre (838 bindings = deriva) y abría un SYNC en cada ventana sin
+  # impacto de servicio. Es severity info y no casa con ninguna otra regla
+  # (critical-safety-net excluye Synapse*), así que no abre incidente. Al
+  # tener el registro línea base se sube a warning y se quita de aquí.
   - ruleName: synapse-control-plane
     celQuery: >-
       name.startsWith("Synapse") && !(
         name.startsWith("SynapseOutbox") || name.startsWith("SynapseJanitor") ||
         name in ["SynapseDLQBacklog", "SynapseScheduledWorkflowStalled",
                  "SynapsePollFaultedBacklog", "SynapseOrphanIndexEntries",
-                 "SynapseWorkflowFailed"]
+                 "SynapseWorkflowFailed", "SynapseTopologyDrift"]
       )
     sqlQuery:
-      sql: "((name like :name_1))"
+      sql: "((name like :name_1 and name != :name_2))"
       params:
         name_1: Synapse%
+        name_2: SynapseTopologyDrift
     timeframeInSeconds: 900
     timeUnit: minutes
     groupingCriteria: []
