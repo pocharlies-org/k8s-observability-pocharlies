@@ -63,11 +63,14 @@ loki:
     ingestion_rate_mb: 16
     ingestion_burst_size_mb: 32
   # INFRA-1267 (SC-5058): retención por stream para longhorn-system, 14 días.
-  # La retención global sigue en 24 h (decisión de Dani, INFRA-1175): NO subir
-  # `retention_period`. El runtime-config del chart (clave `runtimeConfig`,
+  # Hoy la retención global ya es 336 h (INFRA-1260, 10-11: subida por decisión
+  # de IT, heredera del veredicto de security de INFRA-1256), así que esta regla
+  # es redundante con el global — se queda a propósito: si el global volviera a
+  # 24 h (decisión de Dani, INFRA-1175), la excepción de longhorn-system
+  # sobrevive sin tocar nada. El runtime-config del chart (clave `runtimeConfig`,
   # CM `loki-runtime`) se aplica por selector LogQL: solo los streams de
   # `longhorn-system` (longhorn-manager e instance-manager, ~92 líneas/h en
-  # total) se retienen y consultan 336 h; el resto obedece los 24 h estáticos.
+  # total) se retienen y consultan 336 h.
   # El compactor los borra por delete-request contra `delete_request_store: s3`
   # (ya configurado). Sin el flag `-runtime-config.file` de abajo Loki no lee
   # este fichero: el chart 7.0.0 lo monta pero NO añade el flag.
