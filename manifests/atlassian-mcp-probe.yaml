@@ -35,7 +35,14 @@ data:
     Stdlib y un proceso: un hilo hace el ciclo cada PROBE_INTERVAL_S y un HTTP server
     expone /metrics. Kinds de error (contrato de la métrica, spec SC-1834):
     http (token o HTTP != 2xx), timeout (socket), isError (result.isError),
-    jsonrpc (cuerpo no parseable o objeto error)."""
+    jsonrpc (cuerpo no parseable o objeto error).
+
+    INFRA-1262: cada ciclo fallido guarda kind + status HTTP + las primeras líneas del
+    cuerpo del error, los loguea (stdout, para `kubectl logs`) y los expone como
+    `atlassian_mcp_probe_last_error_info{kind,status}` (métrica info de cardinalidad
+    acotada: el mensaje NO va en labels, solo en el log). Sin esto la caída del 07-11
+    (SC-5115) quedó sin diagnóstico: la sonda contaba errores por kind pero no decía
+    qué respondía el backend."""
     import json
     import os
     import socket
@@ -65,11 +72,21 @@ data:
     KINDS = ("http", "timeout", "isError", "jsonrpc")
     _lock = threading.Lock()
     _state = {"up": 0, "latency": 0.0, "last_success": 0.0,
-              "errors": {k: 0 for k in KINDS}}
+              "errors": {k: 0 for k in KINDS},
+              # INFRA-1262: {"kind", "status", "detail", "ts"} del último ciclo fallido;
+              # None si la sonda nunca ha fallado desde que arrancó.
+              "last_error": None}
 
     class ProbeError(Exception):
-        def __init__(self, kind):
+        def __init__(self, kind, status="", detail=""):
             self.kind = kind
+            self.status = str(status)
+            self.detail = detail
+
+    def _brief(raw):
+        # Primeras líneas del cuerpo del error, en una sola línea y corta: va al log y
+        # al detalle del diagnóstico, nunca a un label (INFRA-1262).
+        return " ".join((raw or "").split())[:300]
 
     def _post(url, payload, token=None, session=None):
         headers = {"Content-Type": "application/json",
@@ -84,13 +101,19 @@ data:
             with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
                 return resp.headers.get("Mcp-Session-Id"), resp.read().decode("utf-8", "replace")
         except (socket.timeout, TimeoutError):
-            raise ProbeError("timeout")
-        except urllib.error.HTTPError:
-            raise ProbeError("http")
+            raise ProbeError("timeout", "", "timeout %gs" % TIMEOUT)
+        except urllib.error.HTTPError as exc:
+            # El cuerpo del error del gateway/edge es el diagnóstico (INFRA-1262):
+            # status + primeras líneas, leíbles con `kubectl logs`.
+            try:
+                body = exc.read().decode("utf-8", "replace")
+            except Exception:
+                body = ""
+            raise ProbeError("http", exc.code, _brief(body))
         except urllib.error.URLError as exc:
             if isinstance(getattr(exc, "reason", None), (socket.timeout, TimeoutError)):
-                raise ProbeError("timeout")
-            raise ProbeError("http")
+                raise ProbeError("timeout", "", "timeout %gs" % TIMEOUT)
+            raise ProbeError("http", "", _brief(str(exc)))
 
     def _message(raw):
         # El gateway puede responder JSON o SSE: quédate con el último `data:` si lo hay.
@@ -100,21 +123,24 @@ data:
         try:
             return json.loads(raw)
         except ValueError:
-            raise ProbeError("jsonrpc")
+            raise ProbeError("jsonrpc", "", "no parseable: " + _brief(raw))
 
     def _call(url, payload, token, session, want_result):
         sid, raw = _post(url, payload, token=token, session=session)
         if not want_result:
             return sid
         if not raw.strip():
-            raise ProbeError("jsonrpc")
+            raise ProbeError("jsonrpc", "", "respuesta vacía")
         msg = _message(raw)
         if "error" in msg:
-            raise ProbeError("jsonrpc")
+            raise ProbeError("jsonrpc", "", _brief(json.dumps(msg["error"])))
         if want_result == "result" and "result" not in msg:
-            raise ProbeError("jsonrpc")
+            raise ProbeError("jsonrpc", "", _brief(raw))
         if want_result == "tool" and msg.get("result", {}).get("isError") is True:
-            raise ProbeError("isError")
+            texts = " ".join(c.get("text", "")
+                             for c in msg["result"].get("content", [])
+                             if isinstance(c, dict))
+            raise ProbeError("isError", "", _brief(texts))
         return sid
 
     def cycle():
@@ -132,9 +158,17 @@ data:
                 with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
                     token = json.loads(resp.read())["access_token"]
             except (socket.timeout, TimeoutError):
-                raise ProbeError("timeout")
-            except (urllib.error.URLError, urllib.error.HTTPError, ValueError, KeyError):
-                raise ProbeError("http")
+                raise ProbeError("timeout", "", "timeout %gs en token" % TIMEOUT)
+            except urllib.error.HTTPError as exc:
+                # 401/403 con client_secret roto o caducado: el status y el cuerpo de
+                # Keycloak son el diagnóstico (INFRA-1262, caída del 07-11 kind=http).
+                try:
+                    body = exc.read().decode("utf-8", "replace")
+                except Exception:
+                    body = ""
+                raise ProbeError("http", exc.code, "token: " + _brief(body))
+            except (urllib.error.URLError, ValueError, KeyError) as exc:
+                raise ProbeError("http", "", "token: " + _brief(str(exc)))
             sid = _call(MCP_URL, {
                 "jsonrpc": "2.0", "id": 1, "method": "initialize",
                 "params": {"protocolVersion": PROTOCOL_VERSION, "capabilities": {},
@@ -147,9 +181,9 @@ data:
                 "params": {"name": "jira_get_issue", "arguments": {"issue_key": ISSUE_KEY}},
             }, token, sid, "tool")
         except ProbeError as exc:
-            kind = exc.kind
-        except Exception:
-            kind = "http"
+            kind, status, detail = exc.kind, exc.status, exc.detail
+        except Exception as exc:
+            kind, status, detail = "http", "", _brief(repr(exc))
         else:
             kind = None
         with _lock:
@@ -160,6 +194,13 @@ data:
             else:
                 _state["up"] = 0
                 _state["errors"][kind] = _state["errors"].get(kind, 0) + 1
+                _state["last_error"] = {"kind": kind, "status": status,
+                                        "detail": detail, "ts": time.time()}
+        if kind is not None:
+            # Un log por ciclo fallido (INFRA-1262): `kubectl logs deploy/atlassian-mcp-probe`
+            # dice ya qué respondió el backend, sin rebuscar logs ajenos (SC-5115).
+            print("ciclo fallido kind=%s status=%s detalle=%s"
+                  % (kind, status or "-", detail or "-"), flush=True)
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
@@ -177,6 +218,16 @@ data:
                     ]
                     lines += ['atlassian_mcp_probe_errors_total{kind="%s"} %d' % (k, n)
                               for k, n in sorted(_state["errors"].items())]
+                    le = _state["last_error"]
+                    if le:
+                        # Métrica info de cardenal acotada (kind ∈ KINDS, status = código
+                        # HTTP o vacío): el mensaje NO va en labels, se lee en el log
+                        # del ciclo fallido (INFRA-1262). Sobrevive a la recuperación:
+                        # es el último error, no el error activo.
+                        lines.append('atlassian_mcp_probe_last_error_info{kind="%s",status="%s"} 1'
+                                     % (le["kind"], le["status"]))
+                        lines.append("atlassian_mcp_probe_last_error_timestamp_seconds %.3f"
+                                     % le["ts"])
                 body = ("\n".join(lines) + "\n").encode()
             else:
                 self.send_response(404)
@@ -238,7 +289,7 @@ spec:
         # gateway): el ConfigMap se monta plano (sin generator), así que sin esta anotación
         # editar probe.py NO reiniciaría el pod. tests/test_atlassian_mcp_probe.py la compara
         # con el hash real: cambiar el script sin refrescarla rompe CI.
-        checksum/script: "sha256:c88b3368b7771d75b3ca78c4a2b4f199cc163899a15eef02f67fcf01f2631b56"
+        checksum/script: "sha256:fe7c7e146718252f60caa27f177e5a05b672828c345ad76f82a87fdfe707bab4"
     spec:
       containers:
         - name: probe
