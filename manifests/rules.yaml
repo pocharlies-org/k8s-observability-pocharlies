@@ -1234,12 +1234,28 @@ spec:
           # 11:30Z, SYNP-18488; la ventana drenó contact_sync a 0 el 04-11 y el
           # 05-11). Su señal de fallo real es
           # RabbitmqMessagingMediaBacklogAfterWindow, tras la de expenses.
+          #
+          # adapter.ops_explainer.failures EXCLUIDA (2026-11-10, SC-5125): cola
+          # sumidero terminal SIN consumidor por diseño. Su consumidor (el
+          # Deployment synapse-adapter-ops-explainer) se retiró el 02-09 (PR #114
+          # de k8s-synapse-pocharlies, auditoría 26-08); la cola se dejó viva
+          # a propósito porque es el ÚNICO binding de workflow.finalised.*.failed
+          # y sin él el dlq-monitor republicaría cada unroutable como otro
+          # `failed` → bucle (AUDITORIA-synapse-features-workers-20260826.md
+          # §2.1). Sus mensajes son basura terminal: los originales unroutable
+          # los archiva el dlq-monitor en dlq_archive y el aviso de workflow
+          # fallido lo da la VMRule sobre synapse_engine_workflow_instance_-
+          # duration_seconds_count{status="failed"} vía Keep. Gotea del engine
+          # (workflow.failure_observed/finalised) y del propio dlq-monitor
+          # (synthetic events); purgada el 10-11 (296 msgs, precedente: las 108
+          # colas sin consumidor borradas el 02-09). Si algún día vuelve a
+          # haber consumidor, esta exclusión debe retirarse.
           expr: |
             (
               max by (vhost, queue) (
                 rabbitmq_detailed_queue_consumers{
                   vhost="/synapse",
-                  queue!~"dlq\\..+|archive\\..+|adapter\\.[^.]+|adapter\\.messaging\\.(whatsapp_contact_sync|summarize_attachments|upload_topic_attachments|send_topic_photo|save_attachments|audit_correos_weights)|adapter\\.expenses(\\..+)?|synapse\\.unroutable"
+                  queue!~"dlq\\..+|archive\\..+|adapter\\.[^.]+|adapter\\.messaging\\.(whatsapp_contact_sync|summarize_attachments|upload_topic_attachments|send_topic_photo|save_attachments|audit_correos_weights)|adapter\\.expenses(\\..+)?|synapse\\.unroutable|adapter\\.ops_explainer\\.failures"
 
                 }
               ) == 0
@@ -1249,7 +1265,7 @@ spec:
               max by (vhost, queue) (
                 rabbitmq_detailed_queue_messages_ready{
                   vhost="/synapse",
-                  queue!~"dlq\\..+|archive\\..+|adapter\\.[^.]+|adapter\\.messaging\\.(whatsapp_contact_sync|summarize_attachments|upload_topic_attachments|send_topic_photo|save_attachments|audit_correos_weights)|adapter\\.expenses(\\..+)?|synapse\\.unroutable"
+                  queue!~"dlq\\..+|archive\\..+|adapter\\.[^.]+|adapter\\.messaging\\.(whatsapp_contact_sync|summarize_attachments|upload_topic_attachments|send_topic_photo|save_attachments|audit_correos_weights)|adapter\\.expenses(\\..+)?|synapse\\.unroutable|adapter\\.ops_explainer\\.failures"
 
                 }
               ) > 0
