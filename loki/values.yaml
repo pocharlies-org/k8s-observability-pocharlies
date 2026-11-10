@@ -62,23 +62,6 @@ loki:
     reject_old_samples_max_age: 336h
     ingestion_rate_mb: 16
     ingestion_burst_size_mb: 32
-  # INFRA-1267 (SC-5058): retención por stream para longhorn-system, 14 días.
-  # La retención global sigue en 24 h (decisión de Dani, INFRA-1175): NO subir
-  # `retention_period`. El runtime-config del chart (clave `runtimeConfig`,
-  # CM `loki-runtime`) se aplica por selector LogQL: solo los streams de
-  # `longhorn-system` (longhorn-manager e instance-manager, ~92 líneas/h en
-  # total) se retienen y consultan 336 h; el resto obedece los 24 h estáticos.
-  # El compactor los borra por delete-request contra `delete_request_store: s3`
-  # (ya configurado). Sin el flag `-runtime-config.file` de abajo Loki no lee
-  # este fichero: el chart 7.0.0 lo monta pero NO añade el flag.
-  # Coste: despreciable (el stream entero es < 1 MB/día).
-  runtimeConfig:
-    limits:
-      per_stream:
-        - selector: '{namespace="longhorn-system"}'
-          limits:
-            retention: 336h
-            max_query_lookback: 336h
   compactor:
     retention_enabled: true
     delete_request_store: s3
@@ -99,10 +82,6 @@ singleBinary:
   # `manifests/loki-ovh-creds.yaml` (ns `monitoring`).
   extraArgs:
     - -config.expand-env=true
-    # INFRA-1267: sin este flag el chart monta el CM `loki-runtime` en
-    # /etc/loki/runtime-config pero Loki no lo carga (los args del chart solo
-    # llevan config.file y target). Recarga cada 10 min por defecto.
-    - -runtime-config.file=/etc/loki/runtime-config/runtime-config.yaml
   extraEnvFrom:
     - secretRef:
         name: loki-ovh-creds
