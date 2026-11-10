@@ -1,4 +1,5 @@
-# INFRA-1187: `KubePodNotReady` y `KubeContainerWaiting` con etiqueta `workload`.
+# INFRA-1187 + INFRA-1264: `KubePodNotReady`, `KubeContainerWaiting` y
+# `KubePodCrashLooping` con etiqueta `workload`.
 #
 # Por qué existen. La regla de correlación `deployment-degraded` (keep/rules/
 # correlation-rules.yaml) agrupa por `[namespace, workload]` para que la
@@ -18,6 +19,10 @@
 # owner no se puede mapear (RS huérfana, owner raro) siguen disparando por la
 # rama `unless`: ninguna serie que notifica hoy se queda muda
 # (scripts/verify-notification-coverage.py).
+#
+# INFRA-1264 añade `KubePodCrashLooping` por el mismo motivo: la regla
+# `workload-degraded` agrupa por `[namespace, workload]` (dos causas distintas
+# del mismo ns compartían keep-causa y la recurrencia no era medible; SC-5033).
 #
 # La etiqueta llega a Keep como campo top-level del AlertDto (extra = allow en
 # el DTO; el criterio `owner_name` de cron-job-failed —INFRA-1135— es la
@@ -121,3 +126,29 @@ spec:
           annotations:
             summary: "Pod container waiting longer than 1 hour"
             description: "pod/{{ $labels.pod }} in namespace {{ $labels.namespace }} on container {{ $labels.container }} has been in waiting state for longer than 1 hour. (reason: \"{{ $labels.reason }}\")"
+        # Reemplazo de la regla del chart (victoria-metrics/values.yaml,
+        # INFRA-1264): mismo expr (`max_over_time(...[5m]) >= 1`), `for: 15m` y
+        # severidad que tenía (kubernetes-apps); el join y la rama `unless` son
+        # los de KubePodNotReady. La cubre workload-degraded, no
+        # deployment-degraded: un crashloop no es un rollout atascado.
+        - alert: KubePodCrashLooping
+          expr: |
+            (
+              (
+                max_over_time(kube_pod_container_status_waiting_reason{job="kube-state-metrics",reason="CrashLoopBackOff"}[5m]) >= 1
+              )
+              * on (namespace, pod) group_left (workload) kube:pod_workload:info
+            )
+            or
+            (
+              (
+                max_over_time(kube_pod_container_status_waiting_reason{job="kube-state-metrics",reason="CrashLoopBackOff"}[5m]) >= 1
+              )
+              unless on (namespace, pod) kube:pod_workload:info
+            )
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Pod is crash looping."
+            description: "Pod {{ $labels.namespace }}/{{ $labels.pod }} ({{ $labels.container }}) is in waiting state (reason: \"CrashLoopBackOff\")."

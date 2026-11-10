@@ -56,6 +56,32 @@ defaultRules:
       spec:
         labels:
           workload: "{{ $labels.poddisruptionbudget }}"
+    # INFRA-1264: `workload` para que workload-degraded agrupe por workload
+    # (patrón INFRA-1187). Con [namespace], el dgx3 NotReady del 08-11 y una
+    # causa distinta del mismo ns compartían keep-causa y la recurrencia no era
+    # medible (SC-5033).
+    KubeDeploymentRolloutStuck:
+      spec:
+        labels:
+          workload: "{{ $labels.deployment }}"
+    KubeDaemonSetRolloutStuck:
+      spec:
+        labels:
+          workload: "{{ $labels.daemonset }}"
+    # La plantilla del chart indexa por nombre de alerta y el CRITICAL (for 1m)
+    # y el WARNING (for 1h) comparten nombre, así que `spec` cae en las dos
+    # ramas (templates/victoria-metrics-operator/vmalert/rule.yaml). El PVC es
+    # el identificador de la causa, como el PDB arriba.
+    KubePersistentVolumeFillingUp:
+      spec:
+        labels:
+          workload: "{{ $labels.persistentvolumeclaim }}"
+    # INFRA-1264: reemplazada por pocharlies-pod-workload
+    # (manifests/pod-workload-rules.yaml) con `workload`, por el mismo motivo
+    # que KubePodNotReady/KubeContainerWaiting arriba: la copia del chart
+    # agrega por pod y no sabe quién es el owner.
+    KubePodCrashLooping:
+      create: false
     # Reemplazada por pocharlies-vmagent-scrape-pools (manifests/rules.yaml): la
     # copia del chart dispara también con pools de Deployments parados a mano
     # (spec.replicas 0), que no son una mala configuración — MON-18508 abrió con

@@ -151,3 +151,50 @@ tests:
             exp_annotations:
               summary: "Pod has been in a non-ready state for more than 15 minutes."
               description: "Pod comfyui/krea2-dataset-store-7d9-abcde has been in a non-ready state for longer than 15 minutes."
+  # INFRA-1264: KubePodCrashLooping reemplazada del chart con `workload`, para
+  # que workload-degraded agrupe por [namespace, workload] (SC-5033).
+  - interval: 1m
+    name: pod de un Deployment en CrashLoopBackOff dispara KubePodCrashLooping con workload
+    input_series:
+      - series: 'kube_pod_container_status_waiting_reason{job="kube-state-metrics",namespace="llm",pod="stt-turbo-7d9-abcde",container="main",reason="CrashLoopBackOff"}'
+        values: '1x80'
+      - series: 'kube_pod_owner{job="kube-state-metrics",namespace="llm",pod="stt-turbo-7d9-abcde",owner_kind="ReplicaSet",owner_name="stt-turbo-7d9"}'
+        values: '1x80'
+      - series: 'kube_replicaset_owner{job="kube-state-metrics",namespace="llm",replicaset="stt-turbo-7d9",owner_kind="Deployment",owner_name="stt-turbo",owner_is_controller="true"}'
+        values: '1x80'
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: KubePodCrashLooping
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: kube-state-metrics
+              namespace: llm
+              pod: stt-turbo-7d9-abcde
+              container: main
+              reason: CrashLoopBackOff
+              workload: stt-turbo
+            exp_annotations:
+              summary: "Pod is crash looping."
+              description: 'Pod llm/stt-turbo-7d9-abcde (main) is in waiting state (reason: "CrashLoopBackOff").'
+  - interval: 1m
+    name: pod con owner no mapeable en CrashLoopBackOff dispara sin workload (rama unless)
+    input_series:
+      - series: 'kube_pod_container_status_waiting_reason{job="kube-state-metrics",namespace="otro",pod="huerfano-abcde",container="main",reason="CrashLoopBackOff"}'
+        values: '1x80'
+      - series: 'kube_pod_owner{job="kube-state-metrics",namespace="otro",pod="huerfano-abcde",owner_kind="ReplicaSet",owner_name="huerfano-7d9"}'
+        values: '1x80'
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: KubePodCrashLooping
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: kube-state-metrics
+              namespace: otro
+              pod: huerfano-abcde
+              container: main
+              reason: CrashLoopBackOff
+            exp_annotations:
+              summary: "Pod is crash looping."
+              description: 'Pod otro/huerfano-abcde (main) is in waiting state (reason: "CrashLoopBackOff").'

@@ -224,6 +224,9 @@ spec:
           labels:
             severity: warning
             area: kubernetes
+            # INFRA-1264: agrupación por workload en `workload-degraded` (ver
+            # KubernetesStatefulSetUnavailable arriba, INFRA-1187).
+            workload: "{{ $labels.daemonset }}"
           annotations:
             summary: "DaemonSet unavailable"
             description: "{{ $labels.namespace }}/{{ $labels.daemonset }} has nodes without a ready daemon pod."
