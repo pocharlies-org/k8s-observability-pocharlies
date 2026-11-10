@@ -1,0 +1,325 @@
+# SC-5269 — Red de seguridad de las alertas ArgoCD→Keep: reconcilia los incidents
+# `ArgoCDAppDegraded` / `ArgoCDSyncFailed` firing contra el estado VIVO de la app.
+#
+# POR QUÉ EXISTE. El resolved de ArgoCD Notifications (SC-5249) solo se emite en
+# la transición que el controller observa, con dedup por app+trigger. Si la app se
+# recupera SIN una operación de sync nueva (un pod que vuelve solo, un nodo que se
+# recupera), ningún trigger vuelve a dispararse y el incidente queda `firing` en
+# Keep para siempre: es la segunda ruta del síntoma de SC-5203. El stale-reaper no
+# lo cubre: su fuente de verdad es Alertmanager y las alertas de ArgoCD no pasan
+# por AM (llegan por webhook directo), así que su replay con fingerprint recalculado
+# no empareja con la alerta original y no la resuelve.
+#
+# QUÉ HACE. Para cada incident `firing` cuyas alertas tengan source `argocd`, lee
+# la Application viva por la API del clúster (el status lo mantiene el propio
+# application-controller) y, si la app está bien, emite el resolved por el MISMO
+# canal que usa ArgoCD (`POST /alerts/event`, formato de la plantilla
+# keep-*-resolved, mismo fingerprint sha256("argocd/<app>/<tipo>")[:16]). Las
+# condiciones espejan las de los triggers resolved de SC-5249:
+#   ArgoCDAppDegraded -> status.health.status == Healthy
+#   ArgoCDSyncFailed  -> status.operationState.phase == Succeeded
+# (no un AND de ambas: el caso residual es precisamente una app Healthy cuyo último
+# operationState sigue Failed porque no hubo sync nuevo; exigir sync Succeeded la
+# dejaría firing para siempre. Cada alerta se resuelve por la condición que la
+# disparó, que es la que ArgoCD usaría si observara la transición.)
+# Como red de seguridad final, si tras el replay el incident sigue firing y no
+# queda ninguna alerta suya firing, se resuelve por API (mismo camino que la UI).
+#
+# NUNCA resuelve nada si no puede confirmar el estado vivo: ante cualquier fallo
+# contra la API del clúster para esa app (o para listar incidents), sale sin tocar
+# nada — la ausencia de datos no es prueba de salud. Idempotente: resolved sobre
+# una alerta ya resolved es un no-op.
+#
+# RITMO: cada 10 min con PAUSE=2 s entre llamadas (lección SC-1600: la ráfaga de
+# eventos satura el worker de Keep y genera justo los zombies que se quieren
+# evitar). El steady-state son cero llamadas de escritura: solo la página de
+# incidents firing.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: keepsvc-argocd-reconciler
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: keep
+    app.kubernetes.io/component: maintenance
+---
+# Solo lectura de Applications en argocd: el status es lo que manda.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: keepsvc-argocd-reconciler
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name: keep
+    app.kubernetes.io/component: maintenance
+rules:
+  - apiGroups: ["argoproj.io"]
+    resources: ["applications"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: keepsvc-argocd-reconciler
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name: keep
+    app.kubernetes.io/component: maintenance
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: keepsvc-argocd-reconciler
+subjects:
+  - kind: ServiceAccount
+    name: keepsvc-argocd-reconciler
+    namespace: monitoring
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: keepsvc-argocd-reconciler
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: keep
+    app.kubernetes.io/component: maintenance
+data:
+  reconcile.py: |
+    """SC-5269: resuelve en Keep los incidents ArgoCD cuya app está sana de verdad."""
+    import hashlib
+    import json
+    import os
+    import ssl
+    import sys
+    import time
+    import urllib.parse
+    import urllib.request
+
+    KEEP = os.environ["KEEP_API_URL"].rstrip("/")
+    KEY = os.environ["KEEP_API_KEY"]
+    ARGOCD_URL = os.environ.get("ARGOCD_URL", "https://argocd.e-dani.com").rstrip("/")
+    GRACE_SECONDS = int(os.environ.get("GRACE_SECONDS", "900"))
+    PAUSE = float(os.environ.get("PAUSE_SECONDS", "2"))
+    ARGOCD_NS = os.environ.get("ARGOCD_NAMESPACE", "argocd")
+
+    SA_DIR = "/var/run/secrets/kubernetes.io/serviceaccount"
+    try:
+        with open(f"{SA_DIR}/token") as f:
+            K8S_TOKEN = f.read().strip()
+        K8S_CTX = ssl.create_default_context(cafile=f"{SA_DIR}/ca.crt")
+    except OSError as e:
+        print(f"sin token de servicio ({e}); no puedo confirmar el estado vivo, salgo", file=sys.stderr)
+        sys.exit(1)
+    K8S = os.environ.get("KUBERNETES_API", "https://kubernetes.default.svc")
+
+    def call(url, method="GET", payload=None, headers=None, ctx=None):
+        req = urllib.request.Request(
+            url,
+            method=method,
+            data=json.dumps(payload).encode() if payload is not None else None,
+            headers={"Content-Type": "application/json", **(headers or {})},
+        )
+        with urllib.request.urlopen(req, timeout=60, context=ctx) as r:
+            body = r.read()
+            return json.loads(body) if body else None
+
+    keep_h = {"x-api-key": KEY}
+
+    # 1. Incidents firing. El parámetro `status` no filtra en Keep 0.52.1; el CEL
+    # sí lo hace server-side (mismo hallazgo que el stale-reaper).
+    try:
+        cel = urllib.parse.quote('status == "firing"')
+        firing = call(f"{KEEP}/incidents?cel={cel}&limit=500", headers=keep_h).get("items", [])
+    except Exception as e:
+        print(f"KEEP no accesible ({e}); no resuelvo nada", file=sys.stderr)
+        sys.exit(1)
+    print(f"Keep: {len(firing)} incidents firing")
+
+    def live_app(name):
+        """Application viva desde la API del clúster; None si no se puede confirmar."""
+        url = (f"{K8S}/apis/argoproj.io/v1alpha1/namespaces/{ARGOCD_NS}"
+               f"/applications/{urllib.parse.quote(name)}")
+        try:
+            return call(url, headers={"Authorization": f"Bearer {K8S_TOKEN}"}, ctx=K8S_CTX)
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                return {}  # app borrada: no hay nada degradado que seguir vigilando
+            print(f"  {name}: API del clúster {e.code}; no confirmo, no toco", file=sys.stderr)
+            return None
+        except Exception as e:
+            print(f"  {name}: API del clúster falló ({e}); no confirmo, no toco", file=sys.stderr)
+            return None
+
+    # nombre de alerta -> (tipo para el fingerprint, condición de salud viva)
+    KINDS = {
+        "ArgoCDAppDegraded": "degraded",
+        "ArgoCDSyncFailed": "sync-failed",
+    }
+
+    def healthy_for(kind, app):
+        if not app:  # app borrada
+            return True
+        status = app.get("status") or {}
+        if kind == "degraded":
+            return (status.get("health") or {}).get("status") == "Healthy"
+        return (status.get("operationState") or {}).get("phase") == "Succeeded"
+
+    def resolved_body(alert, app_obj, kind):
+        name = alert.get("name")
+        app = (alert.get("labels") or {}).get("app") or ""
+        fp = hashlib.sha256(f"argocd/{app}/{kind}".encode()).hexdigest()[:16]
+        status = (app_obj or {}).get("status") or {}
+        spec = (app_obj or {}).get("spec") or {}
+        src = spec.get("source") or {}
+        labels = dict(alert.get("labels") or {})
+        labels.update({
+            "sync": (status.get("sync") or {}).get("status", ""),
+            "health": (status.get("health") or {}).get("status", ""),
+            "repo": src.get("repoURL", "multi-source"),
+            "revision": (status.get("sync") or {}).get("revision", ""),
+        })
+        why = "sana (health Healthy)" if kind == "degraded" else "sync Succeeded"
+        return {
+            "name": name,
+            "fingerprint": fp,
+            "status": "resolved",
+            "severity": "warning",
+            "source": ["argocd"],
+            "app": app,
+            "labels": labels,
+            "url": f"{ARGOCD_URL}/applications/{app}",
+            "description": f"{app} {why} — resolved por la red de seguridad de Keep (SC-5269)",
+        }
+
+    now = time.time()
+    replayed = resolved = 0
+    for inc in firing:
+        try:
+            resp = call(f"{KEEP}/incidents/{inc['id']}/alerts?limit=1000", headers=keep_h)
+        except Exception as e:
+            print(f"  {inc['id'][:8]}: sin alerts ({e})", file=sys.stderr)
+            continue
+        items = resp.get("items", resp) if isinstance(resp, dict) else resp
+        mine = [a for a in items
+                if a.get("status") == "firing" and "argocd" in (a.get("source") or [])
+                and a.get("name") in KINDS]
+        if not mine:
+            continue
+        # Un incident visto hace poco puede estar a medio actualizar (evento en
+        # vuelo de ArgoCD): fuera, igual que el stale-reaper.
+        last_seen = (inc.get("last_seen_time") or "")[:19]
+        try:
+            if now - time.mktime(time.strptime(last_seen, "%Y-%m-%dT%H:%M:%S")) < GRACE_SECONDS:
+                continue
+        except ValueError:
+            pass
+
+        touched = False
+        for a in mine:
+            app = (a.get("labels") or {}).get("app") or ""
+            if not app:
+                print(f"  {inc['id'][:8]}: alerta sin label app; no sé qué consultar", file=sys.stderr)
+                continue
+            kind = KINDS[a["name"]]
+            app_obj = live_app(app)
+            if app_obj is None:
+                continue  # estado vivo no confirmable
+            if not healthy_for(kind, app_obj):
+                continue  # sigue mal: la alerta es legítima
+            try:
+                call(f"{KEEP}/alerts/event", method="POST",
+                     payload=resolved_body(a, app_obj, kind), headers=keep_h)
+                replayed += 1
+                touched = True
+                print(f"  {app}/{kind}: app sana -> resolved emitido")
+            except Exception as e:
+                print(f"  {app}/{kind}: resolved falló ({e})", file=sys.stderr)
+            time.sleep(PAUSE)
+
+        if not touched:
+            continue
+        # El motor resuelve solo al resolverse la última alerta; si no, se
+        # comprueba y se resuelve por API (mismo camino que la UI).
+        time.sleep(2)
+        try:
+            fresh = call(f"{KEEP}/incidents/{inc['id']}", headers=keep_h)
+            if fresh.get("status") != "firing":
+                resolved += 1
+            else:
+                resp2 = call(f"{KEEP}/incidents/{inc['id']}/alerts?limit=1000", headers=keep_h)
+                s2 = resp2.get("items", resp2) if isinstance(resp2, dict) else resp2
+                if not [a for a in s2 if a.get("status") == "firing"]:
+                    call(f"{KEEP}/incidents/{inc['id']}/status", method="POST",
+                         payload={"status": "resolved"}, headers=keep_h)
+                    resolved += 1
+        except Exception as e:
+            print(f"  {inc['id'][:8]}: estado tras replay no confirmable ({e})", file=sys.stderr)
+        time.sleep(PAUSE)
+
+    print(f"resolved emitidos: {replayed} | incidents resueltos: {resolved}")
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: keepsvc-argocd-reconciler
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: keep
+    app.kubernetes.io/component: maintenance
+spec:
+  # Cada 10 min: bastante más rápido que el peor caso de recuperación sin sync
+  # (que antes no se resolvía NUNCA) y lo bastante lento para que la pasada sea
+  # invisible para el worker de eventos de Keep.
+  schedule: "*/10 * * * *"
+  timeZone: Europe/Madrid
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  startingDeadlineSeconds: 300
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      ttlSecondsAfterFinished: 86400
+      template:
+        spec:
+          restartPolicy: Never
+          serviceAccountName: keepsvc-argocd-reconciler
+          automountServiceAccountToken: true
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+          containers:
+            - name: reconciler
+              image: python:3.12-slim
+              command: ["python3", "/scripts/reconcile.py"]
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              env:
+                - name: KEEP_API_URL
+                  value: http://keep-backend.monitoring.svc.cluster.local:8080
+                - name: KEEP_API_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: keepsvc-provisioning
+                      key: API_KEY_PROVISIONER
+                - name: ARGOCD_URL
+                  value: https://argocd.e-dani.com
+                - name: PAUSE_SECONDS
+                  value: "2"
+              resources:
+                requests:
+                  cpu: 10m
+                  memory: 64Mi
+                limits:
+                  cpu: 200m
+                  memory: 128Mi
+              volumeMounts:
+                - name: scripts
+                  mountPath: /scripts
+          volumes:
+            - name: scripts
+              configMap:
+                name: keepsvc-argocd-reconciler
