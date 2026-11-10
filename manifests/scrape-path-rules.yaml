@@ -54,12 +54,19 @@ spec:
           # Nombres de métrica MEDIDOS sobre v1.143.0: no existe
           # vmagent_remotewrite_packets_pending (así venía pedida en la
           # Request); las reales son vmagent_remotewrite_errors_total y
-          # vmagent_remotewrite_pending_data_bytes. for: 10m descarta el
-          # bloque en vuelo normal (pending > 0 transitorio es lo habitual).
+          # vmagent_remotewrite_pending_data_bytes.
+          # SC-5084 (10/11): el umbral > 0 era falso positivo crónico — medido
+          # sobre el vmagent vivo, pending_data_bytes oscila 0↔~1 MB durante
+          # horas con el camino SANO (0 errores, count(up) plano en 198,
+          # blocks_sent ~15.5/s estables) y con for: 10m el estado pending
+          # llegaba a firing: 56 incidentes SCPATH en 10 días, todos sin
+          # avería. 100 MB ≈ 100× el pico normal y ~2 min de backlog si
+          # vmsingle dejara de aceptar (cola persistente creciendo a ~15
+          # blocks/s): lo que queda es el atasco real que la regla buscaba.
           expr: |
             increase(vmagent_remotewrite_errors_total[10m]) > 0
             or
-            vmagent_remotewrite_pending_data_bytes > 0
+            vmagent_remotewrite_pending_data_bytes > 100e6
           for: 10m
           labels:
             severity: critical
@@ -67,8 +74,8 @@ spec:
           annotations:
             summary: "vmagent no consigue escribir en vmsingle: errores de remote-write o backlog sostenido"
             description: >-
-              vmagent acumula errores de remote-write o cola pendiente
-              (pending_data_bytes > 0) durante 10 min: el camino se está
-              atascando ANTES de quedarse vacío del todo (ScrapePathGap).
-              Comprueba vmsingle (memoria/OOM) y los logs de vmagent en
-              Loki (namespace="monitoring", app="vmagent").
+              vmagent acumula errores de remote-write o una cola pendiente
+              grande (> 100 MB) durante 10 min: el camino se está atascando
+              ANTES de quedarse vacío del todo (ScrapePathGap). Comprueba
+              vmsingle (memoria/OOM) y los logs de vmagent en Loki
+              (namespace="monitoring", app="vmagent").
