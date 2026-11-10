@@ -36,4 +36,12 @@ permissions:
 jobs:
   duplicados:
     uses: pocharlies-org/k8s-gitops-pocharlies/.github/workflows/reusable-duplicados.yml@main
+    with:
+      # El puente de aurora es COPIA deliberada de ficheros upstream (fork
+      # documentado, INFRA-324/SC-4980): `images/aurora/bridge/files/*.py` se
+      # auditan por sha256 en su README, no por similitud. Sin este ignore,
+      # cualquier PR que añada o reenvase uno de estos ficheros cae por los
+      # clones internos que el código de Arvo ya trae (task.py, 14 líneas de
+      # clone propio medido con jscpd).
+      ignorar: "**/images/aurora/bridge/files/**"
     secrets: inherit
