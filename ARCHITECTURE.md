@@ -191,5 +191,15 @@ igual). Necesita Postgres: sin `AURORA_TEST_PG_DSN` se salta en local y **falla 
   digest. Sufijo nuevo `-p688b` por la regla de arriba (cambio de contenido = sufijo, nunca
   reescritura); el chart sigue en `aurora-oss 1.2.16` — subirlo es decisión aparte, no acompaña a
   este bump. Ficheros, hashes y comando de aplicación: `images/aurora/bridge/README.md`.
+- `2026-11-10` · **Tercer conjunto del fork: sweep de `summarizing` → tag `sha-40dfd6d-p688c`**
+  (SC-4980, Request del incidente de Keep AUR-18781): el bump a 1.2.20 redujo pero no cerró los
+  varados en `aurora_status='summarizing'` — cuando el resumen LLM tarda más que el hard limit
+  (420 s), Celery mata la tarea con SIGKILL, el handler de `SoftTimeLimitExceeded` no corre y el
+  incidente queda clavado sin terminal; `cnpg_aurora_rca_coverage_without_rca` sube y dispara
+  `AuroraRcaCoverageLow` (medido 07-11: 12/27 despachos sin RCA, ratio 0.85 en la ventana del
+  disparo). El conjunto es la rama 5 del cleaner del fork (SC-2633, `pocharlies-org/aurora@93efd635`)
+  aplicada sobre el `task.py` de la base 1.2.20: re-encola el resumen (5 por pasada, 2 reintentos
+  por incidente) y si no, `error` terminal. Fichero `files/task.py`, hash y retirada en el README
+  del puente; values y workflow suben el sufijo a `-p688c` (regla de arriba).
 
 Última verificación contra el código: 2026-10-03 · 09373a7 (origin/main)

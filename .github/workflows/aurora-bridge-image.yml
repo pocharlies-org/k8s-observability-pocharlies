@@ -7,7 +7,7 @@ name: aurora · bridge image (INFRA-326)
 # dgx-infra/.github/workflows/build-bge-embedding.yml. Runner arc-k8s (skill
 # ci-runners-arc); el job necesita docker, que el release de ARC trae por sidecar dind.
 #
-# NO pisa tags existentes: sube ghcr.io/pocharlies-org/aurora-server:sha-40dfd6d-p688b
+# NO pisa tags existentes: sube ghcr.io/pocharlies-org/aurora-server:sha-40dfd6d-p688c
 # (sufijo nuevo por cambio de contenido — regla del registro, INFRA-324).
 # VER images/aurora/bridge/README.md — RETIRADA por merge aguas arriba: cada PR
 # fusionada retira su conjunto; fusionadas ambas, este workflow se borra.
@@ -53,7 +53,7 @@ jobs:
         # a INFRA-326). En main (push o dispatch) se publica el tag.
         run: |
           ARGS=(--platform linux/amd64,linux/arm64
-                --tag ghcr.io/pocharlies-org/aurora-server:sha-40dfd6d-p688b)
+                --tag ghcr.io/pocharlies-org/aurora-server:sha-40dfd6d-p688c)
           if [ "${GITHUB_REF}" = "refs/heads/main" ]; then
             ARGS+=(--push)
           else
@@ -66,19 +66,19 @@ jobs:
       - name: Espejo del tag frontend (mismo digest, sin rebuild)
         # El chart compone `aurora-frontend:{image.tag}` del MISMO tag global
         # (templates/frontend-deployment.yaml:36, sin override por componente):
-        # sin este espejo el frontend entraría en ImagePullBackOff con el tag -p688b.
+        # sin este espejo el frontend entraría en ImagePullBackOff con el tag -p688c.
         # Fuente: el frontend upstream 1.2.20 pineado por digest (la base nueva es la
         # imagen de Arvo, ya no el build manual espejado en nuestra org).
         if: github.ref == 'refs/heads/main'
         run: |
           docker buildx imagetools create \
-            -t ghcr.io/pocharlies-org/aurora-frontend:sha-40dfd6d-p688b \
+            -t ghcr.io/pocharlies-org/aurora-frontend:sha-40dfd6d-p688c \
             ghcr.io/arvo-ai/aurora-frontend@sha256:e74e7a81d5dd813fcd28028de56abb00a6dc39980809a004d192b335ba2c11eb
 
       - name: Verificar manifiesto y digest
         if: github.ref == 'refs/heads/main'
         run: |
-          docker buildx imagetools inspect ghcr.io/pocharlies-org/aurora-server:sha-40dfd6d-p688b \
+          docker buildx imagetools inspect ghcr.io/pocharlies-org/aurora-server:sha-40dfd6d-p688c \
             | tee /tmp/inspect.txt
           grep -q 'linux/amd64' /tmp/inspect.txt && grep -q 'linux/arm64' /tmp/inspect.txt
           echo "Digest:"; grep -m1 Digest /tmp/inspect.txt >> "$GITHUB_STEP_SUMMARY" || true

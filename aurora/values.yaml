@@ -48,18 +48,21 @@ fullnameOverride: aurora
 # 40dfd6d, pineada por digest) + los DOS conjuntos de parches registrados
 # (tool-output = Arvo-AI/aurora#602, OPEN; timeout del juez = Arvo-AI/aurora#688,
 # OPEN — sin él `GUARDRAILS_LLM_TIMEOUT_SECONDS` de abajo es inerte y el juez
-# caduca a 10 s hardcodeados). El bump a 1.2.20 trae además el time limit de la
-# tarea de resumen (Arvo-AI/aurora#610: time_limit=420/soft 330), que es lo que
-# desatasca los incidentes varados en `summarizing`. Base, ficheros, hashes y
-# RETIRADA (por merge aguas arriba, no por fecha): images/aurora/bridge/README.md.
-# Cambio de contenido = sufijo nuevo en el tag (ahora `-p688b`), nunca reescritura.
+# caduca a 10 s hardcodeados). El bump a 1.2.20 trae el time limit de la tarea de
+# resumen (Arvo-AI/aurora#610: time_limit=420/soft 330), que REDUCE pero no cierra
+# los varados en `summarizing` (medido 07-11, AUR-18781: el SIGKILL del hard limit
+# se lleva la tarea cuando el residente tarda más de 420 s y el handler blando no
+# corre); el tercer conjunto del puente — el sweep SC-2633 en `files/task.py` — es
+# lo que les da terminal. Base, ficheros, hashes y RETIRADA (por merge aguas arriba,
+# no por fecha): images/aurora/bridge/README.md.
+# Cambio de contenido = sufijo nuevo en el tag (ahora `-p688c`), nunca reescritura.
 #
 # Al subir la versión del chart en apps/aurora.yaml, revisar el puente (puede
 # que el bump limpio ya esté disponible).
 # ---------------------------------------------------------------------------
 image:
   registry: ghcr.io/pocharlies-org
-  tag: "sha-40dfd6d-p688b"
+  tag: "sha-40dfd6d-p688c"
 
 # ---------------------------------------------------------------------------
 # Infra compartida en vez de la del chart. Ahorra ~4GB y evita duplicar bases de
