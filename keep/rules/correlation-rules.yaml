@@ -67,6 +67,24 @@ rules:
   # No se tocan las que deben seguir calladas: InfoInhibitor (4073) y Watchdog son
   # fontanería de Alertmanager, y CPUThrottlingHigh (1181, info) es ruido crónico.
   # ---------------------------------------------------------------------------
+  # INFRA-1264: se agrupa por [namespace, workload] (patrón INFRA-1187, medido
+  # en SC-5033): con `[namespace]`, el dgx3 NotReady del 08-11 (reloj tras
+  # reboot) y la causa del 07-11 —distintas y no reconstruible la segunda—
+  # compartían `workload-degraded:89454cf858` y el detector de recurrencia del
+  # supervisor («misma keep-causa 2 veces en 7 días») no medía nada. `workload`
+  # la traen las 5 familias: rollout-stuck y PV-filling por plantilla en
+  # defaultRules.rules.<X>.spec.labels (victoria-metrics/values.yaml),
+  # KubernetesDaemonSetUnavailable en su VMRule (manifests/rules.yaml) y
+  # KubePodCrashLooping por el join de pocharlies-pod-workload
+  # (manifests/pod-workload-rules.yaml). No se agrupa por [namespace, pod,
+  # deployment, daemonset, persistentvolumeclaim]: Keep da huella «none» a la
+  # alerta a la que le falte CUALQUIER criterio (rulesengine.
+  # _calc_rule_fingerprint) y ninguna alerta las trae todas.
+  #
+  # Lo que se pierde con respecto a [namespace]: un nodo malo que tumba varios
+  # workloads ya no es UN incidente, son varios (uno por workload) — igual que
+  # en deployment-degraded desde INFRA-1187; la causa común se lee en el
+  # instante de disparo, y la recurrencia —lo que se mide— es por workload.
   - ruleName: workload-degraded
     incidentPrefix: WORK
     celQuery: |
@@ -74,16 +92,16 @@ rules:
                "KubeDaemonSetRolloutStuck", "KubernetesDaemonSetUnavailable",
                "KubePersistentVolumeFillingUp"]
     sqlQuery: {"sql": "((name in (:name_1, :name_2, :name_3, :name_4, :name_5)))", "params": {"name_1": "KubePodCrashLooping", "name_2": "KubeDeploymentRolloutStuck", "name_3": "KubeDaemonSetRolloutStuck", "name_4": "KubernetesDaemonSetUnavailable", "name_5": "KubePersistentVolumeFillingUp"}}
-    groupingCriteria: [namespace]
+    groupingCriteria: [namespace, workload]
     createOn: any
     resolveOn: all_resolved
     timeframeInSeconds: 900
     timeUnit: minutes
-    incidentNameTemplate: "Workloads degradados en {{ namespace }}"
+    incidentNameTemplate: "Workloads degradados en {{ namespace }} · {{ workload }}"
     groupDescription: >-
-      Pods en crashloop, rollouts atascados y volúmenes llenándose. Se agrupa por
-      namespace porque un nodo o un despliegue malo tumba varios a la vez y son
-      el mismo incidente, no cinco.
+      Pods en crashloop, rollouts atascados y volúmenes llenándose, por workload:
+      la keep-causa de ops-watch distingue qué workload está degradado (INFRA-1264,
+      patrón INFRA-1187).
 
   - ruleName: llm-plane
     incidentPrefix: LLM
