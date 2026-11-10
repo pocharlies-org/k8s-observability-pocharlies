@@ -86,6 +86,10 @@ resources:
   - manifests/dgx-cluster-health-watcher.yaml
   - manifests/atlassian-mcp-probe.yaml
   - manifests/atlassian-mcp-rules.yaml
+  # INFRA-1265 (causa de SC-5058): volumen Longhorn atascado en attaching/detaching >5 min.
+  # Se habilita directa: la serie longhorn_volume_state ya se scrapea (job longhorn-backend),
+  # así que no hay riesgo de falsa crítica por serie ausente.
+  - manifests/longhorn-rules.yaml
 
 # Las reglas de correlación se montan como fichero en el Job que las aplica, en
 # vez de duplicarse inline: keep/rules/correlation-rules.yaml sigue siendo la

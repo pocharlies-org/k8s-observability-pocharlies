@@ -189,6 +189,7 @@ rules:
         name.startsWith("OVHPVCHub") || name.startsWith("Sii") ||
         name.startsWith("Synapse") ||
         name.startsWith("Rabbitmq") || name.startsWith("Keep") ||
+        name.startsWith("LonghornVolume") ||
         name.startsWith("Alertmanager") || name.startsWith("SharedValkey") ||
         name.startsWith("SharedDatastore") || name.startsWith("KubeNode") ||
         name.startsWith("Node") || name.startsWith("MacBuild") ||
@@ -266,6 +267,39 @@ rules:
     incidentPrefix: DEPL
     incidentNameTemplate: "Deployment degradado en {{ namespace }} · {{ workload }}"
     groupDescription: Síntomas de workload que no arranca, por workload.
+
+  # INFRA-1265 (causa de SC-5058): el volumen Longhorn de harbor-redis quedó atascado
+  # en attaching/detaching en ks5-cp-1 y Harbor cayó 3,5 h sin que nadie lo supiera
+  # (precedente SC-2840). Es la CAUSA, y va en incidente propio y no dentro de
+  # deployment-degraded: la respuesta (mirar el Volume CR y el csi-attacher, no el
+  # deployment) es otra, y el síntoma ya tiene su regla. Crítica, así que está excluida
+  # del safety-net arriba (INVARIANTE 1: la exclusión delega en esta regla, no silencia).
+  #
+  # Agrupa por `volume` (el nombre del Volume CR, etiqueta de la serie
+  # longhorn_volume_state): el mismo volumen atascado dos veces es la misma causa, y
+  # dos volúmenes atascados son dos incidentes. El nombre del incidente lleva sólo la
+  # etiqueta de agrupación y ningún número volátil — es parte de la clave de causa
+  # (`keep-causa:longhorn-volume-stuck:<sha1>`) con la que ops-watch deduplica la
+  # Request [IT] y el supervisor agrupa por causa y no por síntoma.
+  - ruleName: longhorn-volume-stuck
+    celQuery: 'name.startsWith("LonghornVolume")'
+    sqlQuery:
+      sql: "((name like :name_1))"
+      params:
+        name_1: LonghornVolume%
+    timeframeInSeconds: 900
+    timeUnit: minutes
+    groupingCriteria: [volume]
+    createOn: any
+    resolveOn: all_resolved
+    incidentPrefix: LHB
+    incidentNameTemplate: "Volumen Longhorn {{ volume }} atascado"
+    groupDescription: >-
+      Volumes CR de Longhorn con status.state en attaching/detaching más de 5 min
+      (VMRule LonghornVolumeAttachStuck, manifests/longhorn-rules.yaml). Un volumen
+      en tránsito largo tiene el attach o el detach colgado: los pods que lo esperan
+      se quedan en ContainerCreating/Terminating y el workload degradado es el
+      síntoma. Por volumen: el mismo volumen reincidente es la misma causa.
 
   # SIN agrupar por nodo, y no por gusto: estas alertas no traen etiqueta `node`.
   # Sólo hay `instance` (IP:puerto del pod de node-exporter) y `pod`, y las dos
