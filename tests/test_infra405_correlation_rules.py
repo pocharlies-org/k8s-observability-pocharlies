@@ -6,6 +6,9 @@ Pins the rules that turn the alert families pushed by ops-watch
 * ``x86-unit-failed``     — ``X86UnitFailed``, grouped by ``unit``, 1800 s, X86U
 * ``trunk-ci-stale``      — ``TrunkCIStale``, grouped by ``repo``+``workflow``,
   1800 s, STALE (SC-2459: schedule muerto)
+* ``atlassian-token-expiry`` — ``AtlassianTokenExpiring``, grouped by
+  ``account``, 1800 s, ATLTK (INFRA-1263: token a <=7 dias de caducar; la
+  rotacion semanal no llega a tiempo — SC-5115)
 
 (INFRA-882: CI en rojo and update-watch no longer reach Keep.)
 
@@ -55,6 +58,16 @@ X86_RULES = {
         "timeframeInSeconds": 1800,
         "incidentPrefix": "STALE",
         "nameTemplate": "Schedule muerto: {{ repo }}/{{ workflow }}",
+    },
+    "atlassian-token-expiry": {
+        # INFRA-1263: caducidad de tokens de API de Atlassian a <=7 dias (fuente
+        # `tokens-atlassian`, inventario libexec/atlassian-expiry.yaml). Agrupa por
+        # cuenta: la rotacion es por cuenta; `label` viaja en la alerta para el RCA.
+        "alert": "AtlassianTokenExpiring",
+        "groupingCriteria": ["account"],
+        "timeframeInSeconds": 1800,
+        "incidentPrefix": "ATLTK",
+        "nameTemplate": "Token de Atlassian a punto de caducar: {{ account }}",
     },
 }
 
