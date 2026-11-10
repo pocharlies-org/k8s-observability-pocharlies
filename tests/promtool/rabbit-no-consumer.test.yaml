@@ -42,6 +42,21 @@ tests:
         alertname: RabbitmqFunctionalQueueNoConsumer
         exp_alerts: []
 
+  # adapter.ops_explainer.failures: cola sumidero terminal SIN consumidor por
+  # diseño (consumidor retirado 02-09, PR #114; la cola se conserva como único
+  # binding de workflow.finalised.*.failed para no buclar el unroutable sink)
+  # — excluida (SC-5125). Con mensajes no debe disparar.
+  - interval: 1m
+    input_series:
+      - series: 'rabbitmq_detailed_queue_consumers{vhost="/synapse",queue="adapter.ops_explainer.failures",job="shared-rabbitmq"}'
+        values: '0+0x15'
+      - series: 'rabbitmq_detailed_queue_messages_ready{vhost="/synapse",queue="adapter.ops_explainer.failures",job="shared-rabbitmq"}'
+        values: '296+0x15'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: RabbitmqFunctionalQueueNoConsumer
+        exp_alerts: []
+
   # adapter.telegram.ingress NO está excluida (medido 17-10: tiene consumidor):
   # si muere, la alerta debe volver. Con 0 consumidores y mensajes, dispara.
   - interval: 1m
