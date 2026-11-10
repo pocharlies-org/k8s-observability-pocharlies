@@ -2,20 +2,24 @@
 
 SC-5058: investigating a stuck Longhorn detach on 2026-11-10, the
 longhorn-manager / instance-manager logs were already gone — the global
-retention is 24 h (Dani's decision, INFRA-1175, and it stays 24 h) and the
-kubelet on-disk rotation ate the incident window.
+retention was 24 h (Dani's decision, INFRA-1175) and the kubelet on-disk
+rotation ate the incident window.
 
-The exception lives in ``loki/values.yaml`` as a Loki runtime-config
-per-stream rule: only ``{namespace="longhorn-system"}`` gets 336 h of
-retention and query lookback. This test pins three things, because each one
-alone is silently useless:
+The requirement is met by the GLOBAL retention, raised to 336 h on
+2026-11-10 by INFRA-1260. It is NOT met by a per-stream runtime-config
+rule: INFRA-1267 first tried that, but Loki's runtime-config only accepts
+`overrides`, `configs` and `multi_kv_config` (pkg/loki/runtime_config.go,
+strict decoding) — a `limits: per_stream:` key makes Loki abort at startup.
+That crash took down loki-0 in production the same afternoon (SC-5253,
+Keep incident DEPL-18987) and the block was removed in the same day.
 
-1. the per-stream rule exists with retention and max_query_lookback >= 336 h;
-2. the global ``retention_period`` is still 24 h (the exception must not
-   quietly become a global raise — that is Dani's call, not a side effect);
-3. ``singleBinary.extraArgs`` carries ``-runtime-config.file=...`` — chart
-   grafana/loki 7.0.0 mounts the ``loki-runtime`` ConfigMap but never adds
-   the flag, so without it Loki ignores the runtime config entirely.
+So this test pins two things:
+
+1. the retention requirement itself: global `retention_period` and
+   `max_query_lookback` >= 336 h, which covers longhorn-system;
+2. a guard: `loki.runtimeConfig`, if present, may only carry keys Loki's
+   runtimeConfigValues struct actually knows — never reintroduce the
+   invented `limits`/`per_stream` schema.
 """
 
 from pathlib import Path
@@ -27,8 +31,10 @@ import yaml
 REPO = Path(__file__).resolve().parents[1]
 LOKI_VALUES = REPO / "loki" / "values.yaml"
 
-NAMESPACE = "longhorn-system"
 MIN_HOURS = 336  # 14 days
+
+# Top-level yaml tags of runtimeConfigValues in pkg/loki/runtime_config.go.
+VALID_RUNTIME_CONFIG_KEYS = {"overrides", "configs", "multi_kv_config"}
 
 
 def _hours(value):
@@ -42,27 +48,19 @@ class LonghornRetention(unittest.TestCase):
     def setUpClass(cls):
         cls.values = yaml.safe_load(LOKI_VALUES.read_text())
 
-    def _longhorn_rule(self):
-        rules = self.values["loki"]["runtimeConfig"]["limits"]["per_stream"]
-        return [r for r in rules if NAMESPACE in r["selector"]]
-
-    def test_per_stream_rule_retains_14_days(self):
-        rules = self._longhorn_rule()
-        self.assertEqual(len(rules), 1, f"expected exactly one rule for {NAMESPACE}")
-        limits = rules[0]["limits"]
-        self.assertGreaterEqual(_hours(limits["retention"]), MIN_HOURS)
-        self.assertGreaterEqual(_hours(limits["max_query_lookback"]), MIN_HOURS)
-
-    def test_global_retention_stays_24h(self):
+    def test_retention_covers_14_days(self):
         lc = self.values["loki"]["limits_config"]
-        self.assertEqual(lc["retention_period"], "24h")
-        self.assertEqual(lc["max_query_lookback"], "24h")
+        self.assertGreaterEqual(_hours(lc["retention_period"]), MIN_HOURS)
+        self.assertGreaterEqual(_hours(lc["max_query_lookback"]), MIN_HOURS)
 
-    def test_loki_loads_the_runtime_config(self):
-        args = self.values["singleBinary"]["extraArgs"]
-        self.assertIn(
-            "-runtime-config.file=/etc/loki/runtime-config/runtime-config.yaml",
-            args,
+    def test_runtime_config_only_uses_keys_loki_knows(self):
+        rc = self.values["loki"].get("runtimeConfig") or {}
+        unknown = set(rc) - VALID_RUNTIME_CONFIG_KEYS
+        self.assertFalse(
+            unknown,
+            f"Loki's runtime-config does not know {sorted(unknown)}; strict "
+            "decoding aborts Loki at startup (SC-5253). Only "
+            f"{sorted(VALID_RUNTIME_CONFIG_KEYS)} are valid.",
         )
 
 
