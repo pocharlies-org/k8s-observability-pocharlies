@@ -12,6 +12,9 @@ fichero para que el árbol no se lea como el mapa completo.
 |---|---|---|---|---|---|
 | `ArgoCD…` (on-sync-failed / on-health-degraded) | ArgoCD Notifications (`k8s-gitops-pocharlies/argocd/values.yaml`) | `warning` | `app` | `argocd-app-degraded` → ARGO | 29-09-2026 |
 | `X86UnitFailed` | ops-watch `empujar_a_keep` (`x86-host-runtime-pocharlies`, fuente `unidades`) | `warning` | `unit` | `x86-unit-failed` → X86U | INFRA-405 |
+| `TrunkCIStale` | ops-watch `empujar_a_keep` (fuente `schedules`) | `warning` | `repo`+`workflow` | `trunk-ci-stale` → STALE | SC-2459 |
+| `AtlassianTokenExpiring` | ops-watch `empujar_a_keep` (fuente `tokens-atlassian`, inventario `libexec/atlassian-expiry.yaml`) | `warning` | `account` | `atlassian-token-expiry` → ATLTK | INFRA-1263 |
+| `BackupStateDegraded` | ops-watch `empujar_a_keep` (fuente `backups`, SC-3033) | `warning` | `objeto` | **sin regla de correlación: nunca forma incidente ni abre Request — hallazgo de INFRA-1263, pendiente de regla** | SC-3033 |
 
 `TrunkCIFailed` y `UpdateWatchFailed` dejaron de entrar en Keep (INFRA-882, 16-10): el CI en rojo y
 update-watch no son incidentes de producción. Las que quedan son `warning` a propósito: `critical-safety-net` sólo captura

@@ -562,6 +562,34 @@ rules:
       ops-watch (fuente `schedules`); el `resolved` lo emite la pasada que vuelve a
       ver un run.
 
+  # Tokens de API de Atlassian con caducidad a <=7 días o ya caducada (INFRA-1263,
+  # fuente `tokens-atlassian` de ops-watch sobre el inventario
+  # libexec/atlassian-expiry.yaml de x86-host-runtime-pocharlies). Existe porque la
+  # rotación semanal es estructuralmente más lenta que un vencimiento a <7 días
+  # vista: el token sonda-mcp caducó en servicio el 09-11 con la rotación abierta
+  # 34 h antes (SC-5115). La Request de IT programa la rotación con Dani ANTES del
+  # vencimiento. Agrupa por `account` (la rotación es por cuenta; `label` viaja en
+  # la alerta para el RCA); el nombre sin fechas ni números: es parte de la clave
+  # `keep-causa` de ops-watch.
+  - ruleName: atlassian-token-expiry
+    celQuery: 'name == "AtlassianTokenExpiring"'
+    sqlQuery:
+      sql: "((name = :name_1))"
+      params:
+        name_1: AtlassianTokenExpiring
+    timeframeInSeconds: 1800
+    timeUnit: minutes
+    groupingCriteria: [account]
+    createOn: any
+    resolveOn: all_resolved
+    incidentPrefix: ATLTK
+    incidentNameTemplate: "Token de Atlassian a punto de caducar: {{ account }}"
+    groupDescription: >-
+      Tokens de API de Atlassian próximos a caducar (<=7 días) o caducados, por
+      cuenta. El sensor es ops-watch (fuente `tokens-atlassian`); el `resolved` lo
+      emite la pasada en que la fecha se aleja (token rotado e inventario
+      actualizado). Precedente del patrón: SC-2145 (robots de Harbor, 14 días).
+
   # Sonda de extremo a extremo de la cadena Alertmanager -> Keep -> Aurora ->
   # Hermes sre-devops. Solo la dispara quien prueba la cadena a mano (amtool con
   # alertname=SreDevopsChainProbe); no hay regla de Prometheus que la emita.
