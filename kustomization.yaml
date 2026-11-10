@@ -81,6 +81,9 @@ resources:
   # DGX-1440: vivacidad de mac-build (tailnet + puente iphone MCP 8815), series empujadas
   # cada 1 min por la sonda mac-build-liveness del x86 (x86-host-runtime libexec/).
   - manifests/mac-build-liveness-rules.yaml
+  # SC-5262: hombre muerto del monitor de cuentas de Claude (x86 y pod company-0), series
+  # empujadas al final de cada pasada por claude-cuentas-monitor (x86-host-runtime libexec/).
+  - manifests/claude-cuentas-rules.yaml
   - manifests/dgx-gpu-mem-exporter.yaml
   - manifests/kyverno-policy-exceptions.yaml
   - manifests/dgx-cluster-health-watcher.yaml
