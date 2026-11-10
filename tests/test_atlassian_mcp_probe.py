@@ -54,8 +54,13 @@ class FakeGateway(BaseHTTPRequestHandler):
             self.wfile.write(payload)
             return
         if path != "/mcp" or FakeGateway.mode == "http500":
+            # Cuerpo de error como el del gateway real: la sonda debe dejarlo en el
+            # diagnóstico del ciclo fallido (INFRA-1262).
+            payload = b"upstream connect error: jira backend unreachable"
             self.send_response(500)
+            self.send_header("Content-Length", str(len(payload)))
             self.end_headers()
+            self.wfile.write(payload)
             return
         method = body.get("method")
         if method == "initialize":
@@ -198,6 +203,64 @@ def test_default_mcp_url_points_at_the_real_gateway_service():
     mod = load_probe({})
     assert mod.MCP_URL.startswith(
         "http://agentgateway-mcp.agentgateway.svc.cluster.local:3000/atlassian-probe")
+
+
+def scrape(mod):
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), mod.Handler)
+    threading.Thread(srv.serve_forever, daemon=True).start()
+    try:
+        return urllib.request.urlopen(
+            f"http://127.0.0.1:{srv.server_address[1]}/metrics", timeout=5).read().decode()
+    finally:
+        srv.shutdown()
+
+
+def test_failed_cycle_records_last_error_and_logs_it():
+    # INFRA-1262 (caída del 07-11, SC-5115): el ciclo fallido debe dejar kind + status +
+    # mensaje del backend — en el estado (de donde sale la métrica info) y en el log,
+    # no solo el contador por kind. Con un 500 del gateway simulado.
+    import contextlib, io
+    FakeGateway.mode = "http500"
+    srv, base = serve()
+    try:
+        mod = load_probe({
+            "PROBE_TOKEN_URL": base + "/token",
+            "PROBE_MCP_URL": base + "/mcp",
+            "PROBE_CLIENT_SECRET": "s",
+            "PROBE_ISSUE_KEY": "SC-1",
+        })
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            mod.cycle()
+    finally:
+        srv.shutdown()
+    le = mod._state["last_error"]
+    assert le["kind"] == "http" and le["status"] == "500", le
+    assert "jira backend unreachable" in le["detail"], le
+    out = buf.getvalue()
+    assert "kind=http" in out and "status=500" in out, out
+    assert "jira backend unreachable" in out, out
+
+
+def test_iserror_last_error_carries_the_tool_text():
+    mod = run_cycle("iserror")
+    le = mod._state["last_error"]
+    assert le["kind"] == "isError" and le["status"] == "", le
+    assert "issue" in le["detail"], le
+
+
+def test_metrics_exposes_last_error_info_after_a_failure():
+    mod = run_cycle("http500")
+    body = scrape(mod)
+    assert 'atlassian_mcp_probe_last_error_info{kind="http",status="500"} 1' in body
+    assert "atlassian_mcp_probe_last_error_timestamp_seconds" in body
+
+
+def test_healthy_cycle_exposes_no_last_error_info():
+    # La info es del ÚLTIMO error: si la sonda nunca ha fallado desde que arrancó,
+    # la serie no existe (no se publica un 0 que se confundiría con un error).
+    mod = run_cycle("ok")
+    assert "last_error_info" not in scrape(mod)
 
 
 def test_checksum_script_annotation_matches_the_script():

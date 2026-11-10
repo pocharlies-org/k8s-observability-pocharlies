@@ -15,6 +15,13 @@
 #   - `absent_over_time(...[10m])`                       -> la sonda muerta o sin scrape: sin serie no hay
 #     (patrón CompaniaSupervisorSinMetricas, SC-1872)     `up==0` que ver, y el silencio no debe ser verde
 #
+# INFRA-1262: cada término se etiqueta con `down_term` (respuesta_mala / sonda_atascada /
+# sonda_sin_metricas) mediante `label_replace`, y el `unless on()` excluye «atascada»
+# cuando ya hay «respuesta_mala» (con up=0 la serie last_success también es vieja: sin
+# el unless saldrían dos alertas por el mismo fallo). La anotación `termino` y el
+# description llevan `{{ $labels.down_term }}`: Keep y la Request nacen ya con el
+# diagnóstico (caída del 07-11, SC-5115: 3h15m sin saber qué término ni qué respondía).
+#
 # Despliegue: esta regla NO está en `kustomization.yaml` a propósito (cambio del architect
 # en la PR #84). Sin serie, `absent_over_time` es cierto desde el primer minuto y con
 # `for: 5m` dispararía: desplegarla antes de que la sonda (PR #83) esté publicada y
@@ -43,12 +50,18 @@ spec:
     - name: pocharlies.atlassian-mcp
       rules:
         - alert: AtlassianMcpToolDown
+          # INFRA-1262: cada término del `or` se etiqueta con `down_term` para que la
+          # alerta (y con ella Keep y la Request) nazca diciendo QUÉ término cumple.
+          # Los términos se hacen mutuamente exclusivos (`unless` y la naturaleza de
+          # `absent`) para que nunca salgan dos alertas del mismo fallo.
           expr: |
-            atlassian_mcp_tool_up == 0
+            label_replace(atlassian_mcp_tool_up == 0, "down_term", "respuesta_mala", "", "")
               or
-            time() - atlassian_mcp_tool_last_success_timestamp_seconds > 300
+            label_replace((time() - atlassian_mcp_tool_last_success_timestamp_seconds > 300)
+              unless on() (atlassian_mcp_tool_up == 0), "down_term", "sonda_atascada", "", "")
               or
-            absent_over_time(atlassian_mcp_tool_up[10m])
+            label_replace(absent_over_time(atlassian_mcp_tool_up[10m]),
+              "down_term", "sonda_sin_metricas", "", "")
           for: 5m
           labels:
             severity: critical
@@ -56,10 +69,20 @@ spec:
             component: atlassian-mcp-probe
           annotations:
             summary: "Jira/MCP de Atlassian no contesta"
+            # down_term: respuesta_mala (la sonda responde mal: http/timeout/isError/jsonrpc),
+            # sonda_atascada (viva pero 5 ciclos sin completar uno), sonda_sin_metricas
+            # (sonda muerta o sin scrape). Con respuesta_mala, el detalle del último fallo
+            # (status HTTP y cuerpo) está en `atlassian_mcp_probe_last_error_info` y en
+            # `kubectl logs` de la sonda (INFRA-1262).
+            termino: "{{ $labels.down_term }}"
             description: >-
               La sonda atlassian-mcp-probe (ns monitoring) no consigue leer una issue via
               el MCP de Atlassian: `tools/call jira_get_issue` falla o la sonda no publica
-              métricas. Comprobar: `kubectl -n monitoring logs deploy/atlassian-mcp-probe`,
+              métricas. Término que dispara: {{ $labels.down_term }} (respuesta_mala =
+              responde mal, ver `atlassian_mcp_probe_last_error_info` y el log del ciclo
+              fallido con status y mensaje; sonda_atascada = viva pero 5 ciclos sin
+              completar; sonda_sin_metricas = muerta o sin scrape). Comprobar:
+              `kubectl -n monitoring logs deploy/atlassian-mcp-probe`,
               el contador de fallos del supervisor en el x86 (journalctl --user -u
               jira-epic-trigger | grep -i mcp) y el conector Jira del MCP
               (`kubectl -n agentgateway logs deploy/agentgateway-mcp`). Consecuencia mientras dure: los roles
