@@ -1,0 +1,113 @@
+# SC-5084: casos del grupo scrape-path (promtool test rules). El caso 1 es la
+# regresión del falso positivo crónico: pending_data_bytes oscila 0↔~1 MB con el
+# camino sano (medido 10/11 en el vmagent vivo: 0 errores, count(up) plano,
+# blocks_sent ~15.5/s) y con el umbral viejo (> 0, for: 10m) llegaba a firing —
+# 56 incidentes SCPATH en 10 días sin avería alguna.
+rule_files:
+  - scrape-path.rules.yaml
+evaluation_interval: 1m
+tests:
+  - interval: 1m
+    name: sano SC-5084 — pending oscilando 0↔~1 MB durante 40 min no dispara
+    input_series:
+      - series: 'vmagent_remotewrite_pending_data_bytes{pod="vmagent-0"}'
+        values: '0 900000 500000 0 800000 0 700000 300000 0 974086x31'
+    alert_rule_test:
+      - eval_time: 40m
+        alertname: VmagentRemoteWriteFailing
+        exp_alerts: []
+
+  - interval: 1m
+    name: backlog real — pending sostenido en 150 MB dispara tras 10 min
+    input_series:
+      - series: 'vmagent_remotewrite_pending_data_bytes{pod="vmagent-0"}'
+        values: '150000000x40'
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: VmagentRemoteWriteFailing
+        exp_alerts: []
+      - eval_time: 11m
+        alertname: VmagentRemoteWriteFailing
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              area: monitoring
+              pod: vmagent-0
+            exp_annotations:
+              summary: "vmagent no consigue escribir en vmsingle: errores de remote-write o backlog sostenido"
+              description: >-
+                vmagent acumula errores de remote-write o una cola pendiente
+                grande (> 100 MB) durante 10 min: el camino se está atascando
+                ANTES de quedarse vacío del todo (ScrapePathGap). Comprueba
+                vmsingle (memoria/OOM) y los logs de vmagent en Loki
+                (namespace="monitoring", app="vmagent").
+
+  - interval: 1m
+    name: errores de remote-write sostenidos dispara aunque pending sea bajo
+    input_series:
+      - series: 'vmagent_remotewrite_errors_total{pod="vmagent-0"}'
+        values: '0+1x40'
+      - series: 'vmagent_remotewrite_pending_data_bytes{pod="vmagent-0"}'
+        values: '0x40'
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: VmagentRemoteWriteFailing
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              area: monitoring
+              pod: vmagent-0
+            exp_annotations:
+              summary: "vmagent no consigue escribir en vmsingle: errores de remote-write o backlog sostenido"
+              description: >-
+                vmagent acumula errores de remote-write o una cola pendiente
+                grande (> 100 MB) durante 10 min: el camino se está atascando
+                ANTES de quedarse vacío del todo (ScrapePathGap). Comprueba
+                vmsingle (memoria/OOM) y los logs de vmagent en Loki
+                (namespace="monitoring", app="vmagent").
+
+  - interval: 1m
+    name: hueco total del camino — up desaparece del todo y ScrapePathGap dispara
+    input_series:
+      - series: 'up{job="j1"}'
+        values: '1x70'
+      - series: 'up{job="j2"}'
+        values: '1x70'
+      - series: 'up{job="j3"}'
+        values: '1x70'
+      - series: 'up{job="j4"}'
+        values: '1x70'
+    alert_rule_test:
+      - eval_time: 85m
+        alertname: ScrapePathGap
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              area: monitoring
+            exp_annotations:
+              summary: "Hueco del camino de scrape (vmagent→vmsingle): count(up) cae ≥50 % respecto a 1h antes"
+              description: >-
+                NO son N servicios caídos: el camino de scrape
+                (vmagent→vmsingle) está dejando sin muestras a todos los jobs,
+                y las absent() que disparan a la vez son telemetría ciega, no
+                caídas. Antes de tocar ningún servicio, mira el camino:
+                `kubectl -n monitoring get pods -l
+                app.kubernetes.io/name=vmagent` y el estado de vmsingle
+                (OOMKilled — SC-2907), y los logs en Loki
+                (namespace="monitoring").
+
+  - interval: 1m
+    name: sano — count(up) plano durante 2 h no dispara ScrapePathGap
+    input_series:
+      - series: 'up{job="j1"}'
+        values: '1x120'
+      - series: 'up{job="j2"}'
+        values: '1x120'
+      - series: 'up{job="j3"}'
+        values: '1x120'
+      - series: 'up{job="j4"}'
+        values: '1x120'
+    alert_rule_test:
+      - eval_time: 115m
+        alertname: ScrapePathGap
+        exp_alerts: []
