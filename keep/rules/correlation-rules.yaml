@@ -616,7 +616,10 @@ rules:
   #     inesperado, Cloudflare, cerrojo del CLI ocupado, fichero que no se escribe, o la pasada
   #     misma rota o con un aviso que no salió (`cuenta` = monitor-<sitio>);
   #   - el hombre muerto de la VMRule pocharlies-claude-cuentas (manifests/claude-cuentas-rules.yaml):
-  #     un sitio sin pasada completa en dos intervalos (`cuenta` = monitor-<sitio>).
+  #     un sitio sin pasada completa en dos intervalos (`cuenta` = monitor-<sitio>). Va en su propia PR
+  #     y se fusiona DESPUÉS: esta regla tiene que estar en Keep antes de la primera pasada del monitor
+  #     (las primeras son las que más fallan y el monitor no repite un firing), y la VMRule solo cuando
+  #     los dos sitios ya latan (su absent_over_time abriría un incidente falso).
   # Del 07-11 al 10-11 la unidad del x86 falló cada día con 203/EXEC y nadie se enteró: sin esta
   # regla las dos alertas quedarían registradas y calladas. Un refresh muerto (`invalid_grant`) NO
   # llega aquí: solo lo arregla un /login de Dani y va por Telegram. Agrupa por `cuenta` (una causa
