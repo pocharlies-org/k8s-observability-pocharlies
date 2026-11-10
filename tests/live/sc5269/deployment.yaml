@@ -1,0 +1,25 @@
+# Fixture de validación en vivo de SC-5269 (red de seguridad ArgoCD→Keep).
+# Vivida por la Application efímera `sc5269-test` (ns sc5269-test, sync manual):
+# se degrada y se recupera parcheando la imagen del Deployment SIN operación de
+# sync, que es justo el caso residual. Se borra al terminar la validación.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sc5269-test
+  labels:
+    app: sc5269-test
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sc5269-test
+  template:
+    metadata:
+      labels:
+        app: sc5269-test
+    spec:
+      containers:
+        - name: test
+          image: nginx:1.27-alpine
+          ports:
+            - containerPort: 80
