@@ -72,8 +72,14 @@ loki:
   # (ya configurado). Sin el flag `-runtime-config.file` de abajo Loki no lee
   # este fichero: el chart 7.0.0 lo monta pero NO añade el flag.
   # Coste: despreciable (el stream entero es < 1 MB/día).
+  # SC-5254: la clave superior es `overrides`, NO `limits`. Loki 3.x eliminó
+  # `limits` del runtime-config (runtimeConfigValues); con `limits:` el arranque
+  # es FATAL ("field limits not found in type loki.runtimeConfigValues"), el
+  # StatefulSet entra en crashloop y BlackboxProbeDown sobre /ready dispara
+  # monitoring-degraded (MON-18988, 10-11). Solo cambia la clave superior: el
+  # bloque por stream conserva `selector` + `limits`, que sí es el nombre correcto ahí.
   runtimeConfig:
-    limits:
+    overrides:
       per_stream:
         - selector: '{namespace="longhorn-system"}'
           limits:
