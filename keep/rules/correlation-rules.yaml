@@ -608,6 +608,39 @@ rules:
       emite la pasada en que la fecha se aleja (token rotado e inventario
       actualizado). Precedente del patrón: SC-2145 (robots de Harbor, 14 días).
 
+  # SC-5262: la renovación del login de Claude que no se arregla sola. La renueva por refresh
+  # token libexec/claude-cuentas-monitor.py de x86-host-runtime-pocharlies (timer diario del x86
+  # y bucle company-cron del pod company-0 cada 6 h). Un nombre, dos emisores con las mismas
+  # etiquetas de causa (`cuenta`, `sitio`, `causa`):
+  #   - el evento Keep del monitor (contrato keep.claude-cuentas-renovar-fallo.v1): red, HTTP
+  #     inesperado, Cloudflare, cerrojo del CLI ocupado, fichero que no se escribe, o la pasada
+  #     misma rota o con un aviso que no salió (`cuenta` = monitor-<sitio>);
+  #   - el hombre muerto de la VMRule pocharlies-claude-cuentas (manifests/claude-cuentas-rules.yaml):
+  #     un sitio sin pasada completa en dos intervalos (`cuenta` = monitor-<sitio>).
+  # Del 07-11 al 10-11 la unidad del x86 falló cada día con 203/EXEC y nadie se enteró: sin esta
+  # regla las dos alertas quedarían registradas y calladas. Un refresh muerto (`invalid_grant`) NO
+  # llega aquí: solo lo arregla un /login de Dani y va por Telegram. Agrupa por `cuenta` (una causa
+  # por home, como atlassian-token-expiry por `account`); el nombre sin números (keep-causa).
+  # warning: no toca critical-safety-net.
+  - ruleName: claude-cuentas-renovar-fallo
+    celQuery: 'name == "ClaudeCuentasRenovarFallo"'
+    sqlQuery:
+      sql: "((name = :name_1))"
+      params:
+        name_1: ClaudeCuentasRenovarFallo
+    timeframeInSeconds: 1800
+    timeUnit: minutes
+    groupingCriteria: [cuenta]
+    createOn: any
+    resolveOn: all_resolved
+    incidentPrefix: CCRF
+    incidentNameTemplate: "Login de Claude sin renovar: {{ cuenta }}"
+    groupDescription: >-
+      La renovación por refresh token de un login de Claude (claude-cuentas-monitor, x86 y pod
+      company-0) falló por algo que no es un login caducado, o un sitio dejó de pasar
+      (hombre muerto). El `resolved` lo emite la pasada que vuelve a renovar; el del hombre
+      muerto, el primer latido nuevo.
+
   # Sonda de extremo a extremo de la cadena Alertmanager -> Keep -> Aurora ->
   # Hermes sre-devops. Solo la dispara quien prueba la cadena a mano (amtool con
   # alertname=SreDevopsChainProbe); no hay regla de Prometheus que la emita.
