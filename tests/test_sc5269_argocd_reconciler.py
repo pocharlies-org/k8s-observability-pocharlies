@@ -88,6 +88,13 @@ class TestReconciler(unittest.TestCase):
         self.assertIn('/alerts/event', src)
         self.assertIn('"source": ["argocd"]', src)
 
+    def test_filtra_abiertos_no_solo_firing(self):
+        # El claim de Aurora pasa los incidents a acknowledged al crearse (medido
+        # en la validación de SC-5269): filtrar solo `firing` no vería nunca el
+        # caso residual.
+        src = self.by_kind["ConfigMap"][0]["data"]["reconcile.py"]
+        self.assertIn('status == "firing" || status == "acknowledged"', src)
+
 
 class TestStaleReaperCedeArgocd(unittest.TestCase):
     def test_reaper_no_toca_alertas_argocd(self):
