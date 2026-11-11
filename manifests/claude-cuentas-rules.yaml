@@ -1,0 +1,83 @@
+# SC-5262 — hombre muerto del monitor de cuentas de Claude (libexec/claude-cuentas-monitor.py
+# de x86-host-runtime-pocharlies), que renueva los logins por refresh token.
+#
+# Fuente: `claude_cuentas_monitor_ultima_pasada_timestamp_seconds{sitio}` (contrato
+# metric.claude-cuentas-monitor-pasada.v1), cuyo VALOR es el epoch de la última pasada
+# COMPLETA. El monitor la empuja al acabar cada pasada a
+# https://vm.lan.e-dani.com/api/v1/import/prometheus (patrón mac-build-liveness; no hay
+# scrape). Dos sitios, dos umbrales (dos intervalos):
+#   sitio="x86"  timer diario claude-cuentas-monitor.timer del x86 (09:00 Madrid)  -> 48 h
+#   sitio="pod"  bucle company-cron del pod company-0, cada 6 h (--compania)       -> 12 h
+#
+# La ocurrencia que la motiva: del 07-11 al 10-11 la unidad del x86 falló cada mañana con
+# 203/EXEC (su venv había desaparecido) y nada avisó: el monitor no llegaba a arrancar y la
+# fuente `unidades` de ops-watch ya no corre en el x86 (SC-3961). Como el latido solo lo deja
+# una pasada que llegó al final, esta regla ve igual un timer parado, un python roto, el
+# bucle del pod sin la línea o un host caído.
+#
+# Por qué `last_over_time(...[7d])`: el push es diario o cada 6 h y una muestra importada vale
+# 5 min para una consulta instantánea; entre pushes la serie «desaparece». El valor es la hora
+# de la pasada, así que `time() - valor` es su edad. `absent_over_time(...[7d])`: ningún
+# latido en 7 días (o nunca) también es incidente — por eso esta VMRule se despliega DESPUÉS
+# de la primera pasada de cada sitio con el código de SC-5262.
+#
+# Enrutado, en dos pasos y los dos hacen falta:
+#   1. Alertmanager: el catch-all `receiver: keep` la entrega a Keep.
+#   2. Keep solo notifica INCIDENTES: la regla `claude-cuentas-renovar-fallo` de
+#      keep/rules/correlation-rules.yaml (agrupa por `cuenta`, prefijo CCRF) la convierte en
+#      incidente, y ops-watch abre la Request. Es el MISMO nombre y las mismas etiquetas de
+#      causa que el evento Keep que el monitor emite cuando una renovación falla
+#      (keep.claude-cuentas-renovar-fallo.v1): `cuenta` = monitor-<sitio>. warning: no entra en
+#      critical-safety-net. tests/test_sc5262_claude_cuentas_correlation.py lo vigila.
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMRule
+metadata:
+  name: pocharlies-claude-cuentas
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: claude-cuentas
+    app.kubernetes.io/component: alerting
+spec:
+  groups:
+    - name: pocharlies.claude-cuentas
+      rules:
+        # `for: 15m`: el umbral ya son dos intervalos; el `for` solo absorbe una evaluación suelta.
+        - alert: ClaudeCuentasRenovarFallo
+          expr: |
+            (time() - last_over_time(claude_cuentas_monitor_ultima_pasada_timestamp_seconds{sitio="x86"}[7d]) > 172800)
+              or
+            absent_over_time(claude_cuentas_monitor_ultima_pasada_timestamp_seconds{sitio="x86"}[7d])
+          for: 15m
+          labels:
+            severity: warning
+            cuenta: monitor-x86
+            sitio: x86
+            causa: sin-pasada
+          annotations:
+            summary: "El monitor de cuentas de Claude del x86 lleva más de 48 h sin completar una pasada: nadie renueva sus logins"
+            description: >-
+              claude_cuentas_monitor_ultima_pasada_timestamp_seconds{sitio="x86"} no se ha
+              actualizado en más de dos intervalos del timer diario. En el x86:
+              `systemctl --user status claude-cuentas-monitor.service claude-cuentas-monitor.timer`
+              y `journalctl --user -u claude-cuentas-monitor.service -n 50` (el 07-11 fue un
+              203/EXEC por un python que ya no existía). Una pasada a mano:
+              `systemctl --user start claude-cuentas-monitor.service`.
+        - alert: ClaudeCuentasRenovarFallo
+          expr: |
+            (time() - last_over_time(claude_cuentas_monitor_ultima_pasada_timestamp_seconds{sitio="pod"}[7d]) > 43200)
+              or
+            absent_over_time(claude_cuentas_monitor_ultima_pasada_timestamp_seconds{sitio="pod"}[7d])
+          for: 15m
+          labels:
+            severity: warning
+            cuenta: monitor-pod
+            sitio: pod
+            causa: sin-pasada
+          annotations:
+            summary: "El monitor de cuentas de Claude del pod company-0 lleva más de 12 h sin completar una pasada: nadie renueva los logins de la compañía"
+            description: >-
+              claude_cuentas_monitor_ultima_pasada_timestamp_seconds{sitio="pod"} no se ha
+              actualizado en más de dos vueltas de la línea `cada 21600 cuentas-renovar` del
+              bucle company-cron (k8s-paseo-pocharlies, k8s/company.yaml). Mirar
+              `kubectl -n paseo logs company-0 -c company-cron | grep cuentas-renovar` y que la
+              línea esté en el bucle en marcha (se lee al arrancar el contenedor).
