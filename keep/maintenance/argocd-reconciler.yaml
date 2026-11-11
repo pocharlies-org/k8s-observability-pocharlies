@@ -207,8 +207,13 @@ data:
             print(f"  {inc['id'][:8]}: sin alerts ({e})", file=sys.stderr)
             continue
         items = resp.get("items", resp) if isinstance(resp, dict) else resp
+        # Mismo criterio que el filtro de incidents: el claim de Aurora pasa a
+        # acknowledged también las ALERTAS al crearse (medido en SC-5288: el
+        # ArgoCDSyncFailed de sc5269-test quedó acknowledged y el filtro de solo
+        # `firing` no lo resolvió nunca). `resolved` queda fuera: ya está resuelta.
         mine = [a for a in items
-                if a.get("status") == "firing" and "argocd" in (a.get("source") or [])
+                if a.get("status") in ("firing", "acknowledged")
+                and "argocd" in (a.get("source") or [])
                 and a.get("name") in KINDS]
         if not mine:
             continue

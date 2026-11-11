@@ -95,6 +95,14 @@ class TestReconciler(unittest.TestCase):
         src = self.by_kind["ConfigMap"][0]["data"]["reconcile.py"]
         self.assertIn('status == "firing" || status == "acknowledged"', src)
 
+    def test_filtra_alertas_abiertas_no_solo_firing(self):
+        # SC-5288: el claim de Aurora pasa a acknowledged también las alertas; con
+        # el filtro de solo `firing` por incident, una alerta acknowledged (el
+        # ArgoCDSyncFailed de sc5269-test) nunca recibía su resolved.
+        src = self.by_kind["ConfigMap"][0]["data"]["reconcile.py"]
+        self.assertIn('a.get("status") in ("firing", "acknowledged")', src)
+        self.assertNotIn('if a.get("status") == "firing" and', src)
+
 
 class TestStaleReaperCedeArgocd(unittest.TestCase):
     def test_reaper_no_toca_alertas_argocd(self):
