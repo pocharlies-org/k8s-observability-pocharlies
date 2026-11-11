@@ -10,7 +10,9 @@
 # por AM (llegan por webhook directo), así que su replay con fingerprint recalculado
 # no empareja con la alerta original y no la resuelve.
 #
-# QUÉ HACE. Para cada incident `firing` cuyas alertas tengan source `argocd`, lee
+# QUÉ HACE. Para cada incident abierto (`firing` o `acknowledged` — el claim de
+# Aurora pasa los incidents a acknowledged al crearse) cuyas alertas tengan source
+# `argocd`, lee
 # la Application viva por la API del clúster (el status lo mantiene el propio
 # application-controller) y, si la app está bien, emite el resolved por el MISMO
 # canal que usa ArgoCD (`POST /alerts/event`, formato de la plantilla
@@ -125,10 +127,15 @@ data:
 
     keep_h = {"x-api-key": KEY}
 
-    # 1. Incidents firing. El parámetro `status` no filtra en Keep 0.52.1; el CEL
-    # sí lo hace server-side (mismo hallazgo que el stale-reaper).
+    # 1. Incidents abiertos (firing o acknowledged). El parámetro `status` no
+    # filtra en Keep 0.52.1; el CEL sí lo hace server-side (mismo hallazgo que el
+    # stale-reaper). Van también los `acknowledged` porque el claim de Aurora
+    # (assignee system) pasa los incidents a acknowledged en cuanto se crean: un
+    # filtro de solo `firing` no vería NUNCA el caso que hay que resolver
+    # (medido en la validación de SC-5269: los 99 abiertos eran acknowledged).
+    # `deleted` queda fuera (no es un estado abierto).
     try:
-        cel = urllib.parse.quote('status == "firing"')
+        cel = urllib.parse.quote('status == "firing" || status == "acknowledged"')
         firing = call(f"{KEEP}/incidents?cel={cel}&limit=500", headers=keep_h).get("items", [])
     except Exception as e:
         print(f"KEEP no accesible ({e}); no resuelvo nada", file=sys.stderr)
