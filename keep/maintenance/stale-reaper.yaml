@@ -86,13 +86,18 @@ data:
     live = {a["fingerprint"] for a in am_alerts if a.get("fingerprint")}
     print(f"AM: {len(live)} fingerprints vivos")
 
-    # 2. Incidents firing en Keep. El parámetro `status` no filtra en esta
-    # versión (devuelve el total); el CEL sí lo hace server-side y en una
-    # sola consulta.
+    # 2. Incidents abiertos (firing o acknowledged) en Keep. El parámetro
+    # `status` no filtra en esta versión (devuelve el total); el CEL sí lo hace
+    # server-side y en una sola consulta. Van también los `acknowledged` porque
+    # el claim de Aurora (assignee system) pasa los incidents a acknowledged en
+    # cuanto se crean: con solo `firing` el reaper no ve NUNCA el caso que hay
+    # que resolver (SC-5344: MON-19079, un TargetDown zombi bajo un incident
+    # acknowledged, quedó sin reconciliar horas). Mismo criterio que el
+    # argocd-reconciler desde SC-5288. `deleted` queda fuera.
     import urllib.parse
-    cel = urllib.parse.quote('status == "firing"')
+    cel = urllib.parse.quote('status == "firing" || status == "acknowledged"')
     firing = call(f"{KEEP}/incidents?cel={cel}&limit=500", headers=keep_h).get("items", [])
-    print(f"Keep: {len(firing)} incidents firing")
+    print(f"Keep: {len(firing)} incidents abiertos (firing/acknowledged)")
 
     now = time.time()
     replayed = resolved = 0
@@ -154,7 +159,7 @@ data:
             time.sleep(2)
             try:
                 fresh = call(f"{KEEP}/incidents/{inc['id']}", headers=keep_h)
-                if fresh.get("status") != "firing":
+                if fresh.get("status") not in ("firing", "acknowledged"):
                     resolved += 1
                 else:
                     resp2 = call(f"{KEEP}/incidents/{inc['id']}/alerts?limit=1000", headers=keep_h)
