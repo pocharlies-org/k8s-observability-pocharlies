@@ -92,7 +92,10 @@ rules:
   # La regla NO se cambia (el incidente por workload sigue siendo lo que se
   # mide): quien correlaciona es ops-watch (`fuente_keep`,
   # x86-host-runtime-pocharlies), que aparca estas degradaciones mientras hay
-  # un nodo caído y deja solo el incidente de `node-degraded`. No agrupar aquí
+  # un nodo caído — ventana que incluye el incidente del nodo ya acknowledged
+  # (INFRA-1323: la Request del nodo lo aparca en la primera pasada y el halt
+  # vive más; las degradaciones tardías, `for: 15m`, siguen siendo artefacto del
+  # halt) — y deja solo el incidente de `node-degraded`. No agrupar aquí
   # por nodo: las alertas de esta regla no traen etiqueta `node` (ver
   # node-degraded más abajo), así que la correlación no cabe en el CEL.
   - ruleName: workload-degraded
@@ -329,13 +332,21 @@ rules:
       se quedan en ContainerCreating/Terminating y el workload degradado es el
       síntoma. Por volumen: el mismo volumen reincidente es la misma causa.
 
-  # SIN agrupar por nodo, y no por gusto: estas alertas no traen etiqueta `node`.
-  # Sólo hay `instance` (IP:puerto del pod de node-exporter) y `pod`, y las dos
-  # cambian al recrearse el pod — agrupar por ellas crearía un incidente nuevo en
-  # cada reinicio del exporter. El incidente sigue listando las alertas
-  # afectadas: no se pierde información, sólo no cabe en el título. Para agrupar
-  # por nodo de verdad hay que añadir una etiqueta `node` en el relabeling de
-  # vmagent para el job node-exporter.
+  # SIN agrupar por nodo, y no por gusto: la familia `Node*` (node-exporter) no
+  # trae etiqueta `node` — sólo `instance` (IP:puerto del pod de node-exporter)
+  # y `pod`, y las dos cambian al recrearse el pod; agrupar por ellas crearía un
+  # incidente nuevo en cada reinicio del exporter. Las `KubeNode*`/
+  # `KubeletInstanceUnreachable` SÍ traen `node` (medido 12-11 sobre la serie
+  # ALERTS: node="gx10-ec3d") — el comentario anterior decía que ninguna la
+  # traía, y era falso para esa mitad. Con groupingCriteria [node] las `Node*`
+  # caerían en la huella «none» y partirían el incidente en dos donde hay una
+  # sola historia, así que la agrupación se queda []. La correlación del halt no
+  # necesita agrupar aquí: la hace ops-watch (`fuente_keep`,
+  # x86-host-runtime-pocharlies, SC-5386 + INFRA-1323) leyendo `node` de las
+  # alertas. ACOPLE: ops-watch prefiltra los incidentes acknowledged de esta
+  # regla con `name.contains` de `incidentNameTemplate` (NOMBRE_INCIDENTE_NODO en
+  # ops-watch.py) porque el CEL de `/incidents` de Keep no indexa `rule_name`
+  # (medido 12-11): si cambias el template, cambia también allí.
   - ruleName: node-degraded
     celQuery: >-
       name.startsWith("KubeNode") || name.startsWith("Node") ||
