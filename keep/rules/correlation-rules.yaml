@@ -85,6 +85,16 @@ rules:
   # workloads ya no es UN incidente, son varios (uno por workload) — igual que
   # en deployment-degraded desde INFRA-1187; la causa común se lee en el
   # instante de disparo, y la recurrencia —lo que se mide— es por workload.
+  #
+  # SC-5386 (causa medida por SC-5348): el halt térmico de un Spark marca
+  # no-ready los pods de TODOS sus DaemonSets y esta regla dispara un incidente
+  # por workload — el 11-11 un solo halt abrió 14 Requests (SC-5345..SC-5362).
+  # La regla NO se cambia (el incidente por workload sigue siendo lo que se
+  # mide): quien correlaciona es ops-watch (`fuente_keep`,
+  # x86-host-runtime-pocharlies), que aparca estas degradaciones mientras hay
+  # un nodo caído y deja solo el incidente de `node-degraded`. No agrupar aquí
+  # por nodo: las alertas de esta regla no traen etiqueta `node` (ver
+  # node-degraded más abajo), así que la correlación no cabe en el CEL.
   - ruleName: workload-degraded
     incidentPrefix: WORK
     celQuery: |
