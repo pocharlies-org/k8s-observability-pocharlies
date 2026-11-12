@@ -798,24 +798,17 @@ spec:
           expr: |
             max by (namespace, owner_name) (
             (
-              (
-                max by (namespace, job_name) (kube_job_failed{condition="true"} == 1)
-                and on (namespace, job_name)
-                # 4 h, no 1 h. Un Job que muere por `DeadlineExceeded` lo hace
-                # EXACTAMENTE al cumplirse su activeDeadlineSeconds, asi que la
-                # ventana tiene que exceder el deadline mas largo del cluster o
-                # el fallo es estructuralmente invisible: la condicion se vuelve
-                # falsa a los segundos y NUNCA puede sostener el `for: 15m`.
-                #
-                # Paso el 16-08-2026: logical-dump-postgres-shared-weekly tenia
-                # deadline 3600, murio a T+3600 y este alerta no disparo. Diez
-                # dias sin foto semanal completa y nadie se entero.
-                #
-                # Deadline mas largo hoy: recovery-kit-to-drive, 10800 s (3 h).
-                # REGLA: al subir un activeDeadlineSeconds por encima de 4 h hay
-                # que ensanchar esta ventana en el MISMO commit.
-                max by (namespace, job_name) (kube_job_status_start_time > time() - 14400)
-              )
+              # DGX-1581 (medido el 12-11): la ventana de 4 h sobre
+              # kube_job_status_start_time dejaba de ver el fallo persistente a
+              # las 4 h del arranque del Job (litellm-fork-update fallaba de
+              # verdad y desaparecio del panel). El `unless` de abajo ya da la
+              # semantica correcta: sigue firing mientras el ultimo Job del
+              # CronJob sea el fallido. La cobertura de `DeadlineExceeded` se
+              # conserva: un Job que muere a su deadline esta failed desde ese
+              # instante y no hay ventana que lo pierda (el paso del 16-08-2026
+              # — logical-dump, deadline 3600 invisible con la ventana de 1 h —
+              # no puede repetirse).
+              max by (namespace, job_name) (kube_job_failed{condition="true"} == 1)
               * on (namespace, job_name) group_left(owner_name)
                 # SC-4414 (SC-4369): keycloak-role-drift queda fuera — su cadencia
                 # */15 casaba exacta con el `for: 15m` y un ciclo suelto de drift
@@ -924,8 +917,8 @@ spec:
         #   · su guarda de frescura mira la edad del candidato en el ORIGEN, no
         #     si la copia al DESTINO termino;
         #   · un `ls` del prefijo enseña ficheros con fecha reciente: parece sano;
-        #   · K8sCronJobFailed no lo vio por su ventana de 1 h (ya ensanchada
-        #     arriba, en el mismo commit que esto).
+        #   · K8sCronJobFailed no lo vio por su ventana de 1 h (ensanchada a 4 h
+        #     aquel día; la ventana se retiró del todo en DGX-1581).
         #
         # Estas dos alertas prueban que el Job TERMINO BIEN. Que el ARTEFACTO
         # este completo es otra cosa y NO se cubre aqui: hace falta un
