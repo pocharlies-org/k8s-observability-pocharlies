@@ -241,6 +241,18 @@ alertmanager:
         memory: 25Mi
       limits:
         memory: 64Mi
+    # SC-5389 (13-11): con el default del operador (limits 256Mi) el contenedor
+    # alertmanager OOMKilled de forma recurrente — working set medido en pico
+    # ~268 MB (container_memory_working_set_bytes, 6 h). Cada OOM corta el
+    # webhook a Keep y abre el incidente keep-hub-degraded (HUB-19110/19114,
+    # 5 y 3 reinicios en las dos réplicas). 512Mi deja ~2x de margen.
+    resources:
+      requests:
+        cpu: 50m
+        memory: 192Mi
+      limits:
+        cpu: 200m
+        memory: 512Mi
     nodeSelector:
       node-pool: ks5-nvme
     storage:
