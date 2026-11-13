@@ -2406,6 +2406,24 @@ spec:
           annotations:
             summary: "Host is running out of memory"
             description: "Memory is filling up at {{ $labels.pod }}, has been above 90% for the last 15 minutes, is currently at {{ printf \"%.2f\" $value }}%. Sparks (nvidia-dgx/gx10-ec3d/dgx3) are excluded by design while the llm-tp profile is resident — check the gpu-arbiter CM before assuming drift."
+        - alert: NodeMemoryMajorPagesFaults
+          # Copia de la regla homónima del chart (desactivada en
+          # victoria-metrics/values.yaml, SC-5400) con los Sparks excluidos,
+          # mismo patrón INFRA-690 que NodeMemoryHighUtilization: el pgmajfault
+          # sostenido en dgx3 es el precio de la memoria unificada con el LLM
+          # residente, no degradación. El join con kube_pod_info, igual que
+          # arriba (las series de node-exporter no traen label de nodo).
+          expr: |
+            rate(node_vmstat_pgmajfault{job="node-exporter"}[5m]) > 500
+            and on(pod)
+            kube_pod_info{namespace="monitoring", pod=~"vm-prometheus-node-exporter-.*", node!~"nvidia-dgx|gx10-ec3d|dgx3"}
+          for: 15m
+          labels:
+            severity: warning
+            area: capacity
+          annotations:
+            summary: "Memory major page faults are occurring at very high rate"
+            description: "Memory major pages are occurring at very high rate at {{ $labels.pod }}, 500 major page faults per second for the last 15 minutes, is currently at {{ printf \"%.2f\" $value }}. Please check that there is enough memory available at this instance. Sparks (nvidia-dgx/gx10-ec3d/dgx3) are excluded by design while the llm-tp profile is resident — check the gpu-arbiter CM before assuming drift."
 
 ---
 apiVersion: operator.victoriametrics.com/v1beta1

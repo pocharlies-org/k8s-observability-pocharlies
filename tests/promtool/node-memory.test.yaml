@@ -50,3 +50,34 @@ tests:
       - eval_time: 40m
         alertname: NodeMemoryHighUtilization
         exp_alerts: []
+  # SC-5400: copia de NodeMemoryMajorPagesFaults con los Sparks excluidos.
+  # pgmajfault sube 300000 cada 5 min = 1000/s por encima del umbral de 500.
+  - interval: 5m
+    name: un nodo normal (ubuntu) con pgmajfault alto -> salta pasados los 15 min
+    input_series:
+      - series: 'node_vmstat_pgmajfault{job="node-exporter",instance="10.42.0.147:9100",pod="vm-prometheus-node-exporter-aaaaa"}'
+        values: '0+300000x20'
+      - series: 'kube_pod_info{namespace="monitoring",pod="vm-prometheus-node-exporter-aaaaa",node="ubuntu"}'
+        values: '1x20'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: NodeMemoryMajorPagesFaults
+        exp_alerts: []
+      - eval_time: 30m
+        alertname: NodeMemoryMajorPagesFaults
+        exp_alerts:
+          - exp_labels: {severity: warning, area: capacity, job: node-exporter, instance: "10.42.0.147:9100", pod: vm-prometheus-node-exporter-aaaaa}
+            exp_annotations:
+              summary: "Memory major page faults are occurring at very high rate"
+              description: "Memory major pages are occurring at very high rate at vm-prometheus-node-exporter-aaaaa, 500 major page faults per second for the last 15 minutes, is currently at 1000.00. Please check that there is enough memory available at this instance. Sparks (nvidia-dgx/gx10-ec3d/dgx3) are excluded by design while the llm-tp profile is resident — check the gpu-arbiter CM before assuming drift."
+  - interval: 5m
+    name: dgx3 (Spark) con pgmajfault alto -> no salta (SC-5400, NODE-19133)
+    input_series:
+      - series: 'node_vmstat_pgmajfault{job="node-exporter",instance="10.42.7.230:9100",pod="vm-prometheus-node-exporter-ddddd"}'
+        values: '0+300000x20'
+      - series: 'kube_pod_info{namespace="monitoring",pod="vm-prometheus-node-exporter-ddddd",node="dgx3"}'
+        values: '1x20'
+    alert_rule_test:
+      - eval_time: 40m
+        alertname: NodeMemoryMajorPagesFaults
+        exp_alerts: []
