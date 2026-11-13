@@ -413,12 +413,18 @@ rules:
   # `ArgoCD…` de severidad warning. Sin esta regla quedarían registradas y
   # calladas: con ella son incidente, Aurora las investiga y el RCA llega al
   # perfil sre-devops de Hermes (aurora-report-back). Una app = un incidente.
+  # (SC-5453) Se excluye `ArgoCDAppSyncPaused` a propósito: una app con el sync
+  # pausado y OutOfSync no es un "sync fallido ni Degraded" (la app está Healthy y
+  # el sync no falló: está apagado), tiene otra respuesta (volver a GitOps) y otro
+  # prefijo. Sin esta exclusión la alerta del pausado abriría también un incidente
+  # ARGO con un título que miente. La regla propia va justo debajo.
   - ruleName: argocd-app-degraded
-    celQuery: 'name.startsWith("ArgoCD")'
+    celQuery: 'name.startsWith("ArgoCD") && name != "ArgoCDAppSyncPaused"'
     sqlQuery:
-      sql: "((name like :name_1))"
+      sql: "((name like :name_1) and name != :name_2)"
       params:
         name_1: ArgoCD%
+        name_2: ArgoCDAppSyncPaused
     timeframeInSeconds: 1800
     timeUnit: minutes
     groupingCriteria: [app]
@@ -428,6 +434,30 @@ rules:
     incidentNameTemplate: "ArgoCD: {{ app }} con sync fallido o Degraded"
     groupDescription: >-
       Sync fallido o app Degraded en ArgoCD, por app.
+
+  # (SC-5453) App ArgoCD con el sync automático APAGADO y OutOfSync: git cambió y
+  # nada lo va a aplicar (no se auto-cura). Es la deriva que SC-5448 dejó pasar 3
+  # días: una app pausada a mano con pods sanos era INVISIBLE para ops-watch, que
+  # sólo trataba "sync fallido o Degraded" (SC-5451). La emite ArgoCD Notifications
+  # (trigger on-sync-paused, k8s-gitops-pocharlies argocd/values.yaml) como
+  # `ArgoCDAppSyncPaused` por /alerts/event, con su resolved al volver a Synced o
+  # al re-poner el automated. Una app = un incidente, prefijo PAUSA.
+  - ruleName: argocd-app-sync-paused
+    celQuery: 'name == "ArgoCDAppSyncPaused"'
+    sqlQuery:
+      sql: "((name == :name_1))"
+      params:
+        name_1: ArgoCDAppSyncPaused
+    timeframeInSeconds: 1800
+    timeUnit: minutes
+    groupingCriteria: [app]
+    createOn: any
+    resolveOn: all_resolved
+    incidentPrefix: PAUSA
+    incidentNameTemplate: "ArgoCD: {{ app }} con el sync pausado y OutOfSync"
+    groupDescription: >-
+      App OutOfSync sin sync automático: no se auto-cura, acumula deriva. Volver a
+      GitOps (quitar el parche de spec.syncPolicy) o asumir el sync manual.
 
   # =========================================================================
   # X86 — host fuera del clúster, empujado por ops-watch (INFRA-405 / P2)
