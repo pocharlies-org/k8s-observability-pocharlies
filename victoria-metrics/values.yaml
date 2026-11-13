@@ -23,6 +23,15 @@ defaultRules:
     # (INFRA-690) también queda fuera: ningún Spark tiene alerta de memoria.
     NodeMemoryHighUtilization:
       create: false
+    # SC-5400 (NODE-19133/NODE-18886): misma clase que la de arriba y mismo
+    # patrón INFRA-690 — reemplazada por la copia de pocharlies-node-memory
+    # (manifests/rules.yaml) con los Sparks excluidos. Disparaba en dgx3 desde
+    # el 02-10: con dgx3_mode=llm su vLLM tp1 (KV cache de 18 GiB + pesos en
+    # memoria unificada) deja ~3 GiB disponibles y el pgmajfault sostenido es
+    # el precio del diseño, no degradación (medido 12-11: idle 89 %, PSI
+    # memory avg10 0.46, sin OOM, nodo sirviendo).
+    NodeMemoryMajorPagesFaults:
+      create: false
     # SC-2641 (DEPL-15279): duplicado de la casa. La condición de esta regla del
     # chart (spec > available, 15 min) es un subconjunto de KubernetesDeploymentUnavailable
     # (manifests/rules.yaml, critical), que además SÍ puede excluir las identidades
