@@ -1,6 +1,6 @@
 # Matriz de routing de alertas — estado actual y destino en Keep
 
-Generado el 2026-11-10 por `scripts/alert_routing.py matrix` desde las VMRules del
+Generado el 2026-11-14 por `scripts/alert_routing.py matrix` desde las VMRules del
 clúster `x86-k3s` y las definidas en `manifests/` (SC-1835), simulando el
 matching de Alertmanager sobre `VMAlertmanagerConfig monitoring/synapse-webhook`.
 
@@ -17,16 +17,16 @@ aviso lo decide una regla de correlación de `keep/rules/correlation-rules.yaml`
 
 | destino hoy | series | % |
 |---|---:|---:|
-| keep | 352 | 97% |
+| keep | 360 | 97% |
 | **BLACKHOLE (se descarta)** | 10 | 3% |
-| **TOTAL** | **362** | 100% |
+| **TOTAL** | **370** | 100% |
 
 ### Taxonomía de severidad realmente emitida
 
 | valor | series | ¿lo contempla el árbol? |
 |---|---:|---|
-| `warning` | 214 | sí — catch-all → `keep` |
-| `critical` | 137 | sí — `severity = critical` |
+| `warning` | 220 | sí — catch-all → `keep` |
+| `critical` | 139 | sí — `severity = critical` |
 | `info` | 9 | **no** — cae al receiver raíz |
 | `none` | 2 | **no** — cae al receiver raíz |
 
@@ -111,7 +111,7 @@ despiertan a nadie pese a llamarse `page`.
 
 | alertname | sev | destino hoy | firing |
 |---|---|---|---:|
-| `KeycloakRoleDriftConsecutiveFailures` | `warning` | keep | 1 |
+| `KeycloakRoleDriftConsecutiveFailures` | `warning` | keep |  |
 
 ### Krea2 (3)
 
@@ -137,7 +137,7 @@ despiertan a nadie pese a llamarse `page`.
 | `KubeClientCertificateExpiration` | `critical` | keep |  |
 | `KubeClientCertificateExpiration` | `warning` | keep |  |
 | `KubeClientErrors` | `warning` | keep |  |
-| `KubeContainerWaiting` | `warning` | keep |  |
+| `KubeContainerWaiting` | `warning` | keep | 1 |
 | `KubeDaemonSetMisScheduled` | `warning` | keep |  |
 | `KubeDaemonSetNotScheduled` | `warning` | keep |  |
 | `KubeDaemonSetRolloutStuck` | `warning` | keep |  |
@@ -160,7 +160,7 @@ despiertan a nadie pese a llamarse `page`.
 | `KubePersistentVolumeInodesFillingUp` | `critical` | keep |  |
 | `KubePersistentVolumeInodesFillingUp` | `warning` | keep |  |
 | `KubePodCrashLooping` | `warning` | keep |  |
-| `KubePodNotReady` | `warning` | keep |  |
+| `KubePodNotReady` | `warning` | keep | 1 |
 | `KubeQuotaAlmostFull` | `info` | **BLACKHOLE** |  |
 | `KubeQuotaExceeded` | `warning` | keep |  |
 | `KubeQuotaFullyUsed` | `info` | **BLACKHOLE** |  |
@@ -247,7 +247,7 @@ despiertan a nadie pese a llamarse `page`.
 | `NodeCPUHighUsage` | `info` | **BLACKHOLE** |  |
 | `NodeClockNotSynchronising` | `warning` | keep |  |
 | `NodeClockSkewDetected` | `warning` | keep |  |
-| `NodeDiskFilling` | `warning` | keep | 1 |
+| `NodeDiskFilling` | `warning` | keep |  |
 | `NodeDiskIOSaturation` | `warning` | keep |  |
 | `NodeDiskNearEviction` | `critical` | keep |  |
 | `NodeDiskPressure` | `critical` | keep |  |
@@ -263,7 +263,7 @@ despiertan a nadie pese a llamarse `page`.
 | `NodeFilesystemSpaceFillingUp` | `warning` | keep |  |
 | `NodeHighNumberConntrackEntriesUsed` | `warning` | keep |  |
 | `NodeMemoryHighUtilization` | `warning` | keep |  |
-| `NodeMemoryMajorPagesFaults` | `warning` | keep | 1 |
+| `NodeMemoryMajorPagesFaults` | `warning` | keep |  |
 | `NodeNetworkInterfaceFlapping` | `warning` | keep |  |
 | `NodeNetworkReceiveErrs` | `warning` | keep |  |
 | `NodeNetworkTransmitErrs` | `warning` | keep |  |
@@ -282,7 +282,7 @@ despiertan a nadie pese a llamarse `page`.
 | `PostgresSharedBackendsWaiting` | `warning` | keep |  |
 | `PostgresSharedBackupStale` | `critical` | keep |  |
 | `PostgresSharedConnectionsCritical` | `critical` | keep |  |
-| `PostgresSharedConnectionsHigh` | `warning` | keep | 1 |
+| `PostgresSharedConnectionsHigh` | `warning` | keep |  |
 | `PostgresSharedIdleInTransaction` | `warning` | keep |  |
 | `PostgresSharedInstancesNotReady` | `critical` | keep |  |
 | `PostgresSharedMetricsMissing` | `warning` | keep |  |
@@ -296,7 +296,7 @@ despiertan a nadie pese a llamarse `page`.
 | `RabbitmqContactSyncBacklogAfterWindow` | `warning` | keep |  |
 | `RabbitmqDlqGrowth` | `warning` | keep |  |
 | `RabbitmqExpensesBacklogAfterWindow` | `warning` | keep |  |
-| `RabbitmqFunctionalQueueNoConsumer` | `warning` | keep | 2 |
+| `RabbitmqFunctionalQueueNoConsumer` | `warning` | keep |  |
 | `RabbitmqHeadMessageStale` | `critical` | keep |  |
 | `RabbitmqMemoryAlarmActive` | `critical` | keep |  |
 | `RabbitmqMemoryHigh` | `critical` | keep |  |
@@ -330,8 +330,8 @@ despiertan a nadie pese a llamarse `page`.
 
 | alertname | sev | destino hoy | firing |
 |---|---|---|---:|
-| `SiiInvoicingCronStale` | `critical` | keep |  |
-| `SiiInvoicingFunctionalFailure` | `warning` | keep |  |
+| `SiiInvoicingCronStale` | `critical` | keep | 1 |
+| `SiiInvoicingFunctionalFailure` | `warning` | keep | 1 |
 | `SiiInvoicingTelemetryMissing` | `warning` | keep |  |
 | `SiiMonthlyReportCronStale` | `critical` | keep |  |
 | `SiiMonthlyReportFailed` | `warning` | keep |  |
@@ -368,7 +368,7 @@ despiertan a nadie pese a llamarse `page`.
 | `SynapseScheduledWorkflowStalledWeekly` | `warning` | keep |  |
 | `SynapseTopologyDrift` | `info` | **BLACKHOLE** | 7 |
 | `SynapseUnroutableMessages` | `warning` | keep |  |
-| `SynapseWorkflowFailed` | `warning` | keep |  |
+| `SynapseWorkflowFailed` | `warning` | keep | 1 |
 
 ### Target (1)
 
@@ -400,7 +400,7 @@ despiertan a nadie pese a llamarse `page`.
 | `TrackingIngestionSilent` | `warning` | keep |  |
 | `TrackingPage404Spike` | `critical` | keep |  |
 
-### otros (148 — 3 ciegas)
+### otros (156 — 3 ciegas)
 
 | alertname | sev | destino hoy | firing |
 |---|---|---|---:|
@@ -437,11 +437,16 @@ despiertan a nadie pese a llamarse `page`.
 | `CertManagerCertificateMetricsMissing` | `critical` | keep |  |
 | `CertificateExpiresSoon` | `warning` | keep |  |
 | `CertificateNotReady` | `critical` | keep |  |
+| `ClaudeCuentasRenovarFallo` | `warning` | keep |  |
+| `ClaudeKeySinCuentas` | `warning` | keep |  |
+| `CompaniaPreguntasSinEntregar` | `critical` | keep |  |
 | `CompaniaSupervisorSinMetricas` | `critical` | keep |  |
+| `CompaniaSynapseSinPublicar` | `critical` | keep |  |
 | `ConcurrentInsertsHitTheLimit` | `warning` | keep |  |
 | `ConfigurationReloadFailure` | `warning` | keep |  |
+| `CorreoBridgeDespertaresPerdidos` | `warning` | keep |  |
 | `CorreoBridgeMensajesPerdidos` | `warning` | keep |  |
-| `DashProductorAusente` | `warning` | keep |  |
+| `DashProductorAusente` | `warning` | keep | 55 |
 | `DeepSeekTpSpinWaitSuspected` | `critical` | keep |  |
 | `DiskRunsOutOfSpace` | `critical` | keep |  |
 | `DiskRunsOutOfSpaceIn3Days` | `critical` | keep |  |
@@ -452,10 +457,11 @@ despiertan a nadie pese a llamarse `page`.
 | `FrigateDetectorLento` | `warning` | keep |  |
 | `GpuArbiterResidentRestoreStuck` | `critical` | keep |  |
 | `GpuArbiterStateObservationUnavailable` | `warning` | keep |  |
+| `Gx10ThermalHaltImminent` | `warning` | keep | 1 |
 | `HighQueueDepth` | `warning` | keep |  |
 | `IndexDBRecordsDrop` | `critical` | keep |  |
-| `InfoInhibitor` | `none` | **BLACKHOLE** | 6 |
-| `K8sCronJobFailed` | `warning` | keep | 1 |
+| `InfoInhibitor` | `none` | **BLACKHOLE** | 7 |
+| `K8sCronJobFailed` | `warning` | keep | 4 |
 | `KeepBackendAbsent` | `critical` | keep |  |
 | `KeepBackendNotSpread` | `warning` | keep |  |
 | `KeepIngestionDown` | `critical` | keep |  |
@@ -544,6 +550,8 @@ despiertan a nadie pese a llamarse `page`.
 | `UPSMetricsAbsent` | `critical` | keep |  |
 | `UPSOnBattery` | `critical` | keep |  |
 | `UPSReplaceBattery` | `critical` | keep |  |
+| `UpdateWatchDailyMissing` | `warning` | keep |  |
+| `UpdateWatchDailyStale` | `warning` | keep |  |
 | `VllmLaneRestartLoop` | `critical` | keep |  |
 | `VmagentRemoteWriteFailing` | `critical` | keep |  |
 | `VminsertVmstorageConnectionIsSaturated` | `warning` | keep |  |

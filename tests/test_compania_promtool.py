@@ -1,6 +1,6 @@
-"""promtool test of the company alert (SC-1872): CompaniaSupervisorSinMetricas (pocharlies-compania VMRule).
+"""promtool test of the company alerts of the pocharlies-compania VMRule listed in ALERTS (SC-1872, SC-5531).
 
-Runs that rule, extracted from manifests/rules.yaml, against tests/promtool/compania.test.yaml
+Runs those rules, extracted from manifests/rules.yaml, against tests/promtool/compania.test.yaml
 (harness: tests/promtool_rules.py).
 """
 
@@ -9,7 +9,7 @@ import unittest
 from promtool_rules import ROOT, run_promtool, vmrule_groups
 
 CASES = ROOT / "tests" / "promtool" / "compania.test.yaml"
-ALERTS = {"CompaniaSupervisorSinMetricas"}
+ALERTS = {"CompaniaSupervisorSinMetricas", "CompaniaSynapseSinPublicar", "CompaniaPreguntasSinEntregar", "ClaudeKeySinCuentas"}
 
 
 class CompaniaPromtoolTest(unittest.TestCase):

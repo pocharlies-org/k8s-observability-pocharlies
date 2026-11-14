@@ -2804,6 +2804,55 @@ spec:
             description: >-
               VictoriaMetrics no recibe company_encendida del job company-supervisor (paseo/company :19911). Mirar
               `kubectl logs -n paseo company-0 -c supervisor` y el target en vmagent.
+        # SC-5531: los canales de la compañía. Sin eventos al engine el trabajo solo avanza por el barrido; sin
+        # entregas a Hermes las preguntas a Dani no llegan. Salta cuando falla y no hay ni un éxito en la ventana.
+        - alert: CompaniaSynapseSinPublicar
+          expr: |
+            sum(increase(company_canal_total{job="company-supervisor",canal="synapse",resultado="fallo"}[15m])) > 0
+            unless sum(increase(company_canal_total{job="company-supervisor",canal="synapse",resultado="ok"}[15m])) > 0
+          for: 10m
+          labels:
+            severity: critical
+            area: compania
+            component: company-synapse
+          annotations:
+            summary: "Compañía: no publica eventos en Synapse"
+            description: >-
+              El supervisor lleva 25 min sin poder publicar en RabbitMQ (`synapse_adapter_company`, API de gestión
+              :15672): el engine no recibe los disparos. Mirar `kubectl logs -n paseo company-0 -c supervisor | grep
+              publicó` (el 14-11 era un 401 «Not management user»: el usuario necesita el tag management).
+        - alert: CompaniaPreguntasSinEntregar
+          expr: |
+            sum(increase(company_canal_total{job="company-supervisor",canal="hermes",resultado="fallo"}[30m])) > 0
+            unless sum(increase(company_canal_total{job="company-supervisor",canal="hermes",resultado="ok"}[30m])) > 0
+          for: 15m
+          labels:
+            severity: critical
+            area: compania
+            component: company-hermes
+          annotations:
+            summary: "Compañía: las preguntas a Dani no llegan a Telegram"
+            description: >-
+              Hermes no confirma «delivered» de ninguna pregunta de la compañía en 45 min (POST
+              hermes-api.hermes:8642/p/secretaria/api/preguntas-dani). Mirar `kubectl logs -n paseo company-0 -c
+              supervisor | grep secretaria` (el 14-11 era la NetworkPolicy hermes-api-allow-clients sin el pod company).
+        - alert: ClaudeKeySinCuentas
+          # LiteLLM cuenta `empty` cuando una key con política (o la lista `compania`) se queda sin cuenta de Claude: el
+          # cliente recibe 429 «No deployments available». Ráfagas cortas (todas al salto) caben en el `for`.
+          expr: |
+            sum(increase(litellm_claude_account_stats_total{contador="empty"}[10m])) > 20
+          for: 15m
+          labels:
+            severity: warning
+            area: compania
+            component: litellm-claude
+          annotations:
+            summary: "Claude: una key se queda sin cuentas ({{ $value | humanize }} rechazos en 10 min)"
+            description: >-
+              El session_router de LiteLLM no encuentra cuenta de Claude para una key: sus peticiones reciben 429.
+              Mirar `kubectl logs -n litellm deploy/litellm -c litellm | grep "no tiene cuentas"` para la key, y
+              `claude_accounts` en /api/model-routing/config del dashboard (el 14-11, el x86 publicado bajo el alias
+              viejo `claude-x86`).
 
 ---
 apiVersion: operator.victoriametrics.com/v1beta1
