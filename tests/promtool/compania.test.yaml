@@ -20,3 +20,67 @@ tests:
             exp_annotations:
               summary: "Compañía: el supervisor lleva 15 min sin publicar métricas"
               description: "VictoriaMetrics no recibe company_encendida del job company-supervisor (paseo/company :19911). Mirar `kubectl logs -n paseo company-0 -c supervisor` y el target en vmagent."
+  # SC-5531: canales de la compañía. Con la sintaxis de series de promtool `0+1x30` es un counter que sube 1/min.
+  - interval: 1m
+    name: synapse solo falla (el 401 del 14-11) -> salta; con algún ok en la ventana no
+    input_series:
+      - series: 'company_canal_total{job="company-supervisor",canal="synapse",resultado="fallo"}'
+        values: '0+1x40'
+      - series: 'company_canal_total{job="company-supervisor",canal="synapse",resultado="ok"}'
+        values: '5x40'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: CompaniaSynapseSinPublicar
+        exp_alerts: []
+      - eval_time: 30m
+        alertname: CompaniaSynapseSinPublicar
+        exp_alerts:
+          - exp_labels: {severity: critical, area: compania, component: company-synapse}
+            exp_annotations:
+              summary: "Compañía: no publica eventos en Synapse"
+              description: "El supervisor lleva 25 min sin poder publicar en RabbitMQ (`synapse_adapter_company`, API de gestión :15672): el engine no recibe los disparos. Mirar `kubectl logs -n paseo company-0 -c supervisor | grep publicó` (el 14-11 era un 401 «Not management user»: el usuario necesita el tag management)."
+  - interval: 1m
+    name: synapse falla a ratos pero también publica -> no salta
+    input_series:
+      - series: 'company_canal_total{job="company-supervisor",canal="synapse",resultado="fallo"}'
+        values: '0+1x40'
+      - series: 'company_canal_total{job="company-supervisor",canal="synapse",resultado="ok"}'
+        values: '0+1x40'
+    alert_rule_test:
+      - eval_time: 35m
+        alertname: CompaniaSynapseSinPublicar
+        exp_alerts: []
+  - interval: 1m
+    name: hermes refused (el 14-11) -> salta pasados ~45 min
+    input_series:
+      - series: 'company_canal_total{job="company-supervisor",canal="hermes",resultado="fallo"}'
+        values: '0+5x60'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: CompaniaPreguntasSinEntregar
+        exp_alerts: []
+      - eval_time: 50m
+        alertname: CompaniaPreguntasSinEntregar
+        exp_alerts:
+          - exp_labels: {severity: critical, area: compania, component: company-hermes}
+            exp_annotations:
+              summary: "Compañía: las preguntas a Dani no llegan a Telegram"
+              description: "Hermes no confirma «delivered» de ninguna pregunta de la compañía en 45 min (POST hermes-api.hermes:8642/p/secretaria/api/preguntas-dani). Mirar `kubectl logs -n paseo company-0 -c supervisor | grep secretaria` (el 14-11 era la NetworkPolicy hermes-api-allow-clients sin el pod company)."
+  - interval: 1m
+    name: una key sin cuentas sostenida -> salta; una ráfaga corta no
+    input_series:
+      - series: 'litellm_claude_account_stats_total{contador="empty",pod="litellm-a"}'
+        values: '0+4x40'
+      - series: 'litellm_claude_account_stats_total{contador="empty",pod="litellm-b"}'
+        values: '0+30x3 90x37'
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: ClaudeKeySinCuentas
+        exp_alerts: []
+      - eval_time: 30m
+        alertname: ClaudeKeySinCuentas
+        exp_alerts:
+          - exp_labels: {severity: warning, area: compania, component: litellm-claude}
+            exp_annotations:
+              summary: "Claude: una key se queda sin cuentas (40 rechazos en 10 min)"
+              description: "El session_router de LiteLLM no encuentra cuenta de Claude para una key: sus peticiones reciben 429. Mirar `kubectl logs -n litellm deploy/litellm -c litellm | grep \"no tiene cuentas\"` para la key, y `claude_accounts` en /api/model-routing/config del dashboard (el 14-11, el x86 publicado bajo el alias viejo `claude-x86`)."

@@ -9,7 +9,7 @@ import unittest
 from promtool_rules import ROOT, run_promtool, vmrule_groups
 
 CASES = ROOT / "tests" / "promtool" / "compania.test.yaml"
-ALERTS = {"CompaniaSupervisorSinMetricas"}
+ALERTS = {"CompaniaSupervisorSinMetricas", "CompaniaSynapseSinPublicar", "CompaniaPreguntasSinEntregar", "ClaudeKeySinCuentas"}
 
 
 class CompaniaPromtoolTest(unittest.TestCase):
