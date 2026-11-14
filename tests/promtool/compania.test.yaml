@@ -1,4 +1,4 @@
-# Casos de CompaniaSupervisorSinMetricas (promtool test rules). `rules` la
+# Casos de las alertas de la compañía (promtool test rules). `rules` la
 # genera tests/test_compania_promtool.py desde la VMRule pocharlies-compania. time() en promtool cuenta desde 0.
 rule_files:
   - compania.rules.yaml
