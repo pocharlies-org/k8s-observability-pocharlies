@@ -21,8 +21,8 @@
 #
 # El token de la SA no se duplica ni se renueva: se lee el Secret existente del
 # cluster external-secrets-operator/onepassword-service-account, como hacia el script
-# del x86 con kubectl, con un ClusterRole acotado por resourceNames a ese unico
-# Secret (patrón: cluster-health-watcher-read). La API key de Keep sale de
+# del x86 con kubectl, con un Role en ese namespace acotado por resourceNames a ese
+# unico Secret. El token vive en un emptyDir en memoria y se borra al terminar op. La API key de Keep sale de
 # keepsvc-provisioning/API_KEY_ALERTMANAGER, mismo namespace, por secretKeyRef.
 #
 # La imagen de op es la misma que la de onepassword-change-detector (k8s-infra,
@@ -38,24 +38,26 @@ metadata:
     app.kubernetes.io/part-of: observability
 ---
 apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
+kind: Role
 metadata:
   name: op-ratelimit-check
+  namespace: external-secrets-operator
 rules:
-  # get sobre el Secret existente de la SA de 1Password, clavado por nombre; sin
-  # list (list exponia los nombres de los demas Secrets del namespace).
+  # get sobre el Secret existente de la SA de 1Password, clavado por nombre y solo en
+  # su namespace (Role, no ClusterRole: security, SC-5631); sin list.
   - apiGroups: [""]
     resources: ["secrets"]
     verbs: ["get"]
     resourceNames: ["onepassword-service-account"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
+kind: RoleBinding
 metadata:
   name: op-ratelimit-check
+  namespace: external-secrets-operator
 roleRef:
   apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
+  kind: Role
   name: op-ratelimit-check
 subjects:
   - kind: ServiceAccount
@@ -73,8 +75,8 @@ data:
   fetch-token.sh: |
     #!/usr/bin/env bash
     # Lee el Secret existente del cluster (lo mismo que hacia el script del x86) y lo
-    # deja en el emptyDir compartido para el initContainer de op. El token no va a
-    # stdout ni toca el disco del nodo.
+    # deja en el emptyDir compartido (medium: Memory) para el initContainer de op. El
+    # token no va a stdout ni toca el disco del nodo; op lo borra al terminar.
     set -euo pipefail
     KUBECONFIG="" kubectl get secret -n external-secrets-operator onepassword-service-account \
       -o jsonpath='{.data.token}' | base64 -d > /work/token
@@ -133,11 +135,22 @@ spec:
           nodeSelector:
             topology: ovh
           enableServiceLinks: false
+          # No-root, como onepassword-change-detector (k8s-infra): los tres contenedores
+          # comparten uid, asi op puede leer el token 0600 que deja fetch-token.
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            fsGroup: 65532
+            seccompProfile:
+              type: RuntimeDefault
           initContainers:
             - name: fetch-token
               image: alpine/k8s:1.32.5
               imagePullPolicy: IfNotPresent
               command: ["bash", "/scripts/fetch-token.sh"]
+              env:
+                - { name: HOME, value: /work/home }   # cache de kubectl, sin $HOME de root
               resources:
                 requests: { cpu: 20m, memory: 64Mi }
                 limits: { memory: 128Mi }
@@ -150,7 +163,7 @@ spec:
               imagePullPolicy: IfNotPresent
               # op rechaza directorios de estado que no es suyos: mkdir bajo /work
               # (mismo arreglo que change-detector).
-              command: ["/bin/sh", "-ec", "mkdir -p /work/home/.config /work/tmp && OP_SERVICE_ACCOUNT_TOKEN=$(cat /work/token) op service-account ratelimit --format json > /work/ratelimit.json"]
+              command: ["/bin/sh", "-ec", "trap 'rm -f /work/token' EXIT; mkdir -p /work/home/.config /work/tmp && OP_SERVICE_ACCOUNT_TOKEN=$(cat /work/token) op service-account ratelimit --format json > /work/ratelimit.json"]
               env:
                 - { name: HOME, value: /work/home }
                 - { name: XDG_CONFIG_HOME, value: /work/home/.config }
@@ -184,4 +197,4 @@ spec:
                 name: op-ratelimit-check-scripts
                 defaultMode: 0755
             - name: work
-              emptyDir: { sizeLimit: 16Mi }
+              emptyDir: { medium: Memory, sizeLimit: 16Mi }
