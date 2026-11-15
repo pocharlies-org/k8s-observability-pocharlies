@@ -5,9 +5,8 @@
 # metric.claude-cuentas-monitor-pasada.v1), cuyo VALOR es el epoch de la última pasada
 # COMPLETA. El monitor la empuja al acabar cada pasada a
 # https://vm.lan.e-dani.com/api/v1/import/prometheus (patrón mac-build-liveness; no hay
-# scrape). Dos sitios, dos umbrales (dos intervalos):
-#   sitio="x86"  timer diario claude-cuentas-monitor.timer del x86 (09:00 Madrid)  -> 48 h
-#   sitio="pod"  bucle company-cron del pod company-0, cada 6 h (--compania)       -> 12 h
+# scrape). Un sitio: sitio="pod", el bucle company-cron del pod company-0, cada 6 h (--compania)
+# -> 12 h. El timer del x86 (sitio="x86") se retiró en SC-5631 (15-11): el x86 ya no corre Claude.
 #
 # La ocurrencia que la motiva: del 07-11 al 10-11 la unidad del x86 falló cada mañana con
 # 203/EXEC (su venv había desaparecido) y nada avisó: el monitor no llegaba a arrancar y la
@@ -19,7 +18,7 @@
 # 5 min para una consulta instantánea; entre pushes la serie «desaparece». El valor es la hora
 # de la pasada, así que `time() - valor` es su edad. `absent_over_time(...[7d])`: ningún
 # latido en 7 días (o nunca) también es incidente — por eso esta VMRule se despliega DESPUÉS
-# de la primera pasada de cada sitio con el código de SC-5262.
+# de la primera pasada del pod con el código de SC-5262.
 #
 # Enrutado, en dos pasos y los dos hacen falta:
 #   1. Alertmanager: el catch-all `receiver: keep` la entrega a Keep.
@@ -42,26 +41,6 @@ spec:
     - name: pocharlies.claude-cuentas
       rules:
         # `for: 15m`: el umbral ya son dos intervalos; el `for` solo absorbe una evaluación suelta.
-        - alert: ClaudeCuentasRenovarFallo
-          expr: |
-            (time() - last_over_time(claude_cuentas_monitor_ultima_pasada_timestamp_seconds{sitio="x86"}[7d]) > 172800)
-              or
-            absent_over_time(claude_cuentas_monitor_ultima_pasada_timestamp_seconds{sitio="x86"}[7d])
-          for: 15m
-          labels:
-            severity: warning
-            cuenta: monitor-x86
-            sitio: x86
-            causa: sin-pasada
-          annotations:
-            summary: "El monitor de cuentas de Claude del x86 lleva más de 48 h sin completar una pasada: nadie renueva sus logins"
-            description: >-
-              claude_cuentas_monitor_ultima_pasada_timestamp_seconds{sitio="x86"} no se ha
-              actualizado en más de dos intervalos del timer diario. En el x86:
-              `systemctl --user status claude-cuentas-monitor.service claude-cuentas-monitor.timer`
-              y `journalctl --user -u claude-cuentas-monitor.service -n 50` (el 07-11 fue un
-              203/EXEC por un python que ya no existía). Una pasada a mano:
-              `systemctl --user start claude-cuentas-monitor.service`.
         - alert: ClaudeCuentasRenovarFallo
           expr: |
             (time() - last_over_time(claude_cuentas_monitor_ultima_pasada_timestamp_seconds{sitio="pod"}[7d]) > 43200)
