@@ -109,16 +109,34 @@ spec:
             description: "Pod {{ $labels.namespace }}/{{ $labels.pod }} has been in a non-ready state for longer than 15 minutes."
         # Reemplazo de la regla del chart (mismo criterio que KubePodNotReady).
         # Conserva `reason!="CrashLoopBackOff"` y `for: 1h` del chart.
+        # SC-5575 (DEPL-19428): un pod de Job con init-containers largos deja el
+        # contenedor principal en waiting/PodInitializing durante todo el init
+        # (medido: el dump lógico de `logical-dump-postgres-shared`, init de ~2 h
+        # cada domingo; el contenedor `upload` en PodInitializing 1 h+ disparó
+        # esta alerta y la correlación deployment-degraded, con el job Complete
+        # 1/1). `PodInitializing` en un pod de Job es el diseño, no un fallo: se
+        # excluye sólo esa combinación. Los demás motivos de waiting en un job
+        # (ImagePullBackOff, CreateContainerConfigError, ...) siguen disparando,
+        # y PodInitializing >1 h en un pod que NO es de Job también (un init
+        # colgado de un Deployment sí es un fallo).
         - alert: KubeContainerWaiting
           expr: |
             (
-              (kube_pod_container_status_waiting_reason{job="kube-state-metrics",reason!="CrashLoopBackOff"} > 0)
-              * on (namespace, pod) group_left (workload) kube:pod_workload:info
+              (
+                (kube_pod_container_status_waiting_reason{job="kube-state-metrics",reason!="CrashLoopBackOff"} > 0)
+                * on (namespace, pod) group_left (workload) kube:pod_workload:info
+              )
+              or
+              (
+                (kube_pod_container_status_waiting_reason{job="kube-state-metrics",reason!="CrashLoopBackOff"} > 0)
+                unless on (namespace, pod) kube:pod_workload:info
+              )
             )
-            or
+            unless on (namespace, pod, container)
             (
-              (kube_pod_container_status_waiting_reason{job="kube-state-metrics",reason!="CrashLoopBackOff"} > 0)
-              unless on (namespace, pod) kube:pod_workload:info
+              (kube_pod_container_status_waiting_reason{job="kube-state-metrics",reason="PodInitializing"} > 0)
+              * on (namespace, pod) group_left ()
+              topk by (namespace, pod) (1, kube_pod_owner{job="kube-state-metrics",owner_kind="Job"})
             )
           for: 1h
           labels:

@@ -113,6 +113,67 @@ tests:
       - eval_time: 61m
         alertname: KubeContainerWaiting
         exp_alerts: []
+  # SC-5575 (DEPL-19428): el job `logical-dump-postgres-shared-29911920` pasó 2 h
+  # con su contenedor `upload` en waiting/PodInitializing (el init del dump) y
+  # disparó deployment-degraded con el job Complete 1/1. PodInitializing en un pod
+  # de Job es el diseño del job, no un fallo.
+  - interval: 1m
+    name: pod de Job en PodInitializing 2 h NO dispara KubeContainerWaiting (dump lógico, DEPL-19428)
+    input_series:
+      - series: 'kube_pod_container_status_waiting_reason{job="kube-state-metrics",namespace="databases",pod="logical-dump-postgres-shared-29911920-6ggcd",container="upload",reason="PodInitializing"}'
+        values: '1x130'
+      - series: 'kube_pod_owner{job="kube-state-metrics",namespace="databases",pod="logical-dump-postgres-shared-29911920-6ggcd",owner_kind="Job",owner_name="logical-dump-postgres-shared-29911920"}'
+        values: '1x130'
+    alert_rule_test:
+      - eval_time: 61m
+        alertname: KubeContainerWaiting
+        exp_alerts: []
+  - interval: 1m
+    name: pod de Job en ImagePullBackOff 2 h SÍ dispara KubeContainerWaiting (la exclusión es sólo PodInitializing)
+    input_series:
+      - series: 'kube_pod_container_status_waiting_reason{job="kube-state-metrics",namespace="databases",pod="logical-dump-postgres-shared-29911920-6ggcd",container="upload",reason="ImagePullBackOff"}'
+        values: '1x130'
+      - series: 'kube_pod_owner{job="kube-state-metrics",namespace="databases",pod="logical-dump-postgres-shared-29911920-6ggcd",owner_kind="Job",owner_name="logical-dump-postgres-shared-29911920"}'
+        values: '1x130'
+    alert_rule_test:
+      - eval_time: 61m
+        alertname: KubeContainerWaiting
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: kube-state-metrics
+              namespace: databases
+              pod: logical-dump-postgres-shared-29911920-6ggcd
+              container: upload
+              reason: ImagePullBackOff
+              workload: logical-dump-postgres-shared-29911920
+            exp_annotations:
+              summary: "Pod container waiting longer than 1 hour"
+              description: 'pod/logical-dump-postgres-shared-29911920-6ggcd in namespace databases on container upload has been in waiting state for longer than 1 hour. (reason: "ImagePullBackOff")'
+  - interval: 1m
+    name: pod de Deployment en PodInitializing 2 h SÍ dispara (la exclusión es sólo para pods de Job)
+    input_series:
+      - series: 'kube_pod_container_status_waiting_reason{job="kube-state-metrics",namespace="llm",pod="stt-turbo-7d9-abcde",container="main",reason="PodInitializing"}'
+        values: '1x130'
+      - series: 'kube_pod_owner{job="kube-state-metrics",namespace="llm",pod="stt-turbo-7d9-abcde",owner_kind="ReplicaSet",owner_name="stt-turbo-7d9"}'
+        values: '1x130'
+      - series: 'kube_replicaset_owner{job="kube-state-metrics",namespace="llm",replicaset="stt-turbo-7d9",owner_kind="Deployment",owner_name="stt-turbo",owner_is_controller="true"}'
+        values: '1x130'
+    alert_rule_test:
+      - eval_time: 61m
+        alertname: KubeContainerWaiting
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: kube-state-metrics
+              namespace: llm
+              pod: stt-turbo-7d9-abcde
+              container: main
+              reason: PodInitializing
+              workload: stt-turbo
+            exp_annotations:
+              summary: "Pod container waiting longer than 1 hour"
+              description: 'pod/stt-turbo-7d9-abcde in namespace llm on container main has been in waiting state for longer than 1 hour. (reason: "PodInitializing")'
   # SC-4763 (DEPL-18565): el aprovisionador y la caché de imágenes de la ventana
   # creative de dgx3 no quedan Ready durante la apertura (bajan decenas de GB;
   # dgx3_mode.py OPEN_TIMEOUT_S 2 h). Su no-Ready es el diseño: la cobertura de
