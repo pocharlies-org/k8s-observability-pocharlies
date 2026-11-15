@@ -88,6 +88,23 @@ spec:
     spec:
       nodeSelector:
         node-pool: ks5-nvme
+      # INFRA-171 (15-11): pin declarativo a ks5-cp-3 (con 1 réplica el topologySpread es
+      # inerte — keep/values.yaml:1394-1408 —, de ahí la nodeAffinity por hostname; se suma
+      # al nodeSelector, no lo sustituye). Fila S1 (nota-devops-medicion-cp1.md de
+      # INFRA-170): vmsingle-rca 100m, p95 2m (ventana 48 h, la retención real de
+      # VictoriaMetrics; las series de 14 días no existen) — «mover a cp-3» para liberar
+      # cp-1 (97 % de requests, épico INFRA-123). El PVC vmsingle-rca (5Gi RWO, healthy,
+      # 1 réplica en cp-1) puede seguirlo: Longhorn hace attach cross-node por red
+      # (verificado S1). La request NO se toca: el veredicto de la fila es mover.
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: In
+                    values:
+                      - ks5-cp-3
       containers:
         - name: vmsingle
           # Misma versión que el vmsingle principal (verificado en el pod vivo).
