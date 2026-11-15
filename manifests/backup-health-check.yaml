@@ -1,0 +1,155 @@
+# SC-5631 — comprobacion de salud de los backups restic (ubuntu/dgx/gx10 --> sauvage),
+# trasladada del crontab del x86 (`30 9 * * * check-backup-health.sh`). Diaria a las
+# 09:30 Europe/Madrid, tras la ventana de backups, igual que en el host.
+#
+# Contrato de salida: las mismas lineas OK/ALERT por stdout (logs del Job -> Loki) y
+# exit 1 cuando un repo esta viejo. En el host la alarma era `logger -t backup-health`
+# y el exit code del cron (que no consumia nadie); aqui el exit code es
+# K8sCronJobFailed (manifests/rules.yaml), que enruta al cron-alert-analyzer con los
+# logs del Job. Mismos umbrales: 36 h, 72 h para el repo dgx.
+#
+# Estado conocido HOY (medido el 15-11 en ~/logs/backup-health.log del x86): ubuntu y
+# gx10 en OK; dgx-->sauvage sin snapshot desde el 05-09 (1709 h). El job sale 1 cada
+# dia hasta que ese backup se reactive o se revise el umbral: es el check funcionando,
+# no la migracion fallando.
+#
+# Credencial (1Password -> ESO -> Secret, nada en git): item `infra-ssh-backup-health`
+# del vault `k8s-pocharlies`, campo `private_key` (sembrado por security, SC-5631). Es
+# una clave dedicada: en ubuntu@sauvage va con `restrict,from="100.64.0.0/10"` y el
+# comando forzado ~/.local/bin/backup-age-report, que solo imprime
+# "<repo> <epoch del snapshot mas nuevo>" de los tres repos. Sin shell ni sftp: el pod
+# no ejecuta restic y la password de los repos no entra en el cluster.
+# sauvage se alcanza por su IP de tailnet (100.109.183.9): el pod no tiene MagicDNS.
+# Mismo enfoque que cluster-health-watcher (-F /dev/null, IP explicita, key propia).
+---
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: backup-health-creds
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: observability
+spec:
+  refreshInterval: 24h
+  secretStoreRef:
+    name: onepassword
+    kind: ClusterSecretStore
+  target:
+    name: backup-health-creds
+    creationPolicy: Owner
+    deletionPolicy: Retain
+  data:
+    - secretKey: ssh-key
+      remoteRef:
+        key: infra-ssh-backup-health/private_key
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: backup-health-check
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: observability
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: backup-health-check-scripts
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: observability
+data:
+  check.sh: |
+    #!/usr/bin/env bash
+    # check-backup-health (SC-5631): edad del ultimo snapshot de cada repo restic en sauvage.
+    # La clave del Secret solo puede ejecutar el comando forzado de sauvage
+    # (~/.local/bin/backup-age-report), que imprime "<repo> <epoch del snapshot mas nuevo | ->":
+    # sin restic, sin password de los repos, sin sftp.
+    set -euo pipefail
+
+    MAX_AGE_HOURS="${MAX_AGE_HOURS:-36}"
+    SAUVAGE="${SAUVAGE_HOST:-100.109.183.9}"
+    SSH_KEY="${SSH_KEY:-/secrets/ssh-key}"
+    declare -A MAX_AGE_OVERRIDE=( ["dgx-->sauvage"]=72 )   # repo dgx: el primer snapshot puede cruzar dos ventanas
+
+    log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
+
+    report=$(ssh -F /dev/null -i "$SSH_KEY" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+        -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=10 "ubuntu@${SAUVAGE}" 2>/dev/null) \
+        || { log "ALERT [sauvage]: no pude ejecutar backup-age-report en ${SAUVAGE}"; exit 1; }
+
+    now_ts=$(date +%s)
+    overall_status=0
+    for name in "ubuntu-->sauvage" "dgx-->sauvage" "gx10-->sauvage"; do
+        snap_ts=$(awk -v n="$name" '$1==n {print $2}' <<<"$report")
+        repo_max="${MAX_AGE_OVERRIDE[$name]:-$MAX_AGE_HOURS}"
+        if [[ ! "$snap_ts" =~ ^[0-9]+$ ]]; then
+            log "ALERT [$name]: sin snapshot legible en el informe de sauvage"
+            overall_status=1
+            continue
+        fi
+        age_h=$(( (now_ts - snap_ts) / 3600 ))
+        if (( age_h > repo_max )); then
+            log "ALERT [$name]: latest snapshot is ${age_h}h old (>${repo_max}h)"
+            overall_status=1
+        else
+            log "OK    [$name]: latest snapshot is ${age_h}h old (<=${repo_max}h)"
+        fi
+    done
+    exit $overall_status
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: backup-health-check
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: observability
+spec:
+  schedule: "30 9 * * *"
+  timeZone: Europe/Madrid
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 5
+  startingDeadlineSeconds: 1800
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 600
+      ttlSecondsAfterFinished: 3600
+      template:
+        spec:
+          restartPolicy: Never
+          serviceAccountName: backup-health-check
+          # atlantic (OVH, sin taint): el x86 se queda solo con LLMs y lo de casa (SC-5631).
+          nodeSelector:
+            topology: ovh
+          enableServiceLinks: false
+          containers:
+            - name: check
+              image: alpine/k8s:1.32.5
+              imagePullPolicy: IfNotPresent
+              # openssh-client no viene en alpine/k8s: se instala en cada pasada (mismo
+              # patron que dgx-cluster-health-watcher). Si el apk falla, ssh no existe y
+              # el Job falla igual: el fallo queda visible, no enmascarado.
+              command: ["bash", "-c"]
+              args:
+                - |
+                  apk add --no-cache openssh-client >/dev/null 2>&1 || true
+                  exec bash /scripts/check.sh
+              resources:
+                requests: { cpu: 50m, memory: 128Mi }
+                limits: { memory: 256Mi }
+              volumeMounts:
+                - { name: scripts, mountPath: /scripts, readOnly: true }
+                - { name: secrets, mountPath: /secrets, readOnly: true }
+          volumes:
+            - name: scripts
+              configMap:
+                name: backup-health-check-scripts
+                defaultMode: 0755
+            # 0400: ssh rechaza claves legibles por otros.
+            - name: secrets
+              secret:
+                secretName: backup-health-creds
+                defaultMode: 0400
