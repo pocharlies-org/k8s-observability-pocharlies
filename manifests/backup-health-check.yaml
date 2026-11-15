@@ -1,0 +1,200 @@
+# SC-5631 — comprobacion de salud de los backups restic (ubuntu/dgx/gx10 --> sauvage),
+# trasladada del crontab del x86 (`30 9 * * * check-backup-health.sh`). Diaria a las
+# 09:30 Europe/Madrid, tras la ventana de backups, igual que en el host.
+#
+# Contrato de salida: las mismas lineas OK/ALERT por stdout (logs del Job -> Loki) y
+# exit 1 cuando un repo esta viejo. En el host la alarma era `logger -t backup-health`
+# y el exit code del cron (que no consumia nadie); aqui el exit code es
+# K8sCronJobFailed (manifests/rules.yaml), que enruta al cron-alert-analyzer con los
+# logs del Job. Mismos umbrales: 36 h, 72 h para el repo dgx.
+#
+# Estado conocido HOY (medido el 15-11 en ~/logs/backup-health.log del x86): ubuntu y
+# gx10 en OK; dgx-->sauvage sin snapshot desde el 05-09 (1709 h). El job sale 1 cada
+# dia hasta que ese backup se reactive o se revise el umbral: es el check funcionando,
+# no la migracion fallando.
+#
+# Credenciales (1Password -> ESO -> Secret, nada en git). Items del vault
+# `k8s-pocharlies`, que HAY QUE SEMBRAR ANTES del primer sync (solo `security`
+# escribe en 1Password; a 15-11 ninguno de los dos existe):
+#   · backup-restic-sauvage / password            — la clave del repo restic (unica
+#     para los tres repos; es la del fichero ~/.config/restic/password del x86).
+#   · infra-ssh-tailnet / nvidiadgx_private       — clave privada OpenSSH de la clave
+#     flota DGX 2026-05-17 (fingerprint SHA256:610NETxJUdvWlLI61ih3mvU8P9Sh+xyrFLMAxXfRTAY),
+#     autorizada en ubuntu@sauvage. Probada el 15-11 desde el x86 con
+#     `restic -o sftp.args=... snapshots` contra los repos reales.
+# Mientras falten, el ExternalSecret queda NotReady y el Job no arranca (el x86 sigue
+# con su cron hasta que esto este verde; la sesion retira las lineas del crontab despues).
+#
+# sauvage se alcanza por su IP de tailnet (100.109.183.9): el pod no tiene MagicDNS.
+# Mismo enfoque que cluster-health-watcher (-F /dev/null, IP explicita, key propia).
+---
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: backup-health-creds
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: observability
+spec:
+  refreshInterval: 24h
+  secretStoreRef:
+    name: onepassword
+    kind: ClusterSecretStore
+  target:
+    name: backup-health-creds
+    creationPolicy: Owner
+    deletionPolicy: Retain
+  data:
+    - secretKey: restic-password
+      remoteRef:
+        key: backup-restic-sauvage/password
+    - secretKey: ssh-key
+      remoteRef:
+        key: infra-ssh-tailnet/nvidiadgx_private
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: backup-health-check
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: observability
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: backup-health-check-scripts
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: observability
+data:
+  check.sh: |
+    #!/usr/bin/env bash
+    # check-backup-health.sh del x86 (SC-5631): mismos repos, mismos umbrales, mismas
+    # lineas OK/ALERT. Diferencias: la clave ssh y la password vienen del Secret
+    # backup-health-creds, el host es la IP de tailnet, y el log va a stdout (logs del
+    # Job -> Loki) en lugar de ~/logs/backup-health.log. Las rutas se pueden pisar por
+    # entorno para poder probar el script fuera del pod (verificado desde el x86).
+    set -euo pipefail
+
+    MAX_AGE_HOURS="${MAX_AGE_HOURS:-36}"
+    SAUVAGE="${SAUVAGE_HOST:-100.109.183.9}"
+    RESTIC_PASSWORD_FILE="${RESTIC_PASSWORD_FILE:-/secrets/restic-password}"
+    SSH_KEY="${SSH_KEY:-/secrets/ssh-key}"
+    SFTP_ARGS="-F /dev/null -i ${SSH_KEY} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=10"
+
+    declare -A REPOS=(
+        ["ubuntu-->sauvage"]="sftp:ubuntu@${SAUVAGE}:/backups/ubuntu-restic"
+        ["dgx-->sauvage"]="sftp:ubuntu@${SAUVAGE}:/backups/dgx-restic"
+        ["gx10-->sauvage"]="sftp:ubuntu@${SAUVAGE}:/backups/gx10-restic"
+    )
+
+    # Per-repo max age override (seed runs can take >24h; keep 36h default for the
+    # small ones but bump the DGX 72 GiB repo since the very first snapshot may
+    # straddle two backup windows).
+    declare -A MAX_AGE_OVERRIDE=(
+        ["dgx-->sauvage"]=72
+    )
+
+    now_ts=$(date +%s)
+    threshold=$((MAX_AGE_HOURS * 3600))
+    overall_status=0
+
+    log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
+
+    for name in "${!REPOS[@]}"; do
+        repo="${REPOS[$name]}"
+        repo_max="${MAX_AGE_OVERRIDE[$name]:-$MAX_AGE_HOURS}"
+        latest=$(RESTIC_REPOSITORY="$repo" RESTIC_PASSWORD_FILE="$RESTIC_PASSWORD_FILE" \
+            timeout 60 restic -o sftp.args="$SFTP_ARGS" snapshots --no-lock --json 2>/dev/null | \
+            python3 -c "import sys,json; d=json.load(sys.stdin); print(max(s['time'] for s in d) if d else '')" 2>/dev/null || true)
+
+        if [[ -z "$latest" ]]; then
+            log "ALERT [$name]: unable to read latest snapshot from $repo"
+            overall_status=1
+            continue
+        fi
+
+        # restic time format: 2026-05-17T03:23:30.123456789+02:00 — strip nanoseconds and parse
+        snap_ts=$(python3 -c "
+    from datetime import datetime
+    s = '$latest'.split('.')[0]
+    # Re-attach offset if any
+    import re
+    m = re.match(r'(.+?)(?:\.\d+)?([+-]\d\d:\d\d|Z)?$', '$latest')
+    ts_part = m.group(1)
+    tz_part = m.group(2) or ''
+    try:
+        dt = datetime.fromisoformat(ts_part + tz_part.replace('Z','+00:00'))
+    except Exception:
+        dt = datetime.fromisoformat(ts_part)
+    print(int(dt.timestamp()))
+    ")
+        age_h=$(( (now_ts - snap_ts) / 3600 ))
+
+        if (( age_h > repo_max )); then
+            log "ALERT [$name]: latest snapshot is ${age_h}h old (>${repo_max}h) — $latest"
+            overall_status=1
+        else
+            log "OK    [$name]: latest snapshot is ${age_h}h old (<=${repo_max}h) — $latest"
+        fi
+    done
+
+    exit $overall_status
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: backup-health-check
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: observability
+spec:
+  schedule: "30 9 * * *"
+  timeZone: Europe/Madrid
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 5
+  startingDeadlineSeconds: 1800
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 600
+      ttlSecondsAfterFinished: 3600
+      template:
+        spec:
+          restartPolicy: Never
+          serviceAccountName: backup-health-check
+          # atlantic (OVH, sin taint): el x86 se queda solo con LLMs y lo de casa (SC-5631).
+          nodeSelector:
+            topology: ovh
+          enableServiceLinks: false
+          containers:
+            - name: check
+              image: alpine/k8s:1.32.5
+              imagePullPolicy: IfNotPresent
+              # restic y openssh-client no vienen en alpine/k8s: se instalan en cada
+              # pasada (mismo patron que dgx-cluster-health-watcher, que hace
+              # `apk add openssh-client`). Si el apk falla, restic no existe y el Job
+              # falla igual: el fallo queda visible, no enmascarado.
+              command: ["bash", "-c"]
+              args:
+                - |
+                  apk add --no-cache restic openssh-client >/dev/null 2>&1 || true
+                  exec bash /scripts/check.sh
+              resources:
+                requests: { cpu: 50m, memory: 128Mi }
+                limits: { memory: 256Mi }
+              volumeMounts:
+                - { name: scripts, mountPath: /scripts, readOnly: true }
+                - { name: secrets, mountPath: /secrets, readOnly: true }
+          volumes:
+            - name: scripts
+              configMap:
+                name: backup-health-check-scripts
+                defaultMode: 0755
+            # 0400: ssh rechaza claves legibles por otros.
+            - name: secrets
+              secret:
+                secretName: backup-health-creds
+                defaultMode: 0400

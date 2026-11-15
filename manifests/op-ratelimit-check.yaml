@@ -1,0 +1,187 @@
+# SC-5631 — alarma del cupo diario de 1Password (SC-1640), trasladada del crontab
+# del x86 (`0 * * * * check-op-ratelimit.sh`). Horaria, Europe/Madrid, misma cadencia.
+#
+# Que hace: mide el cupo account read_write (1000/dia, compartido por todas las SA)
+# y publica el estado actual en Keep como evento `OPRateLimitHigh` (firing con
+# >= 700, resolved por debajo). El fingerprint es el del script del x86 (sha256 de
+# "op-ratelimit/account-daily", 16 primeros): Keep deduplica por fingerprint, asi que
+# el incidente es el mismo que existe desde SC-1640.
+#
+# Diferencias con la version del host (el contrato con Keep es el mismo; la fontaneria no):
+#  · Sin fichero de estado ($HOME/.cache/op-ratelimit-firing): un pod de Job es
+#    efimero y el fichero moriria entre ejecuciones. Cada pasada publica el estado
+#    actual; un firing repetido con el mismo fingerprint no crea un segundo
+#    incidente, y un resolved sin incidente abierto es un no-op.
+#  · Si el POST a Keep falla el Job sale 1: que el canal de alarma este roto tiene
+#    que ser visible (K8sCronJobFailed -> cron-alert-analyzer), no solo un WARN en el
+#    log como era en el host.
+#  · `source` pasa de ["x86"] a ["k8s"]. Nada filtra por el (comprobado en
+#    keep/values.yaml y keep/rules/); la identidad del incidente es el fingerprint y
+#    no se mueve.
+#
+# El token de la SA no se duplica ni se renueva: se lee el Secret existente del
+# cluster external-secrets-operator/onepassword-service-account, como hacia el script
+# del x86 con kubectl, con un ClusterRole acotado por resourceNames a ese unico
+# Secret (patrón: cluster-health-watcher-read). La API key de Keep sale de
+# keepsvc-provisioning/API_KEY_ALERTMANAGER, mismo namespace, por secretKeyRef.
+#
+# La imagen de op es la misma que la de onepassword-change-detector (k8s-infra,
+# platform/external-secrets/change-detector), mismo digest pinneado: ningun
+# binario nuevo en el cluster.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: op-ratelimit-check
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: observability
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: op-ratelimit-check
+rules:
+  # get sobre el Secret existente de la SA de 1Password, clavado por nombre; sin
+  # list (list exponia los nombres de los demas Secrets del namespace).
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get"]
+    resourceNames: ["onepassword-service-account"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: op-ratelimit-check
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: op-ratelimit-check
+subjects:
+  - kind: ServiceAccount
+    name: op-ratelimit-check
+    namespace: monitoring
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: op-ratelimit-check-scripts
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: observability
+data:
+  fetch-token.sh: |
+    #!/usr/bin/env bash
+    # Lee el Secret existente del cluster (lo mismo que hacia el script del x86) y lo
+    # deja en el emptyDir compartido para el initContainer de op. El token no va a
+    # stdout ni toca el disco del nodo.
+    set -euo pipefail
+    KUBECONFIG="" kubectl get secret -n external-secrets-operator onepassword-service-account \
+      -o jsonpath='{.data.token}' | base64 -d > /work/token
+    chmod 600 /work/token
+  check.sh: |
+    #!/usr/bin/env bash
+    # Mide el cupo y publica el estado en Keep. Log a stdout (logs del Job -> Loki).
+    set -uo pipefail
+    UMBRAL="${OP_RATELIMIT_UMBRAL:-700}"
+    KEEP_URL="${KEEP_EVENT_URL:-http://keep-backend.monitoring.svc.cluster.local:8080/alerts/event}"
+
+    RL=/work/ratelimit.json
+    [ -s "$RL" ] || { echo "ERROR: op no dejo $RL"; exit 1; }
+
+    # Fila account read_write (1000/dia, compartida por todas las SA de la cuenta).
+    read -r LIMIT USED REMAIN RESET <<<"$(jq -r '.[] | select(.type=="account" and .action=="read_write") | "\(.limit) \(.used) \(.remaining) \(.reset)"' "$RL")"
+    [ -n "${USED:-}" ] || { echo "ERROR: no parseo el JSON de ratelimit"; exit 1; }
+    RESET_H=$(( ${RESET:-0} / 3600 ))
+
+    fp=$(printf 'op-ratelimit/account-daily' | sha256sum | cut -c1-16)
+    if [ "$USED" -ge "$UMBRAL" ]; then status=firing; else status=resolved; fi
+    echo "$status: 1Password account read_write ${USED}/${LIMIT} (umbral ${UMBRAL}), reset en ${RESET_H}h"
+
+    # Mismo payload que el script del x86 (SC-1640); solo cambia "source".
+    curl -sf -m 30 -X POST "$KEEP_URL" \
+      -H "x-api-key: ${KEEP_API_KEY}" -H "Content-Type: application/json" \
+      -d "{\"name\":\"OPRateLimitHigh\",\"fingerprint\":\"${fp}\",\"status\":\"${status}\",\"severity\":\"warning\",\"source\":[\"k8s\"],\"description\":\"1Password account read_write ${USED}/${LIMIT} (umbral ${UMBRAL}), reset en ${RESET_H}h\",\"labels\":{\"severity\":\"warning\",\"scope\":\"1password\"}}" \
+      >/dev/null || { echo "ERROR: no pude publicar en Keep"; exit 1; }
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: op-ratelimit-check
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: observability
+spec:
+  schedule: "0 * * * *"
+  timeZone: Europe/Madrid
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 5
+  startingDeadlineSeconds: 1800
+  jobTemplate:
+    spec:
+      # Un reintento es otra llamada de op contra el cupo diario (la misma razon que
+      # backoffLimit 0 en onepassword-change-detector).
+      backoffLimit: 0
+      activeDeadlineSeconds: 300
+      ttlSecondsAfterFinished: 3600
+      template:
+        spec:
+          restartPolicy: Never
+          serviceAccountName: op-ratelimit-check
+          # atlantic (OVH, sin taint): el x86 se queda solo con LLMs y lo de casa (SC-5631).
+          nodeSelector:
+            topology: ovh
+          enableServiceLinks: false
+          initContainers:
+            - name: fetch-token
+              image: alpine/k8s:1.32.5
+              imagePullPolicy: IfNotPresent
+              command: ["bash", "/scripts/fetch-token.sh"]
+              resources:
+                requests: { cpu: 20m, memory: 64Mi }
+                limits: { memory: 128Mi }
+              volumeMounts:
+                - { name: work, mountPath: /work }
+                - { name: scripts, mountPath: /scripts, readOnly: true }
+            - name: op-ratelimit
+              # Mismo pin que onepassword-change-detector (k8s-infra).
+              image: docker.io/1password/op:2.40.0@sha256:3835e4e0fa5eb0fd9c12672c6ae65530f00789663dca3ea39e5b02eb90cd1b54
+              imagePullPolicy: IfNotPresent
+              # op rechaza directorios de estado que no es suyos: mkdir bajo /work
+              # (mismo arreglo que change-detector).
+              command: ["/bin/sh", "-ec", "mkdir -p /work/home/.config /work/tmp && OP_SERVICE_ACCOUNT_TOKEN=$(cat /work/token) op service-account ratelimit --format json > /work/ratelimit.json"]
+              env:
+                - { name: HOME, value: /work/home }
+                - { name: XDG_CONFIG_HOME, value: /work/home/.config }
+                - { name: OP_CONFIG_DIR, value: /work/home/.config/op }
+                - { name: TMPDIR, value: /work/tmp }
+              resources:
+                requests: { cpu: 20m, memory: 64Mi }
+                limits: { cpu: 500m, memory: 256Mi }
+              volumeMounts:
+                - { name: work, mountPath: /work }
+          containers:
+            - name: check
+              image: alpine/k8s:1.32.5
+              imagePullPolicy: IfNotPresent
+              command: ["bash", "/scripts/check.sh"]
+              env:
+                - name: KEEP_API_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: keepsvc-provisioning
+                      key: API_KEY_ALERTMANAGER
+              resources:
+                requests: { cpu: 20m, memory: 64Mi }
+                limits: { memory: 128Mi }
+              volumeMounts:
+                - { name: work, mountPath: /work, readOnly: true }
+                - { name: scripts, mountPath: /scripts, readOnly: true }
+          volumes:
+            - name: scripts
+              configMap:
+                name: op-ratelimit-check-scripts
+                defaultMode: 0755
+            - name: work
+              emptyDir: { sizeLimit: 16Mi }
