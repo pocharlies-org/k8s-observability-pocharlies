@@ -25,7 +25,7 @@ EVENTOS_DEL_MONITOR = [
      "labels": {"cuenta": "info", "sitio": "pod", "dir": "/home/dibanez/.claude-company/info",
                 "causa": "red", "severity": "warning"}},
     {"name": "ClaudeCuentasRenovarFallo", "severity": "warning",
-     "labels": {"cuenta": "monitor-x86", "sitio": "x86", "dir": "", "causa": "pasada", "severity": "warning"}},
+     "labels": {"cuenta": "monitor-pod", "sitio": "pod", "dir": "", "causa": "pasada", "severity": "warning"}},
 ]
 
 
