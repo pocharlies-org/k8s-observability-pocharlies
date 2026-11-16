@@ -21,7 +21,7 @@ tests:
       - eval_time: 30m
         alertname: NodeMemoryHighUtilization
         exp_alerts:
-          - exp_labels: {severity: warning, area: capacity, job: node-exporter, instance: "10.42.0.147:9100", pod: vm-prometheus-node-exporter-aaaaa}
+          - exp_labels: {severity: warning, area: capacity, job: node-exporter, instance: "10.42.0.147:9100", pod: vm-prometheus-node-exporter-aaaaa, node: ubuntu}
             exp_annotations:
               summary: "Host is running out of memory"
               description: "Memory is filling up at vm-prometheus-node-exporter-aaaaa, has been above 90% for the last 15 minutes, is currently at 95.00%. Sparks (nvidia-dgx/gx10-ec3d/dgx3) are excluded by design while the llm-tp profile is resident — check the gpu-arbiter CM before assuming drift."
@@ -66,7 +66,7 @@ tests:
       - eval_time: 30m
         alertname: NodeMemoryMajorPagesFaults
         exp_alerts:
-          - exp_labels: {severity: warning, area: capacity, job: node-exporter, instance: "10.42.0.147:9100", pod: vm-prometheus-node-exporter-aaaaa}
+          - exp_labels: {severity: warning, area: capacity, job: node-exporter, instance: "10.42.0.147:9100", pod: vm-prometheus-node-exporter-aaaaa, node: ubuntu}
             exp_annotations:
               summary: "Memory major page faults are occurring at very high rate"
               description: "Memory major pages are occurring at very high rate at vm-prometheus-node-exporter-aaaaa, 500 major page faults per second for the last 15 minutes, is currently at 1000.00. Please check that there is enough memory available at this instance. Sparks (nvidia-dgx/gx10-ec3d/dgx3) are excluded by design while the llm-tp profile is resident — check the gpu-arbiter CM before assuming drift."
