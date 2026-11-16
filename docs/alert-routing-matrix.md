@@ -17,15 +17,15 @@ aviso lo decide una regla de correlación de `keep/rules/correlation-rules.yaml`
 
 | destino hoy | series | % |
 |---|---:|---:|
-| keep | 362 | 97% |
+| keep | 363 | 97% |
 | **BLACKHOLE (se descarta)** | 10 | 3% |
-| **TOTAL** | **372** | 100% |
+| **TOTAL** | **373** | 100% |
 
 ### Taxonomía de severidad realmente emitida
 
 | valor | series | ¿lo contempla el árbol? |
 |---|---:|---|
-| `warning` | 222 | sí — catch-all → `keep` |
+| `warning` | 223 | sí — catch-all → `keep` |
 | `critical` | 139 | sí — `severity = critical` |
 | `info` | 9 | **no** — cae al receiver raíz |
 | `none` | 2 | **no** — cae al receiver raíz |
@@ -295,7 +295,7 @@ despiertan a nadie pese a llamarse `page`.
 | `RabbitmqClusterPartition` | `critical` | keep |  |
 | `RabbitmqClusterSizeBelowExpected` | `critical` | keep |  |
 | `RabbitmqContactSyncBacklogAfterWindow` | `warning` | keep |  |
-| `RabbitmqDlqGrowth` | `warning` | keep | 4 |
+| `RabbitmqDlqGrowth` | `warning` | keep |  |
 | `RabbitmqExpensesBacklogAfterWindow` | `warning` | keep |  |
 | `RabbitmqFunctionalQueueNoConsumer` | `warning` | keep |  |
 | `RabbitmqHeadMessageStale` | `critical` | keep |  |
@@ -401,7 +401,7 @@ despiertan a nadie pese a llamarse `page`.
 | `TrackingIngestionSilent` | `warning` | keep |  |
 | `TrackingPage404Spike` | `critical` | keep |  |
 
-### otros (157 — 3 ciegas)
+### otros (158 — 3 ciegas)
 
 | alertname | sev | destino hoy | firing |
 |---|---|---|---:|
@@ -448,7 +448,7 @@ despiertan a nadie pese a llamarse `page`.
 | `ConfigurationReloadFailure` | `warning` | keep |  |
 | `CorreoBridgeDespertaresPerdidos` | `warning` | keep |  |
 | `CorreoBridgeMensajesPerdidos` | `warning` | keep |  |
-| `DashProductorAusente` | `warning` | keep |  |
+| `DashProductorAusente` | `warning` | keep | 19 |
 | `DeepSeekTpSpinWaitSuspected` | `critical` | keep |  |
 | `DiskRunsOutOfSpace` | `critical` | keep |  |
 | `DiskRunsOutOfSpaceIn3Days` | `critical` | keep |  |
@@ -462,7 +462,7 @@ despiertan a nadie pese a llamarse `page`.
 | `Gx10ThermalHaltImminent` | `warning` | keep |  |
 | `HighQueueDepth` | `warning` | keep |  |
 | `IndexDBRecordsDrop` | `critical` | keep |  |
-| `InfoInhibitor` | `none` | **BLACKHOLE** | 9 |
+| `InfoInhibitor` | `none` | **BLACKHOLE** | 8 |
 | `K8sCronJobFailed` | `warning` | keep |  |
 | `KeepBackendAbsent` | `critical` | keep |  |
 | `KeepBackendNotSpread` | `warning` | keep |  |
@@ -476,6 +476,7 @@ despiertan a nadie pese a llamarse `page`.
 | `LogErrors` | `warning` | keep |  |
 | `MacBuildDiskLowOrFilling` | `critical` | keep |  |
 | `MacBuildDiskMetricStale` | `critical` | keep |  |
+| `MacBuildLivenessProbeStale` | `warning` | keep |  |
 | `MacBuildUnreachable` | `warning` | keep |  |
 | `MacBuildUnreachableOrBridgeDown` | `critical` | keep |  |
 | `MetadataCacheUtilizationIsTooHigh` | `warning` | keep |  |
@@ -514,7 +515,7 @@ despiertan a nadie pese a llamarse `page`.
 | `RowsRejectedOnIngestion` | `warning` | keep |  |
 | `S3DriveMetricsAbsent` | `critical` | keep |  |
 | `S3DriveOffline` | `critical` | keep |  |
-| `S3DriveWriteErrors` | `critical` | keep | 1 |
+| `S3DriveWriteErrors` | `critical` | keep |  |
 | `SeriesLimitDayReached` | `critical` | keep |  |
 | `SeriesLimitHourReached` | `critical` | keep |  |
 | `ServiceDown` | `critical` | keep |  |
