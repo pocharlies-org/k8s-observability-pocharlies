@@ -1,0 +1,67 @@
+# Casos del par calibrado pocharlies.vmsingle-memory (INFRA-1418), generado por
+# tests/test_infra1418_vmsingle_memory_promtool.py desde la VMRule homónima.
+# Series del propio proceso sobre un límite de 1e12 bytes: la relación es
+# anon/limite. El ratio vivo medido 16-11 con el limite de 24Gi era 0.45.
+rule_files:
+  - vmsingle-memory.rules.yaml
+evaluation_interval: 5m
+tests:
+  - interval: 5m
+    name: ratio 0.80 sostenido 25 h -> salta el margen (warning), nunca el OOM (critical)
+    input_series:
+      - series: 'process_resident_memory_anon_bytes{job="vmsingle-vm-victoria-metrics-k8s-stack",instance="10.42.6.150:8428",pod="vmsingle-vm-victoria-metrics-k8s-stack-5bbf75c989-7fhp6"}'
+        values: '800000000000x300'
+      - series: 'vm_available_memory_bytes{job="vmsingle-vm-victoria-metrics-k8s-stack",instance="10.42.6.150:8428",pod="vmsingle-vm-victoria-metrics-k8s-stack-5bbf75c989-7fhp6"}'
+        values: '1000000000000x300'
+    alert_rule_test:
+      # 0.80 cruzaba el umbral unico 0.8/5m del operador: aqui NO es critical.
+      - eval_time: 30m
+        alertname: VmsingleMemoryOOMRisk
+        exp_alerts: []
+      # ...y tampoco es warning todavia: el for es de 24 h (capacidad, no incidente).
+      - eval_time: 23h
+        alertname: VmsingleMemoryMargin
+        exp_alerts: []
+      - eval_time: 25h
+        alertname: VmsingleMemoryMargin
+        exp_alerts:
+          - exp_labels: {severity: warning, area: capacity, domain: observability, component: vmsingle, job: vmsingle-vm-victoria-metrics-k8s-stack, instance: "10.42.6.150:8428", pod: vmsingle-vm-victoria-metrics-k8s-stack-5bbf75c989-7fhp6}
+            exp_annotations:
+              summary: "vmsingle working set sits above 75% of its memory limit for a day"
+              description: "vmsingle anon RSS is at 0.80 of its container limit, sustained 24 h. This is capacity, not an incident: VictoriaMetrics fills to the limit by design and the growth tracks active series (~0.1 GiB/d measured). Do NOT rotate the limit blind — check the 7d peak vs the limit and the series trend; if the 7d peak exceeds 0.75×limit the rotation is a planned capacity task (or a cardinality review), not an emergency. Runbook: skill `infra-alert-ops`, receta vmsingle (INFRA-1418)."
+      - eval_time: 25h
+        alertname: VmsingleMemoryOOMRisk
+        exp_alerts: []
+  - interval: 5m
+    name: ratio 0.95 sostenido 10 min -> critical (riesgo real de OOMKill)
+    input_series:
+      - series: 'process_resident_memory_anon_bytes{job="vmsingle-vm-victoria-metrics-k8s-stack",instance="10.42.6.150:8428",pod="vmsingle-vm-victoria-metrics-k8s-stack-5bbf75c989-7fhp6"}'
+        values: '950000000000x4'
+      - series: 'vm_available_memory_bytes{job="vmsingle-vm-victoria-metrics-k8s-stack",instance="10.42.6.150:8428",pod="vmsingle-vm-victoria-metrics-k8s-stack-5bbf75c989-7fhp6"}'
+        values: '1000000000000x4'
+    alert_rule_test:
+      # El for corre desde la primera muestra (t=0): a los 5 min exactos ya arde.
+      - eval_time: 0m
+        alertname: VmsingleMemoryOOMRisk
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: VmsingleMemoryOOMRisk
+        exp_alerts:
+          - exp_labels: {severity: critical, area: capacity, domain: observability, component: vmsingle, job: vmsingle-vm-victoria-metrics-k8s-stack, instance: "10.42.6.150:8428", pod: vmsingle-vm-victoria-metrics-k8s-stack-5bbf75c989-7fhp6}
+            exp_annotations:
+              summary: "vmsingle is within 8% of its memory limit — OOM risk"
+              description: "vmsingle anon RSS is at 0.95 of its container limit for 5 minutes: less than 8% of margin below the cgroup limit, an OOMKill is imminent. Unlike the 0.75/24h margin alert this IS an incident: raise the limit now (victoria-metrics/values.yaml, same rotation as PR #213) and check whether a cardinality spike in active series explains the jump."
+  - interval: 5m
+    name: ratio 0.60 sostenido 25 h -> no salta nada (normalidad con el limite de 24Gi)
+    input_series:
+      - series: 'process_resident_memory_anon_bytes{job="vmsingle-vm-victoria-metrics-k8s-stack",instance="10.42.6.150:8428",pod="vmsingle-vm-victoria-metrics-k8s-stack-5bbf75c989-7fhp6"}'
+        values: '600000000000x300'
+      - series: 'vm_available_memory_bytes{job="vmsingle-vm-victoria-metrics-k8s-stack",instance="10.42.6.150:8428",pod="vmsingle-vm-victoria-metrics-k8s-stack-5bbf75c989-7fhp6"}'
+        values: '1000000000000x300'
+    alert_rule_test:
+      - eval_time: 25h
+        alertname: VmsingleMemoryMargin
+        exp_alerts: []
+      - eval_time: 25h
+        alertname: VmsingleMemoryOOMRisk
+        exp_alerts: []

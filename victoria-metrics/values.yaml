@@ -32,6 +32,19 @@ defaultRules:
     # memory avg10 0.46, sin OOM, nodo sirviendo).
     NodeMemoryMajorPagesFaults:
       create: false
+    # INFRA-1418 (causa del problema SC-5644, keep-causa critical-safety-net:
+    # 43d45ddd35): reemplazada por el par calibrado pocharlies.vmsingle-memory
+    # (manifests/rules.yaml). La regla del operador (anon/available > 0.8, for
+    # 5m) mide contra el LÍMITE del contenedor, pero VictoriaMetrics dimensiona
+    # sus caches hasta el límite por diseño: con el working set creciendo con
+    # las series activas la relación cruza 0.8 en ciclos sin fuga ni OOM — 4
+    # incidentes critical el 15-11 (SC-5634/SC-5643), 0 reinicios y 0 OOMKill
+    # en 17 días. La rotación de límite (12Gi→16Gi SC-2907, 16Gi→24Gi PR #213)
+    # habría vuelto a dispararla en ~45-60 días. Mismo patrón que
+    # NodeMemoryHighUtilization arriba: el chart permite reescribir la regla,
+    # no desdoblarla en dos alertas con umbral y `for` distintos.
+    TooHighMemoryUsage:
+      create: false
     # SC-2641 (DEPL-15279): duplicado de la casa. La condición de esta regla del
     # chart (spec > available, 15 min) es un subconjunto de KubernetesDeploymentUnavailable
     # (manifests/rules.yaml, critical), que además SÍ puede excluir las identidades
