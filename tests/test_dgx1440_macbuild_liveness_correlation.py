@@ -35,6 +35,10 @@ class MacBuildLivenessCorrelationTests(CorrelationContract, unittest.TestCase):
         # normal); al ser critical, la exclusión del safety-net por `MacBuild` hace
         # falta de verdad y test_safety_net_does_not_double_notify la comprueba.
         self.assertEqual(self.alerts["MacBuildUnreachableOrBridgeDown"], "critical")
+        # SC-5609: la sonda parada no es el Mac caído — serie ausente con awake=1 es
+        # vigilancia ciega (INFRA-849), warning como MacBuildDiskMetricStale (SC-4378),
+        # no crítico: ese era el falso positivo de SC-5442/SC-5454/SC-5455.
+        self.assertEqual(self.alerts["MacBuildLivenessProbeStale"], "warning")
 
 
 if __name__ == "__main__":
