@@ -131,17 +131,19 @@ spec:
         spec:
           restartPolicy: Never
           serviceAccountName: op-ratelimit-check
-          # atlantic (OVH, sin taint): el x86 se queda solo con LLMs y lo de casa (SC-5631).
+          # atlantic: el x86 se queda solo con LLMs y lo de casa (SC-5631). node-pool y no
+          # topology=ovh, que tambien casa con los control-plane ks5.
           nodeSelector:
-            topology: ovh
+            node-pool: ovh-heavy
           enableServiceLinks: false
-          # No-root, como onepassword-change-detector (k8s-infra): los tres contenedores
-          # comparten uid, asi op puede leer el token 0600 que deja fetch-token.
+          # No-root con el usuario propio de la imagen de op (opuser, 999): con 65532 op
+          # rechaza sus directorios de estado ("not owned by the current user", medido
+          # el 16-11). Los tres contenedores comparten uid, asi op lee el token 0600.
           securityContext:
             runAsNonRoot: true
-            runAsUser: 65532
-            runAsGroup: 65532
-            fsGroup: 65532
+            runAsUser: 999
+            runAsGroup: 999
+            fsGroup: 999
             seccompProfile:
               type: RuntimeDefault
           initContainers:

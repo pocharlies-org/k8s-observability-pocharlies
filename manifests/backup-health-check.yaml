@@ -121,9 +121,10 @@ spec:
         spec:
           restartPolicy: Never
           serviceAccountName: backup-health-check
-          # atlantic (OVH, sin taint): el x86 se queda solo con LLMs y lo de casa (SC-5631).
+          # atlantic: el x86 se queda solo con LLMs y lo de casa (SC-5631). node-pool y no
+          # topology=ovh, que tambien casa con los control-plane ks5.
           nodeSelector:
-            topology: ovh
+            node-pool: ovh-heavy
           enableServiceLinks: false
           containers:
             - name: check
