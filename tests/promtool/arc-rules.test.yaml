@@ -78,20 +78,32 @@ tests:
               description: "El controller de ARC tiene runners ephemeral en Pending sostenido 10 min (lo normal: arrancan en ~1-2 min, p95 de cola 94 s según INFRA-547). Sospechar de nodos con disco/I-O saturado (CreateContainerError, el caso 22-09 con md3 al 100 %): `kubectl get pods -n arc-runners -o wide | grep -v Running` y `kubectl describe` del pod colgado. Si coincide con nodos ks5 al límite, revisar el taint/afinidad de infra/arc.yaml."
 
   - interval: 1m
-    name: pool saturado (asignados>0 y desired==max) 15 min; con desired<max no
+    name: pool saturado (assigned>desired y desired==max) 15 min; desired<max y min==max lleno, no
     input_series:
+      # Overflow real: 17 jobs asignados, 16 runners permitidos (desired==max) →
+      # hay 1 job que no cabe y no se puede escalar → dispara.
       - series: 'gha_assigned_jobs{name="arc-k8s-l",namespace="arc-runners",organization="pocharlies-org"}'
-        values: '16x20'
+        values: '17x20'
       - series: 'gha_desired_runners{name="arc-k8s-l",namespace="arc-runners",organization="pocharlies-org"}'
         values: '16x20'
       - series: 'gha_max_runners{name="arc-k8s-l",namespace="arc-runners",organization="pocharlies-org"}'
         values: '16x20'
+      # desired < max: puede escalar, no es saturación por capacidad → no dispara.
       - series: 'gha_assigned_jobs{name="arc-openclaw-l",namespace="arc-runners",organization="pocharlies-org"}'
         values: '2x20'
       - series: 'gha_desired_runners{name="arc-openclaw-l",namespace="arc-runners",organization="pocharlies-org"}'
         values: '1x20'
       - series: 'gha_max_runners{name="arc-openclaw-l",namespace="arc-runners",organization="pocharlies-org"}'
         values: '2x20'
+      # SC-5674 (regresión): scale set min==max (atlantic, 4/4/4) lleno y caliente
+      # pero SIN jobs sobrantes (assigned == desired): deseaba antes disparar por
+      # el expr viejo `assigned>0 and desired==max`; ahora NO debe disparar.
+      - series: 'gha_assigned_jobs{name="arc-k8s-atlantic-l",namespace="arc-runners",organization="pocharlies-org"}'
+        values: '4x20'
+      - series: 'gha_desired_runners{name="arc-k8s-atlantic-l",namespace="arc-runners",organization="pocharlies-org"}'
+        values: '4x20'
+      - series: 'gha_max_runners{name="arc-k8s-atlantic-l",namespace="arc-runners",organization="pocharlies-org"}'
+        values: '4x20'
     alert_rule_test:
       - eval_time: 16m
         alertname: CIPoolSaturated
@@ -103,8 +115,8 @@ tests:
               namespace: arc-runners
               organization: pocharlies-org
             exp_annotations:
-              summary: "Pool ARC saturado: jobs asignados con desired == maxRunners"
-              description: "El scale set `arc-k8s-l` lleva 15 min con trabajos asignados y el máximo de runners deseado/permitido: la cola crece por capacidad, no por runners rotos. O bajar demanda, o subir maxRunners en infra/arc.yaml (solo con cifras del informe de cola, regla de INFRA-549)."
+              summary: "Pool ARC saturado: jobs asignados por encima de los runners permitidos"
+              description: "El scale set `arc-k8s-l` lleva 15 min con más trabajos asignados que runners permitidos (assigned > desired) y sin poder escalar (desired == maxRunners): la cola crece por capacidad, no por runners rotos. O bajar demanda, o subir maxRunners en infra/arc.yaml (solo con cifras del informe de cola, regla de INFRA-549). Un pool min==max lleno pero sin jobs sobrantes NO dispara: está caliente, no saturado."
 
   - interval: 1m
     name: exporter ciego por serie ausente (nunca nacio) dispara con el for de 15 min
