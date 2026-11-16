@@ -3190,3 +3190,41 @@ spec:
               escalarlo a 0 calla esta alerta (y `kubectl get deploy -A | grep
               {{ $labels.deployment }}` + las anotaciones dicen quién lo paró y
               por qué).
+---
+# SC-5718: el sidecar claude-rc-status (panel de estado de las sesiones RC de la
+# compañía) ha dado 3 OOM en 15 días (SC-3051, SC-5411, SC-5485) y los tres se
+# descubrieron por fallo visible. El techo está en 1Gi (k8s-paseo-pocharlies#47) y
+# el corpus de transcripts crece sin tope: esta señal avisa del llenado ANTES del
+# OOMKill. Sin filtro de namespace/pod a propósito: el servicio puede salir del
+# sts paseo (SC-5599/SC-5437) y la alerta le sigue.
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMRule
+metadata:
+  name: pocharlies-paseo-rc-status
+  namespace: monitoring
+spec:
+  groups:
+    - name: pocharlies.paseo-rc-status
+      rules:
+        - alert: ClaudeRcStatusMemoryHeadroomLow
+          expr: |
+            max by (namespace,pod) (container_memory_working_set_bytes{container="claude-rc-status"})
+            /
+            max by (namespace,pod) (container_spec_memory_limit_bytes{container="claude-rc-status"})
+            > 0.8
+          for: 30m
+          labels:
+            severity: warning
+            area: resources
+            component: claude-rc-status
+          annotations:
+            summary: "claude-rc-status por encima del 80% de su límite de memoria"
+            description: >-
+              El working set del sidecar claude-rc-status supera el 80% de su
+              límite (1Gi) de forma sostenida 30m: el OOMKill llega solo si nadie
+              actúa. Reinicio sin recrear el pod (los tmux de Paseo sobreviven,
+              viven en el contenedor paseo): skill `paseo-rc-status-runbook`,
+              comando `kubectl -n paseo exec paseo-0 -c claude-rc-status -- kill 1`.
+              Causa de fondo: el corpus de transcripts crece sin tope (~10.200 el
+              13-11); si la alerta se repite tras el reinicio, toca dimensionar la
+              rotación, no subir el techo a ciegas (SC-5718).

@@ -1,0 +1,57 @@
+# SC-5718: ClaudeRcStatusMemoryHeadroomLow (VMRule pocharlies-paseo-rc-status, promtool test rules).
+# `rules` la genera tests/test_claude_rc_status_promtool.py desde la VMRule. time() en promtool cuenta desde 0.
+rule_files:
+- claude-rc-status.rules.yaml
+evaluation_interval: 1m
+tests:
+- interval: 1m
+  name: working set creciendo hacia el 1Gi (SC-5411) -> salta a los ~82 min
+  input_series:
+  - series: container_memory_working_set_bytes{container="claude-rc-status",namespace="paseo",pod="paseo-0"}
+    values: 0+16777216x90
+  - series: container_spec_memory_limit_bytes{container="claude-rc-status",namespace="paseo",pod="paseo-0"}
+    values: 1073741824x90
+  alert_rule_test:
+  - eval_time: 80m
+    alertname: ClaudeRcStatusMemoryHeadroomLow
+    exp_alerts: []
+  - eval_time: 84m
+    alertname: ClaudeRcStatusMemoryHeadroomLow
+    exp_alerts:
+    - exp_labels:
+        severity: warning
+        area: resources
+        component: claude-rc-status
+        namespace: paseo
+        pod: paseo-0
+      exp_annotations:
+        summary: claude-rc-status por encima del 80% de su límite de memoria
+        description: 'El working set del sidecar claude-rc-status supera el 80% de
+          su límite (1Gi) de forma sostenida 30m: el OOMKill llega solo si nadie actúa.
+          Reinicio sin recrear el pod (los tmux de Paseo sobreviven, viven en el contenedor
+          paseo): skill `paseo-rc-status-runbook`, comando `kubectl -n paseo exec
+          paseo-0 -c claude-rc-status -- kill 1`. Causa de fondo: el corpus de transcripts
+          crece sin tope (~10.200 el 13-11); si la alerta se repite tras el reinicio,
+          toca dimensionar la rotación, no subir el techo a ciegas (SC-5718).'
+- interval: 1m
+  name: sano (~40% del límite, lo de hoy) -> no salta
+  input_series:
+  - series: container_memory_working_set_bytes{container="claude-rc-status",namespace="paseo",pod="paseo-0"}
+    values: 407691264x90
+  - series: container_spec_memory_limit_bytes{container="claude-rc-status",namespace="paseo",pod="paseo-0"}
+    values: 1073741824x90
+  alert_rule_test:
+  - eval_time: 88m
+    alertname: ClaudeRcStatusMemoryHeadroomLow
+    exp_alerts: []
+- interval: 1m
+  name: pico por encima del 80% que se retira antes de 30 min -> no salta
+  input_series:
+  - series: container_memory_working_set_bytes{container="claude-rc-status",namespace="paseo",pod="paseo-0"}
+    values: 0+16777216x70 407691264x20
+  - series: container_spec_memory_limit_bytes{container="claude-rc-status",namespace="paseo",pod="paseo-0"}
+    values: 1073741824x90
+  alert_rule_test:
+  - eval_time: 88m
+    alertname: ClaudeRcStatusMemoryHeadroomLow
+    exp_alerts: []
