@@ -144,7 +144,16 @@ vmsingle:
         # en consultas pesadas de vmalert/Keep). El OOM de vmsingle abre hueco de
         # ingesta -> absent() de LlmPoolCapabilityUnavailable dispara un critico
         # con el pool sano (CRIT-16462).
-        memory: 16Gi
+        # 2026-11-16 (SC-5643): 16Gi -> 24Gi. El working set ha crecido con las
+        # series activas: anon RSS 12.3 GiB sostenido, pico 7d 13.9 GiB = 0.87 del
+        # limite de 16Gi. VictoriaMetrics dimensiona sus caches a la memoria
+        # disponible (por diseno ocupa hasta el limite y suelta bajo presion),
+        # asi que la regla del operador TooHighMemoryUsage (anon/available > 0.8
+        # durante 5m) disparaba en ciclos: 4 incidentes Keep critical del 15-11
+        # (keep-causa critical-safety-net:43d45ddd35). No era fuga: 0 reinicios y
+        # 0 OOM en 17 dias. Con 24Gi el pico queda en ~0.58 del limite. Nodo con
+        # margen: ks5-cp-3 tenia 22 GiB MemAvailable (medido 16-11).
+        memory: 24Gi
     extraArgs:
       maxLabelsPerTimeseries: "200"
     # Keep metrics for 48 hours. This is intentionally expressed in hours so
