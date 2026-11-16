@@ -88,9 +88,18 @@ igual). Necesita Postgres: sin `AURORA_TEST_PG_DSN` se salta en local y **falla 
 
 ## 8. Decisiones y trampas
 
+- `2026-11-16` · SC-5736 (desde el problema SC-5518): clase de nodo «servidor de modelos» (los tres Sparks, los que
+  corren un worker vLLM residente) calibrada a disco alto: la rama `predict_linear` de `NodeRootDiskLowOrFilling` sale
+  del crítico para dgx3 y vive en `NodeModelServerDiskPredicted` (info → sin incidente en Keep, sin Request de ops-watch;
+  medido SC-5100: 84 % por pesos EN USO con 146 GiB libres). El lleno real NO se enmascara: el suelo de 100 GiB y
+  `NodeDiskPressure` siguen críticos. Y el join pasa a `* on(pod) group_left(node)` en disco y memoria: la alerta lleva
+  `node`, la firma keep-causa distingue el nodo y dgx3 y atlantic dejaron de compartir hash `464898bf77` (el falso
+  [PROBLEMA] SC-5518). Pin: `tests/promtool/node-disk.test.yaml`.
+
 - `2026-11-03` · INFRA-1135 (SC-4342): `cron-job-failed` agrupa por `[namespace, owner_name]` y su nombre lleva el
-  CronJob. ops-watch calcula la `keep-causa` de la Request como sha1 del nombre del incidente (sin su número), así que
-  la granularidad del incidente es la de la causa: con `[namespace, alertname]` los ~20 CronJobs de un namespace
+  CronJob. ops-watch calcula la `keep-causa` de la Request como sha1 del nombre del incidente (sin su número) más el
+  conjunto de tokens de alerta —alertname y recurso, y `node` desde SC-5736— (x86-host-runtime, `FIRMA_RECURSO_LABELS`),
+  así que la granularidad del incidente es la de la causa: con `[namespace, alertname]` los ~20 CronJobs de un namespace
   compartían una sola causa (medido: `9c99776a1c` bajo la que cayeron architecture-sync, memory-promotion y
   knowledge-pages). `owner_name` (el CronJob, `kube_job_owner`) llega top-level a la alerta; `job_name` (el Job, con
   sufijo de ejecución) NUNCA va al nombre: sería un número volátil en la causa. BrainIngestConsecutiveFailures no

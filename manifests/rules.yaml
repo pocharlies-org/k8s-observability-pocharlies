@@ -2394,10 +2394,13 @@ spec:
           # (tercer Spark, INFRA-690) entra igual: ningún Spark tiene alerta de
           # memoria baja (decisión de Dani, 03-10). El join con kube_pod_info
           # es porque las series de node-exporter no traen label de nodo
-          # (instance = podIP:9100).
+          # (instance = podIP:9100). Desde SC-5736 el join es `* on(pod)
+          # group_left(node)` (con la comparación entre paréntesis, la
+          # multiplicación liga más que `>` en PromQL): la alerta lleva la label
+          # `node` y la firma keep-causa de ops-watch distingue el nodo.
           expr: |
-            (100 - ((node_memory_MemAvailable_bytes{job="node-exporter"} / node_memory_MemTotal_bytes{job="node-exporter"}) * 100)) > 90
-            and on(pod)
+            ((100 - ((node_memory_MemAvailable_bytes{job="node-exporter"} / node_memory_MemTotal_bytes{job="node-exporter"}) * 100)) > 90)
+            * on(pod) group_left(node)
             kube_pod_info{namespace="monitoring", pod=~"vm-prometheus-node-exporter-.*", node!~"nvidia-dgx|gx10-ec3d|dgx3"}
           for: 15m
           labels:
@@ -2412,10 +2415,12 @@ spec:
           # mismo patrón INFRA-690 que NodeMemoryHighUtilization: el pgmajfault
           # sostenido en dgx3 es el precio de la memoria unificada con el LLM
           # residente, no degradación. El join con kube_pod_info, igual que
-          # arriba (las series de node-exporter no traen label de nodo).
+          # arriba (las series de node-exporter no traen label de nodo; SC-5736:
+          # `* on(pod) group_left(node)` para que la alerta lleve el nodo y la
+          # firma keep-causa lo distinga).
           expr: |
-            rate(node_vmstat_pgmajfault{job="node-exporter"}[5m]) > 500
-            and on(pod)
+            (rate(node_vmstat_pgmajfault{job="node-exporter"}[5m]) > 500)
+            * on(pod) group_left(node)
             kube_pod_info{namespace="monitoring", pod=~"vm-prometheus-node-exporter-.*", node!~"nvidia-dgx|gx10-ec3d|dgx3"}
           for: 15m
           labels:
@@ -2875,11 +2880,19 @@ spec:
           #   1. ubuntu, sauvage, ks5-cp-*, alphalink y atlantic: menos del 20 %
           #      libre, o al ritmo de las últimas 6 h (predict_linear) se llena en
           #      3 días;
-          #   2. dgx3: bajo 100 GiB libres (umbral absoluto), o se llena en 3 días
-          #      por predicción.
-          # El `and on(pod)` con kube_pod_info limita cada régimen a los nodos del
-          # matcher `node` (las series de node-exporter no traen label de nodo;
-          # patrón de pocharlies-node-memory).
+          #   2. dgx3 (SC-5736, 16-11): solo bajo 100 GiB libres (umbral absoluto).
+          #      La rama predict_linear salió del crítico: en un nodo servidor de
+          #      modelos es ruido esperado (SC-5100: 84 % por pesos en uso con 146
+          #      GiB libres y sin riesgo de desalojo) y vivía en
+          #      NodeModelServerDiskPredicted (info). El lleno real sigue cubierto:
+          #      este suelo de 100 GiB y NodeDiskPressure (disk-pressure del
+          #      kubelet) siguen siendo críticos en todos los nodos.
+          # El join `* on(pod) group_left(node)` con kube_pod_info limita cada
+          # régimen a los nodos del matcher `node` y PROPAGA la label `node` a la
+          # alerta (las series de node-exporter no traen label de nodo; patrón de
+          # pocharlies-node-memory). SC-5736: con `node` en la alerta, la firma
+          # keep-causa de ops-watch distingue el nodo — dgx3 y atlantic ya no
+          # comparten hash bajo el mismo alertname (el falso [PROBLEMA] SC-5518).
           # El 20 % fijo no vale para dgx3 (SC-3062): su disco de datos es de 916G y
           # el 27-10 medía 168 GiB libres ≈ 18 % con el nodo sano; el umbral de
           # eviction del kubelet es ~46G ≈ 5 %. Con el 20 % saltaría en falso cada
@@ -2910,7 +2923,7 @@ spec:
                   (predict_linear(node_filesystem_avail_bytes{job="node-exporter",mountpoint="/",fstype!~"tmpfs|overlay"}[6h], 3 * 86400) < 0)
                 )
               )
-              and on(pod)
+              * on(pod) group_left(node)
               kube_pod_info{namespace="monitoring", pod=~"vm-prometheus-node-exporter-.*", node=~"ubuntu|sauvage|ks5-cp-.*|alphalink|atlantic"}
             )
             or
@@ -2921,14 +2934,8 @@ spec:
                   and
                   (node_filesystem_avail_bytes{job="node-exporter",mountpoint="/",fstype!~"tmpfs|overlay"} < 107374182400)
                 )
-                or
-                (
-                  (node_filesystem_avail_bytes{job="node-exporter",mountpoint="/",fstype!~"tmpfs|overlay"} / node_filesystem_size_bytes{job="node-exporter",mountpoint="/",fstype!~"tmpfs|overlay"} * 100)
-                  and
-                  (predict_linear(node_filesystem_avail_bytes{job="node-exporter",mountpoint="/",fstype!~"tmpfs|overlay"}[6h], 3 * 86400) < 0)
-                )
               )
-              and on(pod)
+              * on(pod) group_left(node)
               kube_pod_info{namespace="monitoring", pod=~"vm-prometheus-node-exporter-.*", node="dgx3"}
             )
           for: 30m
@@ -2938,12 +2945,47 @@ spec:
           annotations:
             summary: "Disco raíz del nodo ({{ $labels.pod }}): poco espacio libre o se llena en menos de 3 días"
             description: >-
-              A / de {{ $labels.instance }} ({{ $labels.device }}) le queda el {{ printf "%.1f" $value }} % libre.
-              El nodo: `kubectl get pod -n monitoring {{ $labels.pod }} -o jsonpath='{.spec.nodeName}'`.
-              Salta con menos del 20 % libre (en dgx3, bajo 100 GiB libres) o si al ritmo de las últimas 6 h se llena en menos de 3 días.
+              A / del nodo {{ $labels.node }} ({{ $labels.instance }}, {{ $labels.device }}) le queda el {{ printf "%.1f" $value }} % libre.
+              Salta con menos del 20 % libre, o si al ritmo de las últimas 6 h se llena en menos de 3 días (en dgx3 solo el umbral absoluto de 100 GiB libres: la predicción en un nodo servidor de modelos es churn esperado, SC-5736, y vive en NodeModelServerDiskPredicted).
               Por debajo del umbral de eviction (~5 %) el kubelet entra en disk-pressure y desaloja pods (el 07-10: AdGuard, el DNS de la LAN; 18/10 y 26/10: la lane vllm de dgx3).
               Mirar qué crece (du por directorio: /var/lib/longhorn, /home, /srv, /tmp) y liberar caché.
               En sauvage lo que crece es /srv/minio/data (velero-backups, harbor-blobs, cnpg-backups); en dgx3, /srv/creative (checkpoints de entrenamiento).
+        - alert: NodeModelServerDiskPredicted
+          # SC-5736 (16-11). La rama predict_linear que dgx3 tenía en
+          # NodeRootDiskLowOrFilling abría Requests que IT cerraba como «nada
+          # que arreglar» (SC-5100: 84 % usado por pesos de modelo EN USO —
+          # sol-h3/comfyui/hf-ursu servidos por vLLM— con 146 GiB libres y sin
+          # riesgo de desalojo). En un nodo servidor de modelos las ráfagas de
+          # escritura (pesos, checkpoints, descargas) hacen saltar la predicción
+          # a 3 días como ruido del punto de operación: no es degradación, es su
+          # trabajo. Aquí vive esa rama, en info: Keep solo crea incidentes para
+          # critical o page (medido, INFRA-405) y ops-watch solo abre Request
+          # para warning|critical → sin Request, pero la señal queda visible.
+          # El lleno de verdad NO se enmascara: el suelo de 100 GiB de
+          # NodeRootDiskLowOrFilling y NodeDiskPressure (disk-pressure del
+          # kubelet) siguen críticos en estos nodos. La predicción en el resto
+          # de nodos sigue crítica (SC-5517: atlantic llenándose por el PVC
+          # paseo-home sin cuota es un problema real). Los tres Sparks entran
+          # en el matcher: nvidia-dgx y gx10-ec3d no tenían cobertura de disco
+          # y ahora la tienen, sin Request.
+          expr: |
+            (
+              (
+                (node_filesystem_avail_bytes{job="node-exporter",mountpoint="/",fstype!~"tmpfs|overlay"} / node_filesystem_size_bytes{job="node-exporter",mountpoint="/",fstype!~"tmpfs|overlay"} * 100)
+                and
+                (predict_linear(node_filesystem_avail_bytes{job="node-exporter",mountpoint="/",fstype!~"tmpfs|overlay"}[6h], 3 * 86400) < 0)
+              )
+              * on(pod) group_left(node)
+              kube_pod_info{namespace="monitoring", pod=~"vm-prometheus-node-exporter-.*", node=~"nvidia-dgx|gx10-ec3d|dgx3"}
+            )
+          for: 30m
+          labels:
+            severity: info
+            area: capacity
+          annotations:
+            summary: "Nodo servidor de modelos ({{ $labels.node }}): al ritmo de 6 h el disco raíz se llena en menos de 3 días (churn esperado, sin Request)"
+            description: >-
+              A / del nodo servidor de modelos {{ $labels.node }} ({{ $labels.instance }}) la proyección de las últimas 6 h lo deja lleno en menos de 3 días. En estos nodos (los que corren un worker vLLM residente) es churn esperado: pesos, checkpoints y descargas. No abre Request (info). Si además baja del suelo de 100 GiB libres saltará NodeRootDiskLowOrFilling (crítico), y si el kubelet entra en eviction, NodeDiskPressure.
         - alert: NodeDiskPressure
           # INFRA-849. Backstop independiente del exporter del nodo que se llena.
           # El 07-10 el node-exporter de ubuntu murió con el disco y NodeRootDiskLowOrFilling
