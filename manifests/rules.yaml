@@ -128,9 +128,22 @@ spec:
         # be declared at zero forever without paging. The reranker pool is served
         # by bge-reranker-cpu today. Do not write a Deployment name here without
         # checking it exists in the metric first.
+        # 2026-11-17 (SC-5765): zero is no longer ALWAYS wrong for the voice pair.
+        # The gpu arbiter stops stt-turbo + omnivoice-tts-nvfp4 on purpose while
+        # TP=2 restarts (DGX-899 hold), while a queue lease evicts them
+        # (INFRA-1195: the replicas belong to the lease until its release) and
+        # during the `ai` sync-pause (SC-3034). A 60-minute TP=2 restart on
+        # 2026-11-16 paged this rule for a designed stop. The arbiter — the only
+        # one who knows — publishes gpu_arbiter_resident_held per held deployment
+        # (contract dgx.gpu-arbiter.resident-held-metric.v1,
+        # dgx-infra services/dashboard/app.py); this rule subtracts exactly
+        # those series. Fail-closed by construction: metric absent (dashboard
+        # down, scrape gap) subtracts nothing and the alert still fires.
         - alert: LlmResidentScaledToZero
           expr: |
-            kube_deployment_spec_replicas{namespace="llm",deployment=~"omnivoice-audio|omnivoice-tts-nvfp4|stt-turbo|bge-m3-embedding|bge-reranker-cpu"} == 0
+            (kube_deployment_spec_replicas{namespace="llm",deployment=~"omnivoice-audio|omnivoice-tts-nvfp4|stt-turbo|bge-m3-embedding|bge-reranker-cpu"} == 0)
+            unless on(namespace, deployment)
+              max by (namespace, deployment) (gpu_arbiter_resident_held == 1)
           for: 15m
           labels:
             severity: critical
