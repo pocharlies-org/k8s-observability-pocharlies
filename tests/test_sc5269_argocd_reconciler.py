@@ -20,6 +20,10 @@ Pines (hermetic, sin kubectl ni red):
   AND: el caso residual es una app Healthy con último operationState Failed.
 * El stale-reaper (fuente de verdad: Alertmanager) queda fuera de las alertas
   argocd — su replay recalcula la huella y no empareja (SC-5269).
+* SC-5867: ninguno de los dos jobs llama a `/incidents/<id>/alerts` (en keep
+  0.52.1 fuga una transacción por llamada y agota el pool -> 500); leen las
+  alerts con `POST /alerts/query` y fallan ruidoso (exit != 0) si el fetch
+  de alerts no sale.
 """
 
 import hashlib
@@ -102,6 +106,41 @@ class TestReconciler(unittest.TestCase):
         src = self.by_kind["ConfigMap"][0]["data"]["reconcile.py"]
         self.assertIn('a.get("status") in ("firing", "acknowledged")', src)
         self.assertNotIn('if a.get("status") == "firing" and', src)
+
+
+class TestFetchSinFugaSC5867(unittest.TestCase):
+    """SC-5867: `/incidents/<id>/alerts` en keep 0.52.1 ejecuta
+    query.count()/query.all() fuera del contexto de sesión de
+    get_incident_alerts_and_links_by_incident_id (keep/api/core/db.py): cada
+    llamada deja una transacción huérfana (idle in transaction sobre
+    lastalerttoincident) que no vuelve al pool. Con pool 3+5 por worker de
+    gunicorn, 8 llamadas matan el pool y desde ahí toda petición enrutada a ese
+    worker devuelve 500 en el middleware del API key (QueuePool TimeoutError).
+    Medido 17-11-2026: el reconciliador se autosaturaba y dejó 71 incidents
+    firing 5 días terminando "Complete". `POST /alerts/query`
+    (query_last_alerts) ejecuta todo dentro de la sesión: no fuga."""
+
+    def _srcs(self):
+        r = [d for d in docs(RECONCILER) if d["kind"] == "ConfigMap"][0]["data"]["reconcile.py"]
+        p = [d for d in docs(REAPER) if d["kind"] == "ConfigMap"][0]["data"]["reaper.py"]
+        return r, p
+
+    def test_nadie_llama_al_endpoint_que_fuga(self):
+        for src in self._srcs():
+            self.assertNotIn("/incidents/{inc['id']}/alerts", src)
+            self.assertNotIn("/alerts?limit=1000", src)
+
+    def test_usan_alerts_query_agrupado(self):
+        for src in self._srcs():
+            self.assertIn("/alerts/query", src)
+            self.assertIn('"cel"', src)
+
+    def test_job_ruidoso_si_el_fetch_de_alerts_falla(self):
+        # El fallo silencioso duró 5 días: si el fetch de alerts no sale, el
+        # job sale con exit != 0 en vez de terminar Complete sin resolver.
+        for src in self._srcs():
+            self.assertIn("no puedo decidir, salgo con error", src)
+            self.assertIn("sys.exit(1)", src)
 
 
 class TestStaleReaperCedeArgocd(unittest.TestCase):

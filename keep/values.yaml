@@ -972,6 +972,15 @@ backend:
     #    nuestro; el corte está en el servidor, vía
     #    `ALTER ROLE keep SET idle_in_transaction_session_timeout='5min'`
     #    (k8s-infra-pocharlies/databases/postgres-shared/role-settings.yaml).
+    #    SC-5867 (17-11-2026): SEGUNDA ruta de la misma clase —
+    #    get_incident_alerts_and_links_by_incident_id ejecuta query.count()/all()
+    #    fuera del `with existed_or_new_session(...)` y fuga una transacción por
+    #    llamada a /incidents/<id>/alerts; el timeout del servidor corta la
+    #    transacción pero la conexión ya está checkout en el pool y no vuelve:
+    #    8 llamadas matan el pool de un worker (500 en el middleware del API
+    #    key). Los jobs propios ya no llaman a ese endpoint (leen con
+    #    POST /alerts/query, sin fuga); el uso de la UI sigue fugando despacio
+    #    y lo corta el timeout de 5 min. Fix de verdad = upstream (subir keep).
     #
     # pre-ping es obligatorio para (2): sin él, la primera reutilización de una
     # conexión que el servidor ya cortó explota en la aplicación en vez de
