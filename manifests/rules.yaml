@@ -2728,12 +2728,12 @@ spec:
               within the last 15 minutes (names in the summary). A single
               failure does not fire this alert; consecutive failures of the
               5-minute CronJob do.
-        # INFRA-364: el tope BRAIN_WINDOWS_MAX_DELETES_PER_CHAT (50) del CronJob
+        # INFRA-364: el tope BRAIN_WINDOWS_MAX_DELETES_PER_CHAT (50) del worker
         # brain-windows rechazó un borrado masivo de ventanas de un chat. El tope
         # evita el daño (incidente del 02-10-2026: ~26k ventanas borradas antes de
         # que existiera) pero ese chat no se reintenta solo: hay que leer el log
         # de la pasada («refusing mass delete») y mirar el chat. La métrica la
-        # importa la propia pasada en vmsingle (contrato
+        # importa el propio worker tras cada recálculo en vmsingle (contrato
         # metric.brain-windows.refused-deletes.v1 de k8s-socialmedia-pocharlies);
         # vale 0 en las pasadas sin rechazo. Sin `for:` a propósito: un solo
         # rechazo ya pide una persona. `namespace` va fijo para que Keep titule
@@ -2751,23 +2751,27 @@ spec:
               brain-windows rechazó un borrado masivo en la cuenta
               {{ $labels.account }} ({{ $value }} ventanas en una pasada)
             description: >-
-              The brain-windows CronJob (namespace whatsapp-mcp) refused to delete
+              The brain-windows worker (namespace whatsapp-mcp) refused to delete
               more than BRAIN_WINDOWS_MAX_DELETES_PER_CHAT windows of one chat in a
               single pass and kept them all. Find the chat in the pass log
               ("refusing mass delete") and check why its rebuilt range lost so
               many windows before allowing deletes again.
-        # INFRA-364: hombre muerto de lo anterior. Si la importación de métricas
-        # de brain-windows deja de llegar (egress, NetworkPolicy, vmsingle), la
-        # alerta de borrados rechazados queda muda sin que nadie lo note. Solo
-        # mira una serie que ya existió en las últimas 6 h: no salta antes del
-        # primer despliegue de la métrica (sin `absent`) y calla si lleva más de
-        # 6 h sin llegar nada (límite asumido; para entonces ya habrá avisado
-        # durante ~4,5 h). La pasada corre cada 30 min: 90 min sin fin de pasada
-        # son ≥ 3 pasadas perdidas.
-        - alert: BrainWindowsPassStale
+        # SC-5926 (17-11): brain-windows ya no es un CronJob de 30 min sino un
+        # worker residente que despierta con cada cambio de mensajes (NOTIFY de
+        # Postgres), así que el «fin de pasada» dejó de ser un latido: una noche
+        # sin mensajes no hay pasada y BrainWindowsPassStale habría saltado en
+        # falso; se retira. Lo que sí puede atascarse es el LLM: tras cada oleada
+        # el worker importa brain_windows_llm_stalled_seconds{account} (contrato
+        # metric.brain-windows.llm-stalled.v1 de k8s-socialmedia-pocharlies) =
+        # segundos con ventanas cerradas listas sin ningún resumen hecho (0 sin
+        # nada listo). Con el LLM parado las oleadas siguen al menos cada ~80 min
+        # (pausa hasta 1 h), de ahí last_over_time[2h]. 6 h = el tope del backoff
+        # por ventana: un resumen que tarda más es un atasco, no un reintento.
+        # Causa típica: `tooling` saturado (dgx3 en ventana creative). El worker
+        # caído lo cubre KubernetesDeploymentUnavailable.
+        - alert: BrainWindowsLlmStalled
           expr: |
-            time() - max(max_over_time(brain_windows_pass_finished_timestamp_seconds{job="brain_windows"}[6h])) > 5400
-          for: 10m
+            max by (account) (last_over_time(brain_windows_llm_stalled_seconds{job="brain_windows"}[2h])) > 21600
           labels:
             severity: warning
             area: kubernetes
@@ -2775,13 +2779,14 @@ spec:
             namespace: whatsapp-mcp
           annotations:
             summary: >-
-              brain-windows lleva {{ $value | humanizeDuration }} sin terminar una
-              pasada (o sin poder publicar sus métricas)
+              brain-windows lleva {{ $value | humanizeDuration }} sin resumir ninguna
+              ventana de la cuenta {{ $labels.account }}
             description: >-
-              No brain-windows pass has reported brain_windows_pass_finished_timestamp_seconds
-              for over 90 minutes (CronJob every 30 min in namespace whatsapp-mcp). Either the
-              passes are failing or their metrics push to vmsingle stopped; in both cases
-              BrainWindowsMassDeleteRefused cannot be trusted until it is fixed.
+              The brain-windows worker (namespace whatsapp-mcp) has had closed
+              conversation windows of this account ready for the LLM for over 6 h
+              without summarising any. Windows keep being published to Hindsight
+              (only their summaries wait). Check the worker log ("llm wave
+              summarised nothing") and the LiteLLM alias `tooling`.
 ---
 # SC-1872 (05-10-2026): la compañía pasó 6,5 h parada y nada avisó. Si el supervisor muere, nadie lo ve: esta alerta
 # sale de sus métricas (job company-supervisor, paseo/company :19911, contrato http.metrics de x86-host-runtime) y va a
