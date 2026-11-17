@@ -1946,10 +1946,13 @@ spec:
           # testigo «vmagent vivo» no basta: al arder, vmagent ya volvió; se exige que
           # el testigo lleve TODA la ventana presente (60 muestras a 30s). Sin hueco
           # reciente el increase es real; durante el hueco manda ScrapePathGap.
+          # SC-5925: esta rama es la de impacto plataforma/auxiliar (o sin etiqueta,
+          # series de antes del despliegue): la severidad sale del impacto que
+          # el workflow declara en su YAML, no del tipo de alerta.
           expr: |
             (
               sum by (workflow, tenant) (
-                increase(synapse_engine_workflow_instance_duration_seconds_count{status="failed"}[30m])
+                increase(synapse_engine_workflow_instance_duration_seconds_count{status="failed",impacto!="negocio-critico"}[30m])
               ) >= 2
             )
             and on() (min(count_over_time(vm_promscrape_active_scrapers[30m])) >= 60)
@@ -1962,7 +1965,30 @@ spec:
             description: >-
               El engine ha finalizado con error el workflow
               {{ $labels.workflow }} (tenant {{ $labels.tenant }}) al menos dos veces
-              en los últimos 30 minutos. Detalle en la UI de Synapse; el RCA lo produce Aurora.
+              en los últimos 30 minutos. Detalle en la UI de Synapse.
+        - alert: SynapseWorkflowFailed
+          # SC-5925, rama crítica: un workflow que declara `impacto: negocio-critico`
+          # (dinero, pedido o cliente, obligación legal, o lo que el cliente ve en la
+          # tienda) pagina desde el PRIMER fallo, sin el umbral de 2: critical es lo
+          # único que la lane de Aurora investiga (contrato Keep↔Aurora §6). Misma
+          # guarda de scrape que la rama warning (SC-2938).
+          expr: |
+            (
+              sum by (workflow, tenant) (
+                increase(synapse_engine_workflow_instance_duration_seconds_count{status="failed",impacto="negocio-critico"}[30m])
+              ) > 0
+            )
+            and on() (min(count_over_time(vm_promscrape_active_scrapers[30m])) >= 60)
+          for: 2m
+          labels:
+            severity: critical
+            area: synapse
+          annotations:
+            summary: "Workflow crítico de negocio fallido: {{ $labels.workflow }}"
+            description: >-
+              El engine ha finalizado con error el workflow {{ $labels.workflow }}
+              (tenant {{ $labels.tenant }}), declarado de impacto negocio-critico, en los
+              últimos 30 minutos. Detalle en la UI de Synapse; el RCA lo produce Aurora.
         - alert: SynapseWorkflowFailed
           # Pata DLQ/unroutable: la métrica del engine (alerta de arriba) no ve
           # fallos que nunca corrieron en el engine — dead-letters y publishes
@@ -1975,10 +2001,13 @@ spec:
           # tras un corte del scrape fabrica el incremento (medido 30-10 23:05Z y
           # 31-10 01:25Z con el contador plano en 6). Se exige el testigo del
           # scrape presente toda la ventana (20 muestras a 30s).
+          # SC-5925: rama de impacto plataforma/auxiliar/sin-clasificar (o sin
+          # etiqueta, series de antes del despliegue). El impacto lo resuelve el
+          # dlq-monitor de la sección `impacto` de registry.yaml de synapse.
           expr: |
             (
               sum by (tenant, kind) (
-                increase(synapse_dlq_messages_total[10m])
+                increase(synapse_dlq_messages_total{impacto!="negocio-critico"}[10m])
               ) > 0
             )
             and on() (min(count_over_time(vm_promscrape_active_scrapers[10m])) >= 20)
@@ -1989,6 +2018,23 @@ spec:
           annotations:
             summary: "Mensajes {{ $labels.kind }} de {{ $labels.tenant }} entrando en la red de seguridad"
             description: "El dlq-monitor drenó mensajes nuevos ({{ $labels.kind }}) en los últimos 10m — dead-letter o routing key sin binding. El detalle está en la tarjeta del ops-explainer y en synapse.dlq_archive."
+        - alert: SynapseWorkflowFailed
+          # SC-5925, rama crítica de la pata DLQ/unroutable: el consumidor del mensaje
+          # muerto es negocio-critico en el registro de contratos de synapse.
+          expr: |
+            (
+              sum by (tenant, kind) (
+                increase(synapse_dlq_messages_total{impacto="negocio-critico"}[10m])
+              ) > 0
+            )
+            and on() (min(count_over_time(vm_promscrape_active_scrapers[10m])) >= 20)
+          for: 1m
+          labels:
+            severity: critical
+            area: synapse
+          annotations:
+            summary: "Mensajes {{ $labels.kind }} críticos de negocio de {{ $labels.tenant }} en la red de seguridad"
+            description: "El dlq-monitor drenó mensajes nuevos ({{ $labels.kind }}) de un consumidor declarado negocio-critico en los últimos 10m — dead-letter o routing key sin binding. Detalle en la tarjeta del ops-explainer y en synapse.dlq_archive; el RCA lo produce Aurora."
         - alert: AlertmanagerWebhookDeliveryFailed
           # OJO: esta alerta CAMBIÓ DE SIGNIFICADO con el cutover a Keep.
           # `integration="webhook"` ya no es Synapse — es KEEP. O sea que esto
