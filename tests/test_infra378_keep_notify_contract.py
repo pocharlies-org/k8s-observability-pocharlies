@@ -102,21 +102,25 @@ class CronJobFailedGroupingTest(unittest.TestCase):
         self.assertNotEqual(na, nb)
         self.assertNotEqual(causa(f"CRON-1 - {na}"), causa(f"CRON-2 - {nb}"))
 
-    def test_brain_ingest_never_shares_a_jobs_fingerprint(self):
-        # BrainIngestConsecutiveFailures no lleva owner_name: su huella es el
-        # cubo «none» (comportamiento medido de Keep), nunca la de un CronJob ⇒
-        # sigue abriendo su propio incidente (el motivo de INFRA-378).
+    def test_alert_without_owner_name_never_shares_a_jobs_fingerprint(self):
+        # SC-5827: el fixture era BrainIngestConsecutiveFailures (alerta muerta
+        # con el Brain). El mecanismo sigue vivo: una alerta sin owner_name cae
+        # en el cubo «none» (comportamiento medido de Keep), nunca en la huella
+        # de un CronJob (el motivo de INFRA-378).
         criteria = rule("cron-job-failed")["groupingCriteria"]
-        brain = {"alertname": "BrainIngestConsecutiveFailures", "namespace": "skirmshop-brain-prod"}
-        self.assertEqual(fingerprint(brain, criteria), "none")
-        self.assertNotEqual(fingerprint(brain, criteria),
+        no_owner = {"alertname": "SomeAlertWithoutOwner", "namespace": "skirmshop"}
+        self.assertEqual(fingerprint(no_owner, criteria), "none")
+        self.assertNotEqual(fingerprint(no_owner, criteria),
                             fingerprint(cronjob_alert("skirmshop-brain-prod", "memory-promotion"),
                                         criteria))
 
     def test_rule_still_covers_both_alerts(self):
+        # SC-5827: BrainIngestConsecutiveFailures murio con el Brain; la regla
+        # cubre ahora K8sCronJobFailed + KeycloakRoleDriftConsecutiveFailures.
         cel = rule("cron-job-failed")["celQuery"]
         self.assertIn("K8sCronJobFailed", cel)
-        self.assertIn("BrainIngestConsecutiveFailures", cel)
+        self.assertIn("KeycloakRoleDriftConsecutiveFailures", cel)
+        self.assertNotIn("BrainIngestConsecutiveFailures", cel)
 
 
 class TelegramNotifyLanesRetiredTest(unittest.TestCase):
