@@ -425,7 +425,7 @@ despiertan a nadie pese a llamarse `page`.
 | `BrainDoorAuthFailure` | `warning` | keep |  |
 | `BrainIngestConsecutiveFailures` | `warning` | keep |  |
 | `BrainWindowsMassDeleteRefused` | `warning` | keep |  |
-| `BrainWindowsPassStale` | `warning` | keep |  |
+| `BrainWindowsLlmStalled` | `warning` | keep |  |
 | `BuildkitAmd64CacheHigh` | `critical` | keep |  |
 | `CIPoolSaturated` | `warning` | keep |  |
 | `CIQueueExporterBlind` | `warning` | keep |  |
