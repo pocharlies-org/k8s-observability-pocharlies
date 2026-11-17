@@ -830,6 +830,37 @@ backend:
                    WHERE fingerprint = '{{ steps.link-datos.results.0.2 }}'
                      AND aurora_incident_id IS NULL
 
+      # SC-5912 (SC-5806 E3): el incidente nuevo despierta la ronda de ops-watch
+      # en el supervisor de la compañía, sin esperar a su reloj. Va por el bus:
+      # gateway de Synapse /webhooks/keep (solo dentro del clúster) →
+      # webhook.keep.received → synapse-adapter-supervisor → POST /keep/incidente.
+      # La ronda relee Keep en vivo: el cuerpo solo dice qué incidente fue.
+      # El token va en las cabeceras de la CONEXIÓN `synapse_keep`
+      # (keepsvc-provisioning, desde 1Password), nunca en `with:`, que es git.
+      # `[created]` y no `updated`, medido en keep-api 0.52.1: Keep emite
+      # `updated` por cada alerta que suma al incidente
+      # (incidents_bl.__postprocess_alerts_change) y Alertmanager reenvía cada
+      # minuto, y la resolución sale también como `updated`
+      # (resolve_incident_if_require). La clausura la ve la 2.ª ronda del
+      # supervisor (a los 900 s) o la red de company-cron (3600 s).
+      - id: ops-watch-ronda
+        name: Ronda de ops-watch por incidente
+        description: >-
+          Avisa al supervisor de la compañía, por el gateway de Synapse, de cada
+          incidente nuevo, para que ops-watch abra su Request sin esperar al reloj.
+        triggers:
+          - type: incident
+            events: [created]
+        actions:
+          - name: avisar-synapse
+            provider:
+              type: webhook
+              config: "{{ providers.synapse_keep }}"
+              with:
+                body:
+                  incidente: "{{ incident.id }}"
+                  estado: "{{ incident.status }}"
+
       # Guardián de invariante: hace que una severidad fuera del vocabulario
       # canónico sea CONSULTABLE en vez de invisible. Enriquece y punto — no
       # notifica, porque con el reenvío cada minuto un aviso por alerta sería
