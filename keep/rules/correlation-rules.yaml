@@ -585,10 +585,13 @@ rules:
   # warning). La exclusión del safety-net se ensanchó a la par que esta regla (invariante
   # 1: todo lo excluido tiene regla; la de unreachable es warning y al safety-net no le
   # afecta, pero el prefijo de las dos tiene que ser el mismo).
-  # DGX-1440 añade MacBuildUnreachableOrBridgeDown (critical, sonda mac-build-liveness del
-  # x86: tailnet caído o puente iphone MCP 8815 sin responder >= 5 min): el celQuery de
-  # arriba ya la casa — misma familia, mismo prefijo MBD, mismo destinatario; por eso la
-  # exclusión del safety-net (`startsWith("MacBuild")`) tampoco cambia.
+  # DGX-1440 añade MacBuildUnreachableOrBridgeDown (critical, sonda mac-build-liveness:
+  # Mac despierto con tailnet caído o puente iphone MCP 8815 sin responder >= 5 min) y
+  # SC-5609 su hermana MacBuildLivenessProbeStale (warning, serie de vivacidad ausente
+  # con el Mac despierto: sonda muerta, no Mac caído — espejo de MacBuildDiskMetricStale):
+  # el celQuery de arriba ya las casa — misma familia, mismo prefijo MBD, mismo
+  # destinatario; por eso la exclusión del safety-net (`startsWith("MacBuild")`) tampoco
+  # cambia.
   - ruleName: mac-build-disk
     celQuery: 'name.startsWith("MacBuild")'
     sqlQuery:
@@ -605,8 +608,9 @@ rules:
     groupDescription: >-
       Disco de mac-build (Mac de compilaciones) por encima del 90 % de uso o bajo 46 GB
       libres, el emisor que lo reporta roto con el Mac respondiendo (vigilancia ciega), el
-      Mac 12 h sin responder a la sonda de x86, o el tailnet/puente iphone MCP (8815) sin
-      responder >= 5 min (DGX-1440). manifests/mac-build-disk-rules.yaml y
+      Mac 12 h sin responder a la sonda, el tailnet/puente iphone MCP (8815) sin responder
+      >= 5 min con el Mac despierto (DGX-1440), o la sonda de vivacidad sin empujar con el
+      Mac despierto (SC-5609). manifests/mac-build-disk-rules.yaml y
       manifests/mac-build-liveness-rules.yaml.
 
   # Schedule muerto (fuente `schedules` de ops-watch, SC-2459): un workflow programado
