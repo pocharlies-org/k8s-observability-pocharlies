@@ -1,0 +1,44 @@
+# Segundo prober blackbox, colocado en un nodo de CASA (SC-5606).
+#
+# Por qué existe: el blackbox-exporter principal vive en ks5-cp-1 (OVH) con
+# node-pool ks5-nvme, así que todas sus sondas miden el path desde OVH. Cuando
+# el enlace casa↔OVH degrada (SC-5549), el TCP casa→apiserver:6443 se cae al
+# relay DERP y deja de abrir, pero la sonda de OVH sigue viendo el API vivo:
+# la primera señal era el nodo NotReady, 10-15 min tarde. Esta instancia mide
+# el path REAL casa→OVH.
+#
+# hostNetwork: true a propósito. El pod usa el netns del nodo ubuntu, cuyo
+# tailscaled ya tiene los peers directos a los 3 apiservers (verificado
+# 16-11: direct 141.94.73.52/.50 y 145.239.194.168, todos por :26795). Así el
+# TCP probe sale por la misma interfaz tailscale0 que usa el kubelet de casa:
+# mide exactamente el path que se rompe, sin doble NAT de CNI.
+fullnameOverride: blackbox-exporter-casa
+
+# ubuntu es el nodo de casa siempre encendido (amd64 worker). Fijado por
+# hostname, no por topology=lan, para que el scheduler no lo pose en un Spark
+# que puede estar repotenciado o apagado.
+nodeSelector:
+  kubernetes.io/hostname: ubuntu
+
+hostNetwork: true
+dnsPolicy: ClusterFirstWithHostNet
+
+tolerations:
+  - operator: Exists
+
+config:
+  modules:
+    # Sonda TCP al puerto del API por IP de tailnet. Sin validación TLS: aquí
+    # importa si el TCP abre (el kubelet conecta igual), no el certificado.
+    tcp_connect:
+      prober: tcp
+      timeout: 5s
+      tcp:
+        preferred_ip_protocol: ip4
+
+resources:
+  requests:
+    cpu: 10m
+    memory: 32Mi
+  limits:
+    memory: 128Mi

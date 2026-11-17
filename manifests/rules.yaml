@@ -3270,3 +3270,51 @@ spec:
               Causa de fondo: el corpus de transcripts crece sin tope (~10.200 el
               13-11); si la alerta se repite tras el reinicio, toca dimensionar la
               rotación, no subir el techo a ciegas (SC-5718).
+---
+# SC-5606: detección temprana de la partición del enlace casa↔OVH.
+#
+# Causa raíz medida en SC-5549: al degradarse el enlace, el path tailscale
+# casa→control-plane cae al relay DERP-8 (Londres), el TCP a 6443 deja de abrir
+# y los kubelets de los 4 nodos de casa pierden el API a la vez → node-controller
+# los marca NotReady → Keep «Nodos degradados» critical. Los nodos están sanos.
+#
+# Esta alerta cruza dos sondas tcp_connect al mismo target (los 3 apiservers por
+# IP de tailnet): la de casa (blackbox-exporter-casa, nodo ubuntu) y la de OVH
+# (blackbox-exporter). Disuelve la ambigüedad:
+#   casa==0 AND ovh==1  => el API está vivo, pero casa no lo alcanza = PARTICIÓN.
+#   casa==0 AND ovh==0  => caída total del API (no es esto; la cubren las alertas
+#                         del propio apiserver y KubeAggregatedAPIDown).
+#
+# `for: 5m` con interval 30s: suena ~5-6 min tras romperse el TCP, ANTES de que
+# node-controller declare los nodos NotReady (gracia ~40s + reintentos + el
+# umbral de las reglas de nodo), que era la primera señal hasta ahora (10-15 min).
+# Severidad warning: la regla de correlación «home-link-partition» la agrupa en
+# UN incidente de partición y no debe subir a critical (los nodos están sanos).
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMRule
+metadata:
+  name: home-control-plane-partition
+  namespace: monitoring
+spec:
+  groups:
+    - name: home.control-plane-partition
+      rules:
+        - alert: HomeControlPlaneTCPFailing
+          expr: |
+            probe_success{job="home-control-plane-tcp"} == 0
+              and on(instance)
+            probe_success{job="ovh-control-plane-tcp"} == 1
+          for: 5m
+          labels:
+            severity: warning
+            area: availability
+            component: control-plane
+          annotations:
+            summary: "Partición del enlace casa↔OVH: el API es alcanzable desde OVH pero no desde casa"
+            description: >-
+              El TCP a {{ $labels.instance }} falla desde casa pero abre desde OVH
+              ({{ $value }}). Los nodos de casa están sanos: el path tailscale
+              casa→control-plane está relevado por DERP o el enlace degrada. NO
+              tocar los nodos. Diagnóstico: `tailscale status` en el x86 — peers
+              de ks5-cp por DERP (no `direct`) = path relevado. El incidente se
+              resuelve solo al recuperarse el enlace.
