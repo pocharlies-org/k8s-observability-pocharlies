@@ -832,7 +832,8 @@ rules:
   # warning ya abierto del mismo tenant subiría su severidad (Keep toma la máxima)
   # pero se quedaría sin RCA. `severity` siempre viene en la alerta: agrupar por una
   # etiqueta que solo llevara la rama crítica mandaría las demás al grupo `none`,
-  # común a todos los tenants (rulesengine._calc_rule_fingerprint).
+  # común a todos los tenants (rulesengine._calc_rule_fingerprint). El nombre no
+  # cambia: la clave keep-causa de ops-watch se deriva de él.
   - ruleName: synapse-workflow-failures
     celQuery: 'name == "SynapseWorkflowFailed"'
     sqlQuery:
@@ -845,7 +846,7 @@ rules:
     createOn: any
     resolveOn: all_resolved
     incidentPrefix: SYNW
-    incidentNameTemplate: "Workflows de Synapse fallando ({{ tenant }}, {{ severity }})"
+    incidentNameTemplate: "Workflows de Synapse fallando ({{ tenant }})"
     groupDescription: >-
       Workflows del engine finalizados con error. Antes lo avisaba el propio
       Synapse empujando a Alertmanager; ahora sale de sus métricas.
