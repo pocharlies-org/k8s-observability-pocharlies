@@ -1113,3 +1113,44 @@ rules:
       Diagnóstico por orden: pods de vmagent y vmsingle (OOMKilled, SC-2907),
       cola de remote-write (rca:remotewrite_pending) y logs en Loki
       (namespace="monitoring", app="vmagent").
+
+  # =========================================================================
+  # PARTICIÓN DEL ENLACE CASA↔OVH (SC-5606)
+  # =========================================================================
+  # Firma medida en SC-5549: al degradarse el enlace casa↔OVH, el path tailscale
+  # casa→control-plane cae al relay DERP y el TCP a 6443 deja de abrir. Los 4
+  # nodos de casa (nvidia-dgx, gx10-ec3d, dgx3, ubuntu) pierden el API a la vez y
+  # node-controller los declara NotReady → «Nodos degradados» critical, cuando
+  # los nodos están sanos y el incidente se resuelve solo con el enlace.
+  #
+  # El disparador es HomeControlPlaneTCPFailing (manifests/rules.yaml), que ya
+  # codifica la condición «API vivo desde OVH, inalcanzable desde casa» en su
+  # PromQL. La regla de Keep NO puede expresar «≥2 nodos de casa NotReady Y cps
+  # Ready»: su motor evalúa celQuery por alerta individual (rulesengine.py), sin
+  # contar entre alertas ni mirar el estado de otros nodos. Esa correlación vive
+  # por tanto en la expresión de la alerta, no aquí. Aquí sólo se agrupa.
+  #
+  # Severidad warning a propósito: critical-safety-net sólo captura
+  # critical/page, así que no solapa y no hay que excluir nada (INVARIANTE 1
+  # respetada: no excluimos lo que no duplicamos). groupingCriteria [] mete los
+  # 3 apiservers de una misma degradación en UN incidente, no tres.
+  - ruleName: home-link-partition
+    celQuery: 'name == "HomeControlPlaneTCPFailing"'
+    sqlQuery:
+      sql: "((name = :name_1))"
+      params:
+        name_1: HomeControlPlaneTCPFailing
+    timeframeInSeconds: 1800
+    timeUnit: minutes
+    groupingCriteria: []
+    createOn: any
+    resolveOn: all_resolved
+    incidentPrefix: PART
+    incidentNameTemplate: "Partición enlace casa↔OVH"
+    groupDescription: >-
+      El TCP casa→apiserver:6443 falla mientras el API sigue vivo desde OVH: el
+      enlace casa↔OVH degrada y el path tailscale cae al relay. Los nodos de casa
+      están SANOS — no tocarlos. Comprueba `tailscale status` en el x86 (peers de
+      ks5-cp por DERP = path relevado). Se resuelve solo al recuperarse el
+      enlace. Si además ves «Nodos degradados» con los 4 de casa a la vez y los
+      ks5-cp Ready, es la misma causa: ésta es la accionable.

@@ -5,6 +5,7 @@ resources:
   - apps/victoria-metrics.yaml
   - apps/loki.yaml
   - apps/blackbox-exporter.yaml
+  - apps/blackbox-exporter-casa.yaml
   - apps/alloy.yaml
   - apps/keep.yaml
   - apps/aurora.yaml

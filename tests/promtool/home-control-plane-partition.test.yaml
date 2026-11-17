@@ -1,0 +1,57 @@
+# SC-5606: casos de HomeControlPlaneTCPFailing (promtool test rules). `rules` la
+# genera tests/test_sc5606_home_cp_partition_promtool.py desde manifests/rules.yaml
+# (grupo home.control-plane-partition). Cruza dos sondas tcp_connect al mismo
+# target (instance): la de casa (job home-control-plane-tcp) y la de OVH (job
+# ovh-control-plane-tcp). La alerta sólo debe disparar en PARTICIÓN: casa no
+# alcanza el API pero OVH sí.
+rule_files:
+- home-control-plane-partition.rules.yaml
+evaluation_interval: 1m
+tests:
+- interval: 1m
+  name: partición (casa=0, ovh=1) dispara pasados los 5 min del for
+  input_series:
+  - series: probe_success{job="home-control-plane-tcp",instance="100.107.21.89:6443",scope="control-plane",component="apiserver",probe_from="casa"}
+    values: '0x10'
+  - series: probe_success{job="ovh-control-plane-tcp",instance="100.107.21.89:6443",scope="control-plane",component="apiserver",probe_from="ovh"}
+    values: '1x10'
+  alert_rule_test:
+  - eval_time: 4m
+    alertname: HomeControlPlaneTCPFailing
+    exp_alerts: []
+  - eval_time: 6m
+    alertname: HomeControlPlaneTCPFailing
+    exp_alerts:
+    - exp_labels:
+        severity: warning
+        area: availability
+        component: control-plane
+        job: home-control-plane-tcp
+        scope: control-plane
+        probe_from: casa
+        instance: "100.107.21.89:6443"
+      exp_annotations:
+        summary: "Partición del enlace casa↔OVH: el API es alcanzable desde OVH pero no desde casa"
+        description: "El TCP a 100.107.21.89:6443 falla desde casa pero abre desde OVH (0). Los nodos de casa están sanos: el path tailscale casa→control-plane está relevado por DERP o el enlace degrada. NO tocar los nodos. Diagnóstico: `tailscale status` en el x86 — peers de ks5-cp por DERP (no `direct`) = path relevado. El incidente se resuelve solo al recuperarse el enlace."
+- interval: 1m
+  name: "caída total (casa=0, ovh=0) NO dispara: no es una partición de enlace"
+  input_series:
+  - series: probe_success{job="home-control-plane-tcp",instance="100.107.21.89:6443",scope="control-plane",component="apiserver",probe_from="casa"}
+    values: '0x10'
+  - series: probe_success{job="ovh-control-plane-tcp",instance="100.107.21.89:6443",scope="control-plane",component="apiserver",probe_from="ovh"}
+    values: '0x10'
+  alert_rule_test:
+  - eval_time: 10m
+    alertname: HomeControlPlaneTCPFailing
+    exp_alerts: []
+- interval: 1m
+  name: sano (casa=1, ovh=1) no dispara
+  input_series:
+  - series: probe_success{job="home-control-plane-tcp",instance="100.107.21.89:6443",scope="control-plane",component="apiserver",probe_from="casa"}
+    values: '1x10'
+  - series: probe_success{job="ovh-control-plane-tcp",instance="100.107.21.89:6443",scope="control-plane",component="apiserver",probe_from="ovh"}
+    values: '1x10'
+  alert_rule_test:
+  - eval_time: 10m
+    alertname: HomeControlPlaneTCPFailing
+    exp_alerts: []
