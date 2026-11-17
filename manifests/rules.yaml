@@ -59,15 +59,29 @@ spec:
         # (head, worker, worker-dgx3 y sus variantes) y `omnivoice-tts-nvfp4`. Los
         # nombres muertos (`vllm-*`, `.*-bench`) se retiran: el sistema de benches ya
         # no existe (~/k8s/CLAUDE.md).
+        # SC-4763 (DEPL-18565): los Deployments de la ventana creative de dgx3
+        # (etiqueta dgx-infra/dgx3-window) están a 0 con la ventana cerrada y el eje
+        # dgx3 los sube a 1 al abrirla; el aprovisionador baja decenas de GB y no
+        # queda Ready hasta tenerlos en sitio (dgx3_mode.py: OPEN_TIMEOUT_S 2 h,
+        # ~30 min medidos la primera vez). Estar unavailable durante la apertura es
+        # el diseño, no una caída: disparar aquí generaba un incidente DEPL → Request
+        # IT en cada apertura de ventana (medido 06-11 07:26→07:47Z). La cobertura de
+        # una provisión de verdad colgada la pone Dgx3ProvisionStuck (dgx-infra
+        # k8s/monitoring/dgx3-provision, 2 h = presupuesto del eje agotado).
         - alert: KubernetesDeploymentUnavailable
           expr: |
             (kube_deployment_spec_replicas > kube_deployment_status_replicas_available)
               unless on(namespace, deployment)
             kube_deployment_spec_replicas{namespace="llm",deployment=~"qwen38-flash-next.*|omnivoice-tts-nvfp4"}
+              unless on(namespace, deployment)
+            kube_deployment_spec_replicas{namespace="comfyui",deployment=~"dgx3-provision|comfyui-image-cache"}
           for: 15m
           labels:
             severity: critical
             area: kubernetes
+            # INFRA-1187: la regla `deployment-degraded` de Keep agrupa por
+            # [namespace, workload]; toda alerta de la regla lleva `workload`.
+            workload: "{{ $labels.deployment }}"
           annotations:
             summary: "Deployment unavailable"
             description: "{{ $labels.namespace }}/{{ $labels.deployment }} has fewer available replicas than desired."
@@ -198,6 +212,9 @@ spec:
           labels:
             severity: critical
             area: kubernetes
+            # INFRA-1187: agrupación por workload en `deployment-degraded` (ver
+            # KubernetesDeploymentUnavailable arriba).
+            workload: "{{ $labels.statefulset }}"
           annotations:
             summary: "StatefulSet unavailable"
             description: "{{ $labels.namespace }}/{{ $labels.statefulset }} has fewer ready replicas than desired."
@@ -207,6 +224,9 @@ spec:
           labels:
             severity: warning
             area: kubernetes
+            # INFRA-1264: agrupación por workload en `workload-degraded` (ver
+            # KubernetesStatefulSetUnavailable arriba, INFRA-1187).
+            workload: "{{ $labels.daemonset }}"
           annotations:
             summary: "DaemonSet unavailable"
             description: "{{ $labels.namespace }}/{{ $labels.daemonset }} has nodes without a ready daemon pod."
@@ -778,24 +798,17 @@ spec:
           expr: |
             max by (namespace, owner_name) (
             (
-              (
-                max by (namespace, job_name) (kube_job_failed{condition="true"} == 1)
-                and on (namespace, job_name)
-                # 4 h, no 1 h. Un Job que muere por `DeadlineExceeded` lo hace
-                # EXACTAMENTE al cumplirse su activeDeadlineSeconds, asi que la
-                # ventana tiene que exceder el deadline mas largo del cluster o
-                # el fallo es estructuralmente invisible: la condicion se vuelve
-                # falsa a los segundos y NUNCA puede sostener el `for: 15m`.
-                #
-                # Paso el 16-08-2026: logical-dump-postgres-shared-weekly tenia
-                # deadline 3600, murio a T+3600 y este alerta no disparo. Diez
-                # dias sin foto semanal completa y nadie se entero.
-                #
-                # Deadline mas largo hoy: recovery-kit-to-drive, 10800 s (3 h).
-                # REGLA: al subir un activeDeadlineSeconds por encima de 4 h hay
-                # que ensanchar esta ventana en el MISMO commit.
-                max by (namespace, job_name) (kube_job_status_start_time > time() - 14400)
-              )
+              # DGX-1581 (medido el 12-11): la ventana de 4 h sobre
+              # kube_job_status_start_time dejaba de ver el fallo persistente a
+              # las 4 h del arranque del Job (litellm-fork-update fallaba de
+              # verdad y desaparecio del panel). El `unless` de abajo ya da la
+              # semantica correcta: sigue firing mientras el ultimo Job del
+              # CronJob sea el fallido. La cobertura de `DeadlineExceeded` se
+              # conserva: un Job que muere a su deadline esta failed desde ese
+              # instante y no hay ventana que lo pierda (el paso del 16-08-2026
+              # — logical-dump, deadline 3600 invisible con la ventana de 1 h —
+              # no puede repetirse).
+              max by (namespace, job_name) (kube_job_failed{condition="true"} == 1)
               * on (namespace, job_name) group_left(owner_name)
                 # SC-4414 (SC-4369): keycloak-role-drift queda fuera — su cadencia
                 # */15 casaba exacta con el `for: 15m` y un ciclo suelto de drift
@@ -904,8 +917,8 @@ spec:
         #   · su guarda de frescura mira la edad del candidato en el ORIGEN, no
         #     si la copia al DESTINO termino;
         #   · un `ls` del prefijo enseña ficheros con fecha reciente: parece sano;
-        #   · K8sCronJobFailed no lo vio por su ventana de 1 h (ya ensanchada
-        #     arriba, en el mismo commit que esto).
+        #   · K8sCronJobFailed no lo vio por su ventana de 1 h (ensanchada a 4 h
+        #     aquel día; la ventana se retiró del todo en DGX-1581).
         #
         # Estas dos alertas prueban que el Job TERMINO BIEN. Que el ARTEFACTO
         # este completo es otra cosa y NO se cubre aqui: hace falta un
@@ -1129,16 +1142,17 @@ spec:
           # bound messaging.skirmshop.draft_email — every publish was ack'd,
           # the app reported draft=queued, and the Gmail drafts never existed.
           #
-          # SKIRM-351 (C4, second cause): the sink only sees messages that were
-          # PUBLISHED. A command binding on the broker with no row in
-          # synapse.plugin_actions (a live consumer nobody registered, or a
-          # stale binding) is the same contract break in the other direction and
-          # never lands here — the engine's topology_watch (SKIRM-350) measures
-          # binding-vs-table and emits synapse_topology_drift{tenant}. Same
-          # alert, same alertmanager routing: both causes mean publisher,
-          # consumer and registry disagree. The gauge is not traffic — the
-          # drift fixture (synapse repo, scripts/ci/plugins_drift_fixture.py)
-          # proves it without publishing a single message.
+          # SKIRM-351 (C4) also ORed the topology-drift gauge into this alert.
+          # SC-4772 / SC-5206 (06-11-2026): that leg fired permanently because
+          # synapse.plugin_actions is EMPTY by design — SKIRM-207 left the real
+          # adapter migration out of scope and no plugin self-registers yet — so
+          # every command binding counted as drift (838 across 7 tenants) and the
+          # Keep rule synapse-control-plane opened a SYNC incident in every
+          # window. The drift leg now lives in its own alert
+          # SynapseTopologyDrift (severity info, gated out of Keep correlation)
+          # until the registry has a baseline; this alert keeps ONLY the
+          # unroutable-sink leg, unchanged: a message here is still a real
+          # contract break and still pages as warning.
           expr: |
             (
               rabbitmq_detailed_queue_messages_ready{
@@ -1146,18 +1160,42 @@ spec:
                 queue="synapse.unroutable"
               } > 0
             )
-            or
-            (
-              synapse_topology_drift > 0
-            )
           for: 1m
           labels:
             severity: warning
             area: messaging
             component: shared-rabbitmq
           annotations:
-            summary: "Synapse contract break: unroutable messages or topology drift"
-            description: "One alert, two causes. (1) Queue synapse.unroutable holds messages: a publisher used a routing key with no binding — inspect the payload headers (`source`, `connection_name`) and the routing key. (2) synapse_topology_drift > 0: the broker carries a command binding with no row in synapse.plugin_actions (a live consumer nobody registered, or a stale binding); the drifting tenant is in the alert's `tenant` label. Both mean publisher, consumer and registry disagree: reconcile them against libs/synapse-contracts/registry.yaml. Runbook: skill synapse-contracts."
+            summary: "Synapse contract break: unroutable messages"
+            description: "Queue synapse.unroutable holds messages: a publisher used a routing key with no binding — inspect the payload headers (`source`, `connection_name`) and the routing key, and reconcile them against libs/synapse-contracts/registry.yaml. Runbook: skill synapse-contracts."
+        - alert: SynapseTopologyDrift
+          # The other direction of the same contract break (SKIRM-351/C4): a
+          # command binding on the broker with no row in synapse.plugin_actions
+          # (a live consumer nobody registered, or a stale binding). The engine's
+          # topology_watch (SKIRM-350) measures binding-vs-table and emits
+          # synapse_topology_drift{tenant}. The gauge is not traffic — the drift
+          # fixture (synapse repo, scripts/ci/plugins_drift_fixture.py) proves it
+          # without publishing a single message.
+          #
+          # GATED TO INFO (SC-4772 / SC-5206): while synapse.plugin_actions has
+          # no baseline (SKIRM-207 has not migrated the real adapters and no
+          # plugin self-registers yet), EVERY binding reads as drift — this alert
+          # fires permanently and means nothing. It is excluded from the Keep
+          # rule synapse-control-plane so it opens no incident. When the registry
+          # gets its baseline (SKIRM-207 waves, see the calendar comment there),
+          # this alert goes back to severity warning next to
+          # SynapseUnroutableMessages: drift with a populated registry is again a
+          # real contract break.
+          expr: |
+            synapse_topology_drift > 0
+          for: 1m
+          labels:
+            severity: info
+            area: messaging
+            component: shared-rabbitmq
+          annotations:
+            summary: "Synapse topology drift (info: registry has no baseline yet)"
+            description: "synapse_topology_drift > 0: the broker carries a command binding with no row in synapse.plugin_actions; the drifting tenant is in the alert's `tenant` label. While the registry has no baseline (SKIRM-207) this is expected permanent noise, not a fault: it opens no Keep incident. Once SKIRM-207 populates the registry, promote this alert back to severity warning. Runbook: skill synapse-contracts."
         - alert: RabbitmqFunctionalQueueNoConsumer
           # A functional queue with messages waiting and zero consumers
           # attached. This is a dead handler. Buffers (which legitimately have
@@ -1217,12 +1255,28 @@ spec:
           # 11:30Z, SYNP-18488; la ventana drenó contact_sync a 0 el 04-11 y el
           # 05-11). Su señal de fallo real es
           # RabbitmqMessagingMediaBacklogAfterWindow, tras la de expenses.
+          #
+          # adapter.ops_explainer.failures EXCLUIDA (2026-11-10, SC-5125): cola
+          # sumidero terminal SIN consumidor por diseño. Su consumidor (el
+          # Deployment synapse-adapter-ops-explainer) se retiró el 02-09 (PR #114
+          # de k8s-synapse-pocharlies, auditoría 26-08); la cola se dejó viva
+          # a propósito porque es el ÚNICO binding de workflow.finalised.*.failed
+          # y sin él el dlq-monitor republicaría cada unroutable como otro
+          # `failed` → bucle (AUDITORIA-synapse-features-workers-20260826.md
+          # §2.1). Sus mensajes son basura terminal: los originales unroutable
+          # los archiva el dlq-monitor en dlq_archive y el aviso de workflow
+          # fallido lo da la VMRule sobre synapse_engine_workflow_instance_-
+          # duration_seconds_count{status="failed"} vía Keep. Gotea del engine
+          # (workflow.failure_observed/finalised) y del propio dlq-monitor
+          # (synthetic events); purgada el 10-11 (296 msgs, precedente: las 108
+          # colas sin consumidor borradas el 02-09). Si algún día vuelve a
+          # haber consumidor, esta exclusión debe retirarse.
           expr: |
             (
               max by (vhost, queue) (
                 rabbitmq_detailed_queue_consumers{
                   vhost="/synapse",
-                  queue!~"dlq\\..+|archive\\..+|adapter\\.[^.]+|adapter\\.messaging\\.(whatsapp_contact_sync|summarize_attachments|upload_topic_attachments|send_topic_photo|save_attachments|audit_correos_weights)|adapter\\.expenses(\\..+)?|synapse\\.unroutable"
+                  queue!~"dlq\\..+|archive\\..+|adapter\\.[^.]+|adapter\\.messaging\\.(whatsapp_contact_sync|summarize_attachments|upload_topic_attachments|send_topic_photo|save_attachments|audit_correos_weights)|adapter\\.expenses(\\..+)?|synapse\\.unroutable|adapter\\.ops_explainer\\.failures"
 
                 }
               ) == 0
@@ -1232,7 +1286,7 @@ spec:
               max by (vhost, queue) (
                 rabbitmq_detailed_queue_messages_ready{
                   vhost="/synapse",
-                  queue!~"dlq\\..+|archive\\..+|adapter\\.[^.]+|adapter\\.messaging\\.(whatsapp_contact_sync|summarize_attachments|upload_topic_attachments|send_topic_photo|save_attachments|audit_correos_weights)|adapter\\.expenses(\\..+)?|synapse\\.unroutable"
+                  queue!~"dlq\\..+|archive\\..+|adapter\\.[^.]+|adapter\\.messaging\\.(whatsapp_contact_sync|summarize_attachments|upload_topic_attachments|send_topic_photo|save_attachments|audit_correos_weights)|adapter\\.expenses(\\..+)?|synapse\\.unroutable|adapter\\.ops_explainer\\.failures"
 
                 }
               ) > 0
@@ -2340,10 +2394,13 @@ spec:
           # (tercer Spark, INFRA-690) entra igual: ningún Spark tiene alerta de
           # memoria baja (decisión de Dani, 03-10). El join con kube_pod_info
           # es porque las series de node-exporter no traen label de nodo
-          # (instance = podIP:9100).
+          # (instance = podIP:9100). Desde SC-5736 el join es `* on(pod)
+          # group_left(node)` (con la comparación entre paréntesis, la
+          # multiplicación liga más que `>` en PromQL): la alerta lleva la label
+          # `node` y la firma keep-causa de ops-watch distingue el nodo.
           expr: |
-            (100 - ((node_memory_MemAvailable_bytes{job="node-exporter"} / node_memory_MemTotal_bytes{job="node-exporter"}) * 100)) > 90
-            and on(pod)
+            ((100 - ((node_memory_MemAvailable_bytes{job="node-exporter"} / node_memory_MemTotal_bytes{job="node-exporter"}) * 100)) > 90)
+            * on(pod) group_left(node)
             kube_pod_info{namespace="monitoring", pod=~"vm-prometheus-node-exporter-.*", node!~"nvidia-dgx|gx10-ec3d|dgx3"}
           for: 15m
           labels:
@@ -2352,6 +2409,26 @@ spec:
           annotations:
             summary: "Host is running out of memory"
             description: "Memory is filling up at {{ $labels.pod }}, has been above 90% for the last 15 minutes, is currently at {{ printf \"%.2f\" $value }}%. Sparks (nvidia-dgx/gx10-ec3d/dgx3) are excluded by design while the llm-tp profile is resident — check the gpu-arbiter CM before assuming drift."
+        - alert: NodeMemoryMajorPagesFaults
+          # Copia de la regla homónima del chart (desactivada en
+          # victoria-metrics/values.yaml, SC-5400) con los Sparks excluidos,
+          # mismo patrón INFRA-690 que NodeMemoryHighUtilization: el pgmajfault
+          # sostenido en dgx3 es el precio de la memoria unificada con el LLM
+          # residente, no degradación. El join con kube_pod_info, igual que
+          # arriba (las series de node-exporter no traen label de nodo; SC-5736:
+          # `* on(pod) group_left(node)` para que la alerta lleve el nodo y la
+          # firma keep-causa lo distinga).
+          expr: |
+            (rate(node_vmstat_pgmajfault{job="node-exporter"}[5m]) > 500)
+            * on(pod) group_left(node)
+            kube_pod_info{namespace="monitoring", pod=~"vm-prometheus-node-exporter-.*", node!~"nvidia-dgx|gx10-ec3d|dgx3"}
+          for: 15m
+          labels:
+            severity: warning
+            area: capacity
+          annotations:
+            summary: "Memory major page faults are occurring at very high rate"
+            description: "Memory major pages are occurring at very high rate at {{ $labels.pod }}, 500 major page faults per second for the last 15 minutes, is currently at {{ printf \"%.2f\" $value }}. Please check that there is enough memory available at this instance. Sparks (nvidia-dgx/gx10-ec3d/dgx3) are excluded by design while the llm-tp profile is resident — check the gpu-arbiter CM before assuming drift."
 
 ---
 apiVersion: operator.victoriametrics.com/v1beta1
@@ -2707,7 +2784,7 @@ spec:
               BrainWindowsMassDeleteRefused cannot be trusted until it is fixed.
 ---
 # SC-1872 (05-10-2026): la compañía pasó 6,5 h parada y nada avisó. Si el supervisor muere, nadie lo ve: esta alerta
-# sale de sus métricas (job company-supervisor, x86 :19911, contrato http.metrics de x86-host-runtime) y va a
+# sale de sus métricas (job company-supervisor, paseo/company :19911, contrato http.metrics de x86-host-runtime) y va a
 # Keep (INFRA-912 retiró el backstop-telegram), sin depender de Hermes. SC-2374 quitó el buzón y los encargos, y con ellos sus dos alertas.
 apiVersion: operator.victoriametrics.com/v1beta1
 kind: VMRule
@@ -2730,8 +2807,57 @@ spec:
           annotations:
             summary: "Compañía: el supervisor lleva 15 min sin publicar métricas"
             description: >-
-              VictoriaMetrics no recibe company_encendida del job company-supervisor (x86 :19911). Mirar
-              `systemctl --user status jira-epic-trigger` en el x86 y el target en vmagent.
+              VictoriaMetrics no recibe company_encendida del job company-supervisor (paseo/company :19911). Mirar
+              `kubectl logs -n paseo company-0 -c supervisor` y el target en vmagent.
+        # SC-5531: los canales de la compañía. Sin eventos al engine el trabajo solo avanza por el barrido; sin
+        # entregas a Hermes las preguntas a Dani no llegan. Salta cuando falla y no hay ni un éxito en la ventana.
+        - alert: CompaniaSynapseSinPublicar
+          expr: |
+            sum(increase(company_canal_total{job="company-supervisor",canal="synapse",resultado="fallo"}[15m])) > 0
+            unless sum(increase(company_canal_total{job="company-supervisor",canal="synapse",resultado="ok"}[15m])) > 0
+          for: 10m
+          labels:
+            severity: critical
+            area: compania
+            component: company-synapse
+          annotations:
+            summary: "Compañía: no publica eventos en Synapse"
+            description: >-
+              El supervisor lleva 25 min sin poder publicar en RabbitMQ (`synapse_adapter_company`, API de gestión
+              :15672): el engine no recibe los disparos. Mirar `kubectl logs -n paseo company-0 -c supervisor | grep
+              publicó` (el 14-11 era un 401 «Not management user»: el usuario necesita el tag management).
+        - alert: CompaniaPreguntasSinEntregar
+          expr: |
+            sum(increase(company_canal_total{job="company-supervisor",canal="hermes",resultado="fallo"}[30m])) > 0
+            unless sum(increase(company_canal_total{job="company-supervisor",canal="hermes",resultado="ok"}[30m])) > 0
+          for: 15m
+          labels:
+            severity: critical
+            area: compania
+            component: company-hermes
+          annotations:
+            summary: "Compañía: las preguntas a Dani no llegan a Telegram"
+            description: >-
+              Hermes no confirma «delivered» de ninguna pregunta de la compañía en 45 min (POST
+              hermes-api.hermes:8642/p/secretaria/api/preguntas-dani). Mirar `kubectl logs -n paseo company-0 -c
+              supervisor | grep secretaria` (el 14-11 era la NetworkPolicy hermes-api-allow-clients sin el pod company).
+        - alert: ClaudeKeySinCuentas
+          # LiteLLM cuenta `empty` cuando una key con política (o la lista `compania`) se queda sin cuenta de Claude: el
+          # cliente recibe 429 «No deployments available». Ráfagas cortas (todas al salto) caben en el `for`.
+          expr: |
+            sum(increase(litellm_claude_account_stats_total{contador="empty"}[10m])) > 20
+          for: 15m
+          labels:
+            severity: warning
+            area: compania
+            component: litellm-claude
+          annotations:
+            summary: "Claude: una key se queda sin cuentas ({{ $value | humanize }} rechazos en 10 min)"
+            description: >-
+              El session_router de LiteLLM no encuentra cuenta de Claude para una key: sus peticiones reciben 429.
+              Mirar `kubectl logs -n litellm deploy/litellm -c litellm | grep "no tiene cuentas"` para la key, y
+              `claude_accounts` en /api/model-routing/config del dashboard (el 14-11, el x86 publicado bajo el alias
+              viejo `claude-x86`).
 
 ---
 apiVersion: operator.victoriametrics.com/v1beta1
@@ -2754,11 +2880,19 @@ spec:
           #   1. ubuntu, sauvage, ks5-cp-*, alphalink y atlantic: menos del 20 %
           #      libre, o al ritmo de las últimas 6 h (predict_linear) se llena en
           #      3 días;
-          #   2. dgx3: bajo 100 GiB libres (umbral absoluto), o se llena en 3 días
-          #      por predicción.
-          # El `and on(pod)` con kube_pod_info limita cada régimen a los nodos del
-          # matcher `node` (las series de node-exporter no traen label de nodo;
-          # patrón de pocharlies-node-memory).
+          #   2. dgx3 (SC-5736, 16-11): solo bajo 100 GiB libres (umbral absoluto).
+          #      La rama predict_linear salió del crítico: en un nodo servidor de
+          #      modelos es ruido esperado (SC-5100: 84 % por pesos en uso con 146
+          #      GiB libres y sin riesgo de desalojo) y vivía en
+          #      NodeModelServerDiskPredicted (info). El lleno real sigue cubierto:
+          #      este suelo de 100 GiB y NodeDiskPressure (disk-pressure del
+          #      kubelet) siguen siendo críticos en todos los nodos.
+          # El join `* on(pod) group_left(node)` con kube_pod_info limita cada
+          # régimen a los nodos del matcher `node` y PROPAGA la label `node` a la
+          # alerta (las series de node-exporter no traen label de nodo; patrón de
+          # pocharlies-node-memory). SC-5736: con `node` en la alerta, la firma
+          # keep-causa de ops-watch distingue el nodo — dgx3 y atlantic ya no
+          # comparten hash bajo el mismo alertname (el falso [PROBLEMA] SC-5518).
           # El 20 % fijo no vale para dgx3 (SC-3062): su disco de datos es de 916G y
           # el 27-10 medía 168 GiB libres ≈ 18 % con el nodo sano; el umbral de
           # eviction del kubelet es ~46G ≈ 5 %. Con el 20 % saltaría en falso cada
@@ -2789,7 +2923,7 @@ spec:
                   (predict_linear(node_filesystem_avail_bytes{job="node-exporter",mountpoint="/",fstype!~"tmpfs|overlay"}[6h], 3 * 86400) < 0)
                 )
               )
-              and on(pod)
+              * on(pod) group_left(node)
               kube_pod_info{namespace="monitoring", pod=~"vm-prometheus-node-exporter-.*", node=~"ubuntu|sauvage|ks5-cp-.*|alphalink|atlantic"}
             )
             or
@@ -2800,14 +2934,8 @@ spec:
                   and
                   (node_filesystem_avail_bytes{job="node-exporter",mountpoint="/",fstype!~"tmpfs|overlay"} < 107374182400)
                 )
-                or
-                (
-                  (node_filesystem_avail_bytes{job="node-exporter",mountpoint="/",fstype!~"tmpfs|overlay"} / node_filesystem_size_bytes{job="node-exporter",mountpoint="/",fstype!~"tmpfs|overlay"} * 100)
-                  and
-                  (predict_linear(node_filesystem_avail_bytes{job="node-exporter",mountpoint="/",fstype!~"tmpfs|overlay"}[6h], 3 * 86400) < 0)
-                )
               )
-              and on(pod)
+              * on(pod) group_left(node)
               kube_pod_info{namespace="monitoring", pod=~"vm-prometheus-node-exporter-.*", node="dgx3"}
             )
           for: 30m
@@ -2817,12 +2945,47 @@ spec:
           annotations:
             summary: "Disco raíz del nodo ({{ $labels.pod }}): poco espacio libre o se llena en menos de 3 días"
             description: >-
-              A / de {{ $labels.instance }} ({{ $labels.device }}) le queda el {{ printf "%.1f" $value }} % libre.
-              El nodo: `kubectl get pod -n monitoring {{ $labels.pod }} -o jsonpath='{.spec.nodeName}'`.
-              Salta con menos del 20 % libre (en dgx3, bajo 100 GiB libres) o si al ritmo de las últimas 6 h se llena en menos de 3 días.
+              A / del nodo {{ $labels.node }} ({{ $labels.instance }}, {{ $labels.device }}) le queda el {{ printf "%.1f" $value }} % libre.
+              Salta con menos del 20 % libre, o si al ritmo de las últimas 6 h se llena en menos de 3 días (en dgx3 solo el umbral absoluto de 100 GiB libres: la predicción en un nodo servidor de modelos es churn esperado, SC-5736, y vive en NodeModelServerDiskPredicted).
               Por debajo del umbral de eviction (~5 %) el kubelet entra en disk-pressure y desaloja pods (el 07-10: AdGuard, el DNS de la LAN; 18/10 y 26/10: la lane vllm de dgx3).
               Mirar qué crece (du por directorio: /var/lib/longhorn, /home, /srv, /tmp) y liberar caché.
               En sauvage lo que crece es /srv/minio/data (velero-backups, harbor-blobs, cnpg-backups); en dgx3, /srv/creative (checkpoints de entrenamiento).
+        - alert: NodeModelServerDiskPredicted
+          # SC-5736 (16-11). La rama predict_linear que dgx3 tenía en
+          # NodeRootDiskLowOrFilling abría Requests que IT cerraba como «nada
+          # que arreglar» (SC-5100: 84 % usado por pesos de modelo EN USO —
+          # sol-h3/comfyui/hf-ursu servidos por vLLM— con 146 GiB libres y sin
+          # riesgo de desalojo). En un nodo servidor de modelos las ráfagas de
+          # escritura (pesos, checkpoints, descargas) hacen saltar la predicción
+          # a 3 días como ruido del punto de operación: no es degradación, es su
+          # trabajo. Aquí vive esa rama, en info: Keep solo crea incidentes para
+          # critical o page (medido, INFRA-405) y ops-watch solo abre Request
+          # para warning|critical → sin Request, pero la señal queda visible.
+          # El lleno de verdad NO se enmascara: el suelo de 100 GiB de
+          # NodeRootDiskLowOrFilling y NodeDiskPressure (disk-pressure del
+          # kubelet) siguen críticos en estos nodos. La predicción en el resto
+          # de nodos sigue crítica (SC-5517: atlantic llenándose por el PVC
+          # paseo-home sin cuota es un problema real). Los tres Sparks entran
+          # en el matcher: nvidia-dgx y gx10-ec3d no tenían cobertura de disco
+          # y ahora la tienen, sin Request.
+          expr: |
+            (
+              (
+                (node_filesystem_avail_bytes{job="node-exporter",mountpoint="/",fstype!~"tmpfs|overlay"} / node_filesystem_size_bytes{job="node-exporter",mountpoint="/",fstype!~"tmpfs|overlay"} * 100)
+                and
+                (predict_linear(node_filesystem_avail_bytes{job="node-exporter",mountpoint="/",fstype!~"tmpfs|overlay"}[6h], 3 * 86400) < 0)
+              )
+              * on(pod) group_left(node)
+              kube_pod_info{namespace="monitoring", pod=~"vm-prometheus-node-exporter-.*", node=~"nvidia-dgx|gx10-ec3d|dgx3"}
+            )
+          for: 30m
+          labels:
+            severity: info
+            area: capacity
+          annotations:
+            summary: "Nodo servidor de modelos ({{ $labels.node }}): al ritmo de 6 h el disco raíz se llena en menos de 3 días (churn esperado, sin Request)"
+            description: >-
+              A / del nodo servidor de modelos {{ $labels.node }} ({{ $labels.instance }}) la proyección de las últimas 6 h lo deja lleno en menos de 3 días. En estos nodos (los que corren un worker vLLM residente) es churn esperado: pesos, checkpoints y descargas. No abre Request (info). Si además baja del suelo de 100 GiB libres saltará NodeRootDiskLowOrFilling (crítico), y si el kubelet entra en eviction, NodeDiskPressure.
         - alert: NodeDiskPressure
           # INFRA-849. Backstop independiente del exporter del nodo que se llena.
           # El 07-10 el node-exporter de ubuntu murió con el disco y NodeRootDiskLowOrFilling
@@ -3016,3 +3179,142 @@ spec:
               /etc/synapse/credentials/ (runbook brain-cutover-consumidores). Si acabas
               de retirar una excepción de clave compartida, vuelve al runbook: el barrido
               de consumidores a 7 días no se hizo completo.
+---
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMRule
+metadata:
+  name: pocharlies-vmagent-scrape-pools
+  namespace: monitoring
+spec:
+  groups:
+    - name: pocharlies.vmagent-scrape-pools
+      rules:
+        - alert: ScrapePoolHasNoTargets
+          # Copia de la regla homónima del chart (desactivada en
+          # victoria-metrics/values.yaml) con el guard de parada a mano (patrón
+          # SC-4712, #170): un pool de un Deployment escalado a 0 réplicas no es
+          # una mala configuración, es una decisión — frigate parado el 05-11
+          # para librar la GPU al reranker/embedder (anotación
+          # `e-dani.com/parado-por`, "se levanta a petición") y libreplay-web
+          # dormido desde hace meses. Sin el guard cada parada abre un incidente
+          # MON (MON-18508: frigate + libreplay-web a la vez). `scrape_job` es
+          # `serviceScrape/<ns-del-VMServiceScrape>/<nombre>/<puerto>` (medido en
+          # vivo: el segundo tramo NO es el namespace del objetivo), así que el
+          # guard toma el nombre — que por convención de la casa coincide con el
+          # Deployment (frigate→frigate, libreplay-web→libreplay-web) — y excluye
+          # los pools cuyo Deployment tiene spec.replicas == 0. Los pools que no
+          # siguen la convención (podScrape, service ≠ deployment) siguen
+          # avisando. Con kube-state-metrics caído la derecha queda vacía y la
+          # alerta salta igual: se falla hacia avisar, nunca hacia callar. El
+          # único falso silencio posible es un Deployment homónimo parado en otro
+          # namespace; los nombres de la casa van cualificados (libreplay-web,
+          # no web) y el caso se comprueba con `kubectl get deploy -A`.
+          expr: |
+            label_replace(
+              sum(vm_promscrape_scrape_pool_targets) without (status, instance, pod) == 0,
+              "deployment", "$1", "scrape_job", "serviceScrape/[^/]+/([^/]+)/.*"
+            )
+              unless on(deployment)
+            kube_deployment_spec_replicas == 0
+          for: 30m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Vmagent tiene un scrape_pool con 0 targets configurados/descubiertos"
+            description: >-
+              Vmagent "{{ $labels.job }}" tiene el scrape_pool
+              "{{ $labels.scrape_job }}" con 0 targets descubiertos y el
+              Deployment correspondiente quiere más de 0 réplicas. Suele ser una
+              mala configuración (selector, Service borrado, VMServiceScrape
+              apuntando a un nombre que ya no existe):
+              https://docs.victoriametrics.com/victoriametrics/vmagent/#debugging-scrape-targets.
+              Si el Deployment `{{ $labels.deployment }}` debería estar parado,
+              escalarlo a 0 calla esta alerta (y `kubectl get deploy -A | grep
+              {{ $labels.deployment }}` + las anotaciones dicen quién lo paró y
+              por qué).
+---
+# SC-5718: el sidecar claude-rc-status (panel de estado de las sesiones RC de la
+# compañía) ha dado 3 OOM en 15 días (SC-3051, SC-5411, SC-5485) y los tres se
+# descubrieron por fallo visible. El techo está en 1Gi (k8s-paseo-pocharlies#47) y
+# el corpus de transcripts crece sin tope: esta señal avisa del llenado ANTES del
+# OOMKill. Sin filtro de namespace/pod a propósito: el servicio puede salir del
+# sts paseo (SC-5599/SC-5437) y la alerta le sigue.
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMRule
+metadata:
+  name: pocharlies-paseo-rc-status
+  namespace: monitoring
+spec:
+  groups:
+    - name: pocharlies.paseo-rc-status
+      rules:
+        - alert: ClaudeRcStatusMemoryHeadroomLow
+          expr: |
+            max by (namespace,pod) (container_memory_working_set_bytes{container="claude-rc-status"})
+            /
+            max by (namespace,pod) (container_spec_memory_limit_bytes{container="claude-rc-status"})
+            > 0.8
+          for: 30m
+          labels:
+            severity: warning
+            area: resources
+            component: claude-rc-status
+          annotations:
+            summary: "claude-rc-status por encima del 80% de su límite de memoria"
+            description: >-
+              El working set del sidecar claude-rc-status supera el 80% de su
+              límite (1Gi) de forma sostenida 30m: el OOMKill llega solo si nadie
+              actúa. Reinicio sin recrear el pod (los tmux de Paseo sobreviven,
+              viven en el contenedor paseo): skill `paseo-rc-status-runbook`,
+              comando `kubectl -n paseo exec paseo-0 -c claude-rc-status -- kill 1`.
+              Causa de fondo: el corpus de transcripts crece sin tope (~10.200 el
+              13-11); si la alerta se repite tras el reinicio, toca dimensionar la
+              rotación, no subir el techo a ciegas (SC-5718).
+---
+# SC-5606: detección temprana de la partición del enlace casa↔OVH.
+#
+# Causa raíz medida en SC-5549: al degradarse el enlace, el path tailscale
+# casa→control-plane cae al relay DERP-8 (Londres), el TCP a 6443 deja de abrir
+# y los kubelets de los 4 nodos de casa pierden el API a la vez → node-controller
+# los marca NotReady → Keep «Nodos degradados» critical. Los nodos están sanos.
+#
+# Esta alerta cruza dos sondas tcp_connect al mismo target (los 3 apiservers por
+# IP de tailnet): la de casa (blackbox-exporter-casa, nodo ubuntu) y la de OVH
+# (blackbox-exporter). Disuelve la ambigüedad:
+#   casa==0 AND ovh==1  => el API está vivo, pero casa no lo alcanza = PARTICIÓN.
+#   casa==0 AND ovh==0  => caída total del API (no es esto; la cubren las alertas
+#                         del propio apiserver y KubeAggregatedAPIDown).
+#
+# `for: 5m` con interval 30s: suena ~5-6 min tras romperse el TCP, ANTES de que
+# node-controller declare los nodos NotReady (gracia ~40s + reintentos + el
+# umbral de las reglas de nodo), que era la primera señal hasta ahora (10-15 min).
+# Severidad warning: la regla de correlación «home-link-partition» la agrupa en
+# UN incidente de partición y no debe subir a critical (los nodos están sanos).
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMRule
+metadata:
+  name: home-control-plane-partition
+  namespace: monitoring
+spec:
+  groups:
+    - name: home.control-plane-partition
+      rules:
+        - alert: HomeControlPlaneTCPFailing
+          expr: |
+            probe_success{job="home-control-plane-tcp"} == 0
+              and on(instance)
+            probe_success{job="ovh-control-plane-tcp"} == 1
+          for: 5m
+          labels:
+            severity: warning
+            area: availability
+            component: control-plane
+          annotations:
+            summary: "Partición del enlace casa↔OVH: el API es alcanzable desde OVH pero no desde casa"
+            description: >-
+              El TCP a {{ $labels.instance }} falla desde casa pero abre desde OVH
+              ({{ $value }}). Los nodos de casa están sanos: el path tailscale
+              casa→control-plane está relevado por DERP o el enlace degrada. NO
+              tocar los nodos. Diagnóstico: `tailscale status` en el x86 — peers
+              de ks5-cp por DERP (no `direct`) = path relevado. El incidente se
+              resuelve solo al recuperarse el enlace.

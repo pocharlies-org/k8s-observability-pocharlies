@@ -1,0 +1,106 @@
+# INFRA-1265: casos de LonghornVolumeAttachStuck (promtool test rules). `rules` la genera
+# tests/test_infra1265_longhorn_promtool.py desde manifests/longhorn-rules.yaml.
+# `longhorn_volume_state` es un indicador por (volume, state): vale 1 sólo en el estado
+# actual — los casos reproducen esa forma tal y como la emite longhorn-manager.
+rule_files:
+  - longhorn.rules.yaml
+evaluation_interval: 1m
+tests:
+  - interval: 1m
+    name: attaching sostenido dispara pasados los 5 min del for
+    input_series:
+      - series: 'longhorn_volume_state{state="attaching",volume="pvc-aaa",pvc="harbor-redis",pvc_namespace="harbor",node="ks5-cp-1",job="longhorn-backend"}'
+        values: '1x10'
+      - series: 'longhorn_volume_state{state="attached",volume="pvc-aaa",pvc="harbor-redis",pvc_namespace="harbor",node="ks5-cp-1",job="longhorn-backend"}'
+        values: '0x10'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: LonghornVolumeAttachStuck
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: LonghornVolumeAttachStuck
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              area: storage
+              component: longhorn
+              state: attaching
+              volume: pvc-aaa
+              pvc: harbor-redis
+              pvc_namespace: harbor
+              node: ks5-cp-1
+              job: longhorn-backend
+            exp_annotations:
+              summary: >-
+                Volumen Longhorn pvc-aaa (PVC harbor/harbor-redis) lleva más de 5 min en
+                attaching hacia el nodo ks5-cp-1
+              description: >-
+                Un Volume CR de Longhorn lleva más de 5 minutos con status.state en
+                attaching: el attach/detach no avanza y los pods que lo esperan se quedan
+                en ContainerCreating/Terminating (el degradado de workload es el síntoma,
+                esta alerta es la causa). Comprobar: `kubectl -n longhorn-system get
+                volume pvc-aaa -o jsonpath='{.status.currentState}
+                {.status.robustness}'`, `kubectl get volumeattachment | grep pvc-aaa` y
+                los logs del csi-attacher y de longhorn-manager en el nodo ks5-cp-1. Si el
+                VolumeAttachment no se libera, mirar si el nodo destino está Ready. Causa
+                raíz documentada: SC-5058 (harbor-redis en ks5-cp-1, 3,5 h).
+
+  - interval: 1m
+    name: detaching sostenido dispara igual (es la otra mitad del atasco)
+    input_series:
+      - series: 'longhorn_volume_state{state="detaching",volume="pvc-bbb",pvc="whatsapp-session-data",pvc_namespace="openclaw",node="dgx",job="longhorn-backend"}'
+        values: '1x10'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: LonghornVolumeAttachStuck
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              area: storage
+              component: longhorn
+              state: detaching
+              volume: pvc-bbb
+              pvc: whatsapp-session-data
+              pvc_namespace: openclaw
+              node: dgx
+              job: longhorn-backend
+            exp_annotations:
+              summary: >-
+                Volumen Longhorn pvc-bbb (PVC openclaw/whatsapp-session-data) lleva más
+                de 5 min en detaching hacia el nodo dgx
+              description: >-
+                Un Volume CR de Longhorn lleva más de 5 minutos con status.state en
+                detaching: el attach/detach no avanza y los pods que lo esperan se quedan
+                en ContainerCreating/Terminating (el degradado de workload es el síntoma,
+                esta alerta es la causa). Comprobar: `kubectl -n longhorn-system get
+                volume pvc-bbb -o jsonpath='{.status.currentState}
+                {.status.robustness}'`, `kubectl get volumeattachment | grep pvc-bbb` y
+                los logs del csi-attacher y de longhorn-manager en el nodo dgx. Si el
+                VolumeAttachment no se libera, mirar si el nodo destino está Ready. Causa
+                raíz documentada: SC-5058 (harbor-redis en ks5-cp-1, 3,5 h).
+
+  - interval: 1m
+    name: attach normal (attaching 2 min y luego attached) no dispara
+    input_series:
+      - series: 'longhorn_volume_state{state="attaching",volume="pvc-ccc",pvc="data",pvc_namespace="app",node="atlantic",job="longhorn-backend"}'
+        values: '1 1 0 0 0 0 0 0 0 0'
+      - series: 'longhorn_volume_state{state="attached",volume="pvc-ccc",pvc="data",pvc_namespace="app",node="atlantic",job="longhorn-backend"}'
+        values: '0 0 1 1 1 1 1 1 1 1'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: LonghornVolumeAttachStuck
+        exp_alerts: []
+
+  - interval: 1m
+    name: volumen sano en attached/detached no dispara
+    input_series:
+      - series: 'longhorn_volume_state{state="attached",volume="pvc-ddd",pvc="data",pvc_namespace="app",node="x86",job="longhorn-backend"}'
+        values: '1x10'
+      - series: 'longhorn_volume_state{state="detached",volume="pvc-ddd",pvc="data",pvc_namespace="app",node="x86",job="longhorn-backend"}'
+        values: '0x10'
+      - series: 'longhorn_volume_state{state="attaching",volume="pvc-ddd",pvc="data",pvc_namespace="app",node="x86",job="longhorn-backend"}'
+        values: '0x10'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: LonghornVolumeAttachStuck
+        exp_alerts: []

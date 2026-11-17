@@ -1,0 +1,172 @@
+# INFRA-1187 + INFRA-1264: `KubePodNotReady`, `KubeContainerWaiting` y
+# `KubePodCrashLooping` con etiqueta `workload`.
+#
+# Por qué existen. La regla de correlación `deployment-degraded` (keep/rules/
+# correlation-rules.yaml) agrupa por `[namespace, workload]` para que la
+# `keep-causa` de ops-watch identifique el workload concreto (medido: con
+# `[namespace]`, el rollout de stt-turbo, el vaivén de ollaya-cpu y el sidecar
+# de nginx del ns llm cayeron los tres en `deployment-degraded:aaab90c902`;
+# SC-2641/SC-4666). Keep da huella «none» a la alerta a la que le falte
+# CUALQUIER criterio de agrupación (`rulesengine._calc_rule_fingerprint`), así
+# que la etiqueta debe llevarla TODA alerta de la regla. Las copias del chart
+# agregan `by(namespace, pod)` y no saben quién es el owner del pod: se
+# desactivan en victoria-metrics/values.yaml (`create: false`) y se reemplazan
+# aquí, igual que NodeMemoryHighUtilization con pocharlies-node-memory.
+#
+# `workload` = Deployment (join kube_pod_owner{owner_kind=ReplicaSet} →
+# kube_replicaset_owner{owner_kind=Deployment}, con el nombre del Deployment en
+# owner_name), StatefulSet, DaemonSet o Job (owner directo). Los pods cuyo
+# owner no se puede mapear (RS huérfana, owner raro) siguen disparando por la
+# rama `unless`: ninguna serie que notifica hoy se queda muda
+# (scripts/verify-notification-coverage.py).
+#
+# INFRA-1264 añade `KubePodCrashLooping` por el mismo motivo: la regla
+# `workload-degraded` agrupa por `[namespace, workload]` (dos causas distintas
+# del mismo ns compartían keep-causa y la recurrencia no era medible; SC-5033).
+#
+# La etiqueta llega a Keep como campo top-level del AlertDto (extra = allow en
+# el DTO; el criterio `owner_name` de cron-job-failed —INFRA-1135— es la
+# prueba en producción de que una etiqueta Prometheus resuelve en
+# groupingCriteria).
+---
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMRule
+metadata:
+  name: pocharlies-pod-workload
+  namespace: monitoring
+spec:
+  groups:
+    - name: pocharlies.pod-workload
+      rules:
+        # Pod → workload. Un pod tiene exactamente un owner, así que la serie es
+        # única por (namespace, pod) y vale como lado derecho de un group_left.
+        # La rama ReplicaSet necesita el salto por kube_replicaset_owner porque
+        # el owner del pod es el ReplicaSet, no el Deployment.
+        - record: kube:pod_workload:info
+          expr: |
+            max by (namespace, pod, workload) (
+              (
+                label_replace(
+                  kube_pod_owner{job="kube-state-metrics",owner_kind="ReplicaSet"},
+                  "rs", "$1", "owner_name", "(.*)"
+                )
+                * on (namespace, rs) group_left (workload)
+                label_replace(
+                  label_replace(
+                    kube_replicaset_owner{job="kube-state-metrics",owner_kind="Deployment",owner_is_controller="true"},
+                    "rs", "$1", "replicaset", "(.*)"
+                  ),
+                  "workload", "$1", "owner_name", "(.*)"
+                )
+              )
+              or
+              label_replace(
+                kube_pod_owner{job="kube-state-metrics",owner_kind=~"StatefulSet|DaemonSet|Job"},
+                "workload", "$1", "owner_name", "(.*)"
+              )
+            )
+        # Reemplazo de la regla del chart (victoria-metrics/values.yaml,
+        # INFRA-1187). Mismo expr, `for: 15m` y severidad que tenía
+        # (kubernetes-apps, targetNamespace ".*"); el join con el chart de
+        # owner_kind!="Job" se conserva tal cual: los pods sin owner y los de
+        # Job tampoco disparaban antes. La segunda rama (`unless`) mantiene
+        # disparando a los pods cuyo owner no se mapea, sin etiqueta workload.
+        # SC-4763 (DEPL-18565): los pods de la ventana creative de dgx3
+        # (dgx3-provision, comfyui-image-cache) están a 0 con la ventana cerrada y
+        # el eje dgx3 los sube a 1 al abrirla; el aprovisionador no queda Ready
+        # hasta tener los pesos en sitio (dgx3_mode.py: OPEN_TIMEOUT_S 2 h, ~30 min
+        # medidos la primera vez). Su no-Ready durante la apertura es el diseño.
+        # La cobertura de una provisión colgada de verdad la pone Dgx3ProvisionStuck
+        # (dgx-infra k8s/monitoring/dgx3-provision, 2 h).
+        - alert: KubePodNotReady
+          expr: |
+            (
+              (
+                sum by (namespace, pod) (
+                  max by (namespace, pod) (kube_pod_status_phase{job="kube-state-metrics",phase=~"Pending|Unknown"} > 0)
+                  * on (namespace, pod) group_left ()
+                  topk by (namespace, pod) (1, max by (namespace, pod, owner_kind) (kube_pod_owner{job="kube-state-metrics",owner_kind!="Job"}))
+                )
+                * on (namespace, pod) group_left (workload) kube:pod_workload:info
+              )
+              or
+              (
+                sum by (namespace, pod) (
+                  max by (namespace, pod) (kube_pod_status_phase{job="kube-state-metrics",phase=~"Pending|Unknown"} > 0)
+                  * on (namespace, pod) group_left ()
+                  topk by (namespace, pod) (1, max by (namespace, pod, owner_kind) (kube_pod_owner{job="kube-state-metrics",owner_kind!="Job"}))
+                )
+                unless on (namespace, pod) kube:pod_workload:info
+              )
+            )
+            unless on (namespace, pod)
+            kube:pod_workload:info{namespace="comfyui",workload=~"dgx3-provision|comfyui-image-cache"}
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Pod has been in a non-ready state for more than 15 minutes."
+            description: "Pod {{ $labels.namespace }}/{{ $labels.pod }} has been in a non-ready state for longer than 15 minutes."
+        # Reemplazo de la regla del chart (mismo criterio que KubePodNotReady).
+        # Conserva `reason!="CrashLoopBackOff"` y `for: 1h` del chart.
+        # SC-5575 (DEPL-19428): un pod de Job con init-containers largos deja el
+        # contenedor principal en waiting/PodInitializing durante todo el init
+        # (medido: el dump lógico de `logical-dump-postgres-shared`, init de ~2 h
+        # cada domingo; el contenedor `upload` en PodInitializing 1 h+ disparó
+        # esta alerta y la correlación deployment-degraded, con el job Complete
+        # 1/1). `PodInitializing` en un pod de Job es el diseño, no un fallo: se
+        # excluye sólo esa combinación. Los demás motivos de waiting en un job
+        # (ImagePullBackOff, CreateContainerConfigError, ...) siguen disparando,
+        # y PodInitializing >1 h en un pod que NO es de Job también (un init
+        # colgado de un Deployment sí es un fallo).
+        - alert: KubeContainerWaiting
+          expr: |
+            (
+              (
+                (kube_pod_container_status_waiting_reason{job="kube-state-metrics",reason!="CrashLoopBackOff"} > 0)
+                * on (namespace, pod) group_left (workload) kube:pod_workload:info
+              )
+              or
+              (
+                (kube_pod_container_status_waiting_reason{job="kube-state-metrics",reason!="CrashLoopBackOff"} > 0)
+                unless on (namespace, pod) kube:pod_workload:info
+              )
+            )
+            unless on (namespace, pod, container)
+            (
+              (kube_pod_container_status_waiting_reason{job="kube-state-metrics",reason="PodInitializing"} > 0)
+              * on (namespace, pod) group_left ()
+              topk by (namespace, pod) (1, kube_pod_owner{job="kube-state-metrics",owner_kind="Job"})
+            )
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            summary: "Pod container waiting longer than 1 hour"
+            description: "pod/{{ $labels.pod }} in namespace {{ $labels.namespace }} on container {{ $labels.container }} has been in waiting state for longer than 1 hour. (reason: \"{{ $labels.reason }}\")"
+        # Reemplazo de la regla del chart (victoria-metrics/values.yaml,
+        # INFRA-1264): mismo expr (`max_over_time(...[5m]) >= 1`), `for: 15m` y
+        # severidad que tenía (kubernetes-apps); el join y la rama `unless` son
+        # los de KubePodNotReady. La cubre workload-degraded, no
+        # deployment-degraded: un crashloop no es un rollout atascado.
+        - alert: KubePodCrashLooping
+          expr: |
+            (
+              (
+                max_over_time(kube_pod_container_status_waiting_reason{job="kube-state-metrics",reason="CrashLoopBackOff"}[5m]) >= 1
+              )
+              * on (namespace, pod) group_left (workload) kube:pod_workload:info
+            )
+            or
+            (
+              (
+                max_over_time(kube_pod_container_status_waiting_reason{job="kube-state-metrics",reason="CrashLoopBackOff"}[5m]) >= 1
+              )
+              unless on (namespace, pod) kube:pod_workload:info
+            )
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Pod is crash looping."
+            description: "Pod {{ $labels.namespace }}/{{ $labels.pod }} ({{ $labels.container }}) is in waiting state (reason: \"CrashLoopBackOff\")."

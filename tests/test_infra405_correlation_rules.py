@@ -6,6 +6,13 @@ Pins the rules that turn the alert families pushed by ops-watch
 * ``x86-unit-failed``     — ``X86UnitFailed``, grouped by ``unit``, 1800 s, X86U
 * ``trunk-ci-stale``      — ``TrunkCIStale``, grouped by ``repo``+``workflow``,
   1800 s, STALE (SC-2459: schedule muerto)
+* ``atlassian-token-expiry`` — ``AtlassianTokenExpiring``, grouped by
+  ``account``, 1800 s, ATLTK (INFRA-1263: token a <=7 dias de caducar; la
+  rotacion semanal no llega a tiempo — SC-5115)
+* ``claude-cuentas-renovar-fallo`` — ``ClaudeCuentasRenovarFallo``, grouped by
+  ``cuenta``, 1800 s, CCRF (SC-5262: la renovacion del login de Claude que no se
+  arregla sola; la empuja claude-cuentas-monitor, no ops-watch, y el hombre muerto
+  de la VMRule pocharlies-claude-cuentas trae el mismo nombre)
 
 (INFRA-882: CI en rojo and update-watch no longer reach Keep.)
 
@@ -55,6 +62,25 @@ X86_RULES = {
         "timeframeInSeconds": 1800,
         "incidentPrefix": "STALE",
         "nameTemplate": "Schedule muerto: {{ repo }}/{{ workflow }}",
+    },
+    "atlassian-token-expiry": {
+        # INFRA-1263: caducidad de tokens de API de Atlassian a <=7 dias (fuente
+        # `tokens-atlassian`, inventario libexec/atlassian-expiry.yaml). Agrupa por
+        # cuenta: la rotacion es por cuenta; `label` viaja en la alerta para el RCA.
+        "alert": "AtlassianTokenExpiring",
+        "groupingCriteria": ["account"],
+        "timeframeInSeconds": 1800,
+        "incidentPrefix": "ATLTK",
+        "nameTemplate": "Token de Atlassian a punto de caducar: {{ account }}",
+    },
+    "claude-cuentas-renovar-fallo": {
+        # SC-5262: renovacion del login de Claude fallida (red, HTTP, cerrojo, escritura, pasada
+        # rota) o un sitio sin pasada (hombre muerto). Agrupa por cuenta: una causa por home.
+        "alert": "ClaudeCuentasRenovarFallo",
+        "groupingCriteria": ["cuenta"],
+        "timeframeInSeconds": 1800,
+        "incidentPrefix": "CCRF",
+        "nameTemplate": "Login de Claude sin renovar: {{ cuenta }}",
     },
 }
 

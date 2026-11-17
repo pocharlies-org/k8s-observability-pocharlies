@@ -110,10 +110,13 @@ spec:
         - url: http://keep-backend.monitoring.svc.cluster.local:8080/alerts/event/prometheus
           send_resolved: true
           max_alerts: 0
-          # Explícito y holgado: Keep tarda ~5s por evento evaluando las reglas
-          # de correlación, y un batch grande tras un reinicio puede tardar más.
-          # Con el default (10s) esto entregaba contextDeadlineExceeded.
-          timeout: 30s
+          # Alineado con el procesamiento real de Keep: gunicorn atiende con
+          # --timeout 120 y una ráfaga puede pasar de 30 s evaluando las reglas
+          # de correlación (medido 12/11: 10 entregas perdidas con 30 s,
+          # INFRA-1335). 90 s = por debajo de los 120 s de gunicorn y por
+          # encima del peor caso medido. Con el default (10s) esto entregaba
+          # contextDeadlineExceeded.
+          timeout: 90s
           http_config:
             basic_auth:
               # Ambos son SecretKeySelector: en el operador de VictoriaMetrics

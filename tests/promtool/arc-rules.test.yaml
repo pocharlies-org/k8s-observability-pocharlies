@@ -78,20 +78,32 @@ tests:
               description: "El controller de ARC tiene runners ephemeral en Pending sostenido 10 min (lo normal: arrancan en ~1-2 min, p95 de cola 94 s según INFRA-547). Sospechar de nodos con disco/I-O saturado (CreateContainerError, el caso 22-09 con md3 al 100 %): `kubectl get pods -n arc-runners -o wide | grep -v Running` y `kubectl describe` del pod colgado. Si coincide con nodos ks5 al límite, revisar el taint/afinidad de infra/arc.yaml."
 
   - interval: 1m
-    name: pool saturado (asignados>0 y desired==max) 15 min; con desired<max no
+    name: pool saturado (assigned>desired y desired==max) 15 min; desired<max y min==max lleno, no
     input_series:
+      # Overflow real: 17 jobs asignados, 16 runners permitidos (desired==max) →
+      # hay 1 job que no cabe y no se puede escalar → dispara.
       - series: 'gha_assigned_jobs{name="arc-k8s-l",namespace="arc-runners",organization="pocharlies-org"}'
-        values: '16x20'
+        values: '17x20'
       - series: 'gha_desired_runners{name="arc-k8s-l",namespace="arc-runners",organization="pocharlies-org"}'
         values: '16x20'
       - series: 'gha_max_runners{name="arc-k8s-l",namespace="arc-runners",organization="pocharlies-org"}'
         values: '16x20'
+      # desired < max: puede escalar, no es saturación por capacidad → no dispara.
       - series: 'gha_assigned_jobs{name="arc-openclaw-l",namespace="arc-runners",organization="pocharlies-org"}'
         values: '2x20'
       - series: 'gha_desired_runners{name="arc-openclaw-l",namespace="arc-runners",organization="pocharlies-org"}'
         values: '1x20'
       - series: 'gha_max_runners{name="arc-openclaw-l",namespace="arc-runners",organization="pocharlies-org"}'
         values: '2x20'
+      # SC-5674 (regresión): scale set min==max (atlantic, 4/4/4) lleno y caliente
+      # pero SIN jobs sobrantes (assigned == desired): deseaba antes disparar por
+      # el expr viejo `assigned>0 and desired==max`; ahora NO debe disparar.
+      - series: 'gha_assigned_jobs{name="arc-k8s-atlantic-l",namespace="arc-runners",organization="pocharlies-org"}'
+        values: '4x20'
+      - series: 'gha_desired_runners{name="arc-k8s-atlantic-l",namespace="arc-runners",organization="pocharlies-org"}'
+        values: '4x20'
+      - series: 'gha_max_runners{name="arc-k8s-atlantic-l",namespace="arc-runners",organization="pocharlies-org"}'
+        values: '4x20'
     alert_rule_test:
       - eval_time: 16m
         alertname: CIPoolSaturated
@@ -103,8 +115,8 @@ tests:
               namespace: arc-runners
               organization: pocharlies-org
             exp_annotations:
-              summary: "Pool ARC saturado: jobs asignados con desired == maxRunners"
-              description: "El scale set `arc-k8s-l` lleva 15 min con trabajos asignados y el máximo de runners deseado/permitido: la cola crece por capacidad, no por runners rotos. O bajar demanda, o subir maxRunners en infra/arc.yaml (solo con cifras del informe de cola, regla de INFRA-549)."
+              summary: "Pool ARC saturado: jobs asignados por encima de los runners permitidos"
+              description: "El scale set `arc-k8s-l` lleva 15 min con más trabajos asignados que runners permitidos (assigned > desired) y sin poder escalar (desired == maxRunners): la cola crece por capacidad, no por runners rotos. O bajar demanda, o subir maxRunners en infra/arc.yaml (solo con cifras del informe de cola, regla de INFRA-549). Un pool min==max lleno pero sin jobs sobrantes NO dispara: está caliente, no saturado."
 
   - interval: 1m
     name: exporter ciego por serie ausente (nunca nacio) dispara con el for de 15 min
@@ -151,3 +163,69 @@ tests:
       - eval_time: 59m
         alertname: CIQueueExporterBlind
         exp_alerts: []
+
+  # INFRA-1056: pools autoalojados (runner propio no-ARC) con umbral propio.
+  - interval: 1m
+    name: pool autoalojado x86 >30min dispara su regla y NO la de ARC
+    input_series:
+      - series: 'ci_queue_oldest_queued_job_age_seconds{label="x86",pool="self-hosted",repo="repo-x"}'
+        values: '1900x10'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: CIQueueSelfHostedJobQueuedTooLong
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              area: infra
+              label: x86
+              pool: self-hosted
+              repo: repo-x
+            exp_annotations:
+              summary: "Un job espera más de 30 min a un runner autoalojado"
+              description: "El job más viejo en cola del pool autoalojado `x86` (repo `repo-x`) pasa de 30 min esperando runner. No es ARC: es un runner propio (x86, x86-hermes, …) que no coge jobs. Sospechar del host: `ssh x86 uptime` (¿reinició?), y en GitHub la lista de runners del repo https://github.com/pocharlies-org/repo-x/actions/runners (¿online?). Cola: https://github.com/pocharlies-org/repo-x/actions. Informe: `python3 scripts/ci_queue_report.py --org pocharlies-org --hours 2 --assert-self-hosted-max 1800` (k8s-gitops). Contexto: INFRA-1056."
+      # la regla ARC no debe cazar el pool autoalojado (umbral propio aparte)
+      - eval_time: 1m
+        alertname: CIQueueJobQueuedTooLong
+        exp_alerts: []
+
+  - interval: 1m
+    name: pool autoalojado x86 con cola corta (29 min) no dispara
+    input_series:
+      - series: 'ci_queue_oldest_queued_job_age_seconds{label="x86",pool="self-hosted",repo="repo-x"}'
+        values: '1700x10'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: CIQueueSelfHostedJobQueuedTooLong
+        exp_alerts: []
+
+  - interval: 1m
+    name: nexus-mac duerme; 5h no dispara ninguna (ni la de 30min, excluido)
+    input_series:
+      - series: 'ci_queue_oldest_queued_job_age_seconds{label="nexus-mac",pool="self-hosted",repo="repo-mac"}'
+        values: '18000x10'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: CIQueueNexusMacQueueStuck
+        exp_alerts: []
+      - eval_time: 1m
+        alertname: CIQueueSelfHostedJobQueuedTooLong
+        exp_alerts: []
+
+  - interval: 1m
+    name: nexus-mac >6h dispara su regla
+    input_series:
+      - series: 'ci_queue_oldest_queued_job_age_seconds{label="nexus-mac",pool="self-hosted",repo="repo-mac"}'
+        values: '25200x10'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: CIQueueNexusMacQueueStuck
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              area: infra
+              label: nexus-mac
+              pool: self-hosted
+              repo: repo-mac
+            exp_annotations:
+              summary: "Un build lleva más de 6 h esperando al nexus-mac"
+              description: "Un job del pool `nexus-mac` (repo `repo-mac`) lleva más de 6 h en cola. El Mac duerme y se despierta por WoL, así que una espera corta es normal; 6 h significa que el WoL no despierta la máquina, el mac está caído o el runner no está registrado. Mirar: WoL/ping al mac, `mac_build_*` (regla mac-build) y la lista de runners https://github.com/pocharlies-org/repo-mac/actions/runners. Contexto: INFRA-1056 (nexus-mac duerme: umbral alto a propósito)."

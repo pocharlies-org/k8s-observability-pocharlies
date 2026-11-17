@@ -5,6 +5,7 @@ resources:
   - apps/victoria-metrics.yaml
   - apps/loki.yaml
   - apps/blackbox-exporter.yaml
+  - apps/blackbox-exporter-casa.yaml
   - apps/alloy.yaml
   - apps/keep.yaml
   - apps/aurora.yaml
@@ -18,15 +19,6 @@ resources:
   - manifests/aurora-kubectl-agent.yaml
   - manifests/aurora-storage.yaml
   - manifests/aurora-frontend-models-policy.yaml
-  # SearXNG propio para Aurora con el brain como motor extra. Va fuera del chart
-  # porque aurora-oss 1.2.16 trae el settings.yml de SearXNG hardcodeado (ningún
-  # `.Values`) y el Application `aurora` tiene selfHeal: cualquier parche a su
-  # ConfigMap se revierte solo.
-  - manifests/aurora-searxng-brain.yaml
-  # Exporta las notas curadas del brain (FINDING/GOTCHA/DECISION) a la Knowledge
-  # Base de Aurora: sin esto el agente re-descubre en cada incidente trampas que
-  # llevan meses escritas.
-  - manifests/aurora-brain-kb-sync.yaml
   - keep/rules/apply-job.yaml
   # Ventana de mantenimiento diaria de las 04:00: las de Keep no tienen
   # recurrencia (start_time/end_time y punto), así que un CronJob la reprograma.
@@ -35,6 +27,12 @@ resources:
   # (el resolved de AM se pierde si Keep estaba reiniciando y el incident se queda
   # firing para siempre con resolveOn: all_resolved).
   - keep/maintenance/stale-reaper.yaml
+  # SC-5269: red de seguridad de las alertas ArgoCD→Keep. Reconcilia los incidents
+  # ArgoCDAppDegraded / ArgoCDSyncFailed firing contra el estado VIVO de la app
+  # (el resolved de ArgoCD Notifications solo sale en la transición que el
+  # controller observa; una recuperación sin sync nuevo dejaba el incidente firing
+  # para siempre — segunda ruta de SC-5203).
+  - keep/maintenance/argocd-reconciler.yaml
   # SC-1711: el WorkflowScheduler de Keep fuera de los workers gunicorn de la
   # API (la raíz del keep-hub-degraded de SC-1600). Requiere el SCHEDULER=false
   # de keep/values.yaml; juntos dejan un solo ejecutor de workflows periódicos.
@@ -42,6 +40,9 @@ resources:
   - manifests/alertmanager-config.yaml
   - manifests/probes.yaml
   - manifests/rules.yaml
+  # INFRA-1187: KubePodNotReady/KubeContainerWaiting con `workload` (reemplazo
+  # del chart) para agrupar deployment-degraded por workload.
+  - manifests/pod-workload-rules.yaml
   # INFRA-1031 (SC-3623): alerta de hueco del camino de scrape (vmagent→vmsingle)
   # y evidencia RCA de 90 días (vmsingle-rca + vmalert-rca).
   - manifests/scrape-path-rules.yaml
@@ -87,11 +88,23 @@ resources:
   # DGX-1440: vivacidad de mac-build (tailnet + puente iphone MCP 8815), series empujadas
   # cada 1 min por la sonda mac-build-liveness del x86 (x86-host-runtime libexec/).
   - manifests/mac-build-liveness-rules.yaml
+  # SC-5262: hombre muerto del monitor de cuentas de Claude (x86 y pod company-0), series
+  # empujadas al final de cada pasada por claude-cuentas-monitor (x86-host-runtime libexec/).
+  - manifests/claude-cuentas-rules.yaml
   - manifests/dgx-gpu-mem-exporter.yaml
   - manifests/kyverno-policy-exceptions.yaml
   - manifests/dgx-cluster-health-watcher.yaml
   - manifests/atlassian-mcp-probe.yaml
+  # SC-5631: los dos ultimos cron del crontab del x86 que no son de casa ni de LLM,
+  # trasladados como CronJobs (cupo 1Password -> Keep OPRateLimitHigh; salud de los
+  # backups restic -> K8sCronJobFailed). Misma cadencia y mismo contrato que en el host.
+  - manifests/op-ratelimit-check.yaml
+  - manifests/backup-health-check.yaml
   - manifests/atlassian-mcp-rules.yaml
+  # INFRA-1265 (causa de SC-5058): volumen Longhorn atascado en attaching/detaching >5 min.
+  # Se habilita directa: la serie longhorn_volume_state ya se scrapea (job longhorn-backend),
+  # así que no hay riesgo de falsa crítica por serie ausente.
+  - manifests/longhorn-rules.yaml
 
 # Las reglas de correlación se montan como fichero en el Job que las aplica, en
 # vez de duplicarse inline: keep/rules/correlation-rules.yaml sigue siendo la
@@ -101,13 +114,6 @@ configMapGenerator:
     namespace: monitoring
     files:
       - correlation-rules.yaml=keep/rules/correlation-rules.yaml
-  # El texto que el sincronizador escribe en /memory de Aurora, y que acaba
-  # inyectado entero en el system prompt del agente. Va como fichero suelto y no
-  # inline en el manifiesto porque es prosa que se itera a mano.
-  - name: aurorasvc-brain-kb-memory
-    namespace: aurora
-    files:
-      - brain-kb-memory.md=aurora/brain-kb-memory.md
 generatorOptions:
   # El Job referencia el nombre literal, sin sufijo de hash. Se recrea en cada
   # sync (hook PostSync + BeforeHookCreation), así que siempre lee la versión

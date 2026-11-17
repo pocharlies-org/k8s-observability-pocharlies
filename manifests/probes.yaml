@@ -164,3 +164,62 @@ spec:
       # business webhooks (shopify, stripe, telegram, gmail, whatsapp), so
       # dropping the probe would have left them with no edge check at all.
       - https://synapse.e-dani.com/webhooks/stripe
+---
+# Sonda TCP casa→control-plane (SC-5606). Mide el path REAL casa→OVH: el TCP a
+# 6443 sale del nodo de casa ubuntu (blackbox-exporter-casa, hostNetwork) por su
+# tailscale0, exactamente el camino que se cae al relay DERP cuando el enlace
+# degrada (SC-5549). jobName NO empieza por "k8s-" a propósito: así no casa con
+# BlackboxProbeDown (job=~"k8s-.*") y la señal de partición la da exclusivamente
+# la alerta HomeControlPlaneTCPFailing, que cruza esta serie con la de OVH.
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMProbe
+metadata:
+  name: home-control-plane-tcp
+  namespace: monitoring
+spec:
+  jobName: home-control-plane-tcp
+  interval: 30s
+  scrapeTimeout: 10s
+  module: tcp_connect
+  vmProberSpec:
+    url: blackbox-exporter-casa.monitoring.svc.cluster.local:9115
+    path: /probe
+  targets:
+    staticConfig:
+      labels:
+        scope: control-plane
+        component: apiserver
+        probe_from: casa
+      targets:
+        - 100.107.21.89:6443
+        - 100.71.117.127:6443
+        - 100.75.189.75:6443
+---
+# Referencia OVH→control-plane (SC-5606). Mismo target, sonda desde el blackbox
+# de OVH. Sirve para distinguir PARTICIÓN (OVH ve el API vivo, casa no) de
+# caída total (ninguno lo ve). La alerta HomeControlPlaneTCPFailing exige que
+# esta serie esté a 1 para disparar: si el API está caído también desde OVH, no
+# es una partición de enlace y no debe abrir el incidente «Partición».
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMProbe
+metadata:
+  name: ovh-control-plane-tcp
+  namespace: monitoring
+spec:
+  jobName: ovh-control-plane-tcp
+  interval: 30s
+  scrapeTimeout: 10s
+  module: tcp_connect
+  vmProberSpec:
+    url: blackbox-exporter.monitoring.svc.cluster.local:9115
+    path: /probe
+  targets:
+    staticConfig:
+      labels:
+        scope: control-plane
+        component: apiserver
+        probe_from: ovh
+      targets:
+        - 100.107.21.89:6443
+        - 100.71.117.127:6443
+        - 100.75.189.75:6443

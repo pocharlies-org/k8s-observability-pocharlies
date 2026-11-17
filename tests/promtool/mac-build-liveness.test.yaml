@@ -1,30 +1,40 @@
 # Casos de la VMRule pocharlies-mac-build-liveness (promtool test rules, DGX-1440).
-# Las series las empuja la sonda mac-build-liveness del x86 (timer de 1 min:
-# tailscale ping + initialize MCP por el túnel 8815), de ahí el interval. La ocurrencia
-# que las motiva: tailscaled muerto en mac-build 15 h sin aviso con los runners de
-# GitHub online (DGX-1432). Las anotaciones esperadas son las de la VMRule: si alguien
-# cambia el texto, cambia aqui tambien (se regeneran del manifiesto).
+# Las series las empuja cada 1 min la sonda mac-build-liveness (company-cron del pod
+# company-0 desde SC-5631: TCP tailnet + initialize MCP por el túnel 8815), de ahí el
+# interval. La ocurrencia que las motiva: tailscaled muerto en mac-build 15 h sin aviso
+# con los runners de GitHub online (DGX-1432). SC-5609 divide la regla: crítico sólo con
+# mac_build_awake=1 (espejo de MacBuildDiskMetricStale, SC-4378); serie ausente con el
+# Mac despierto = sonda muerta = MacBuildLivenessProbeStale (warning). Las anotaciones
+# esperadas son las de la VMRule: si alguien cambia el texto, cambia aqui tambien (se
+# regeneran del manifiesto).
 rule_files:
 - mac-build-liveness.rules.yaml
 evaluation_interval: 1m
 tests:
 - interval: 1m
-  name: sano (tailnet y puente respondiendo) -> no salta nada
+  name: sano (tailnet y puente respondiendo, Mac despierto) -> no salta nada
   input_series:
   - series: mac_build_tailnet_up{host="mac-build"}
     values: 1x12
   - series: mac_build_bridge_up{host="mac-build"}
+    values: 1x12
+  - series: mac_build_awake{host="mac-build"}
     values: 1x12
   alert_rule_test:
   - eval_time: 10m
     alertname: MacBuildUnreachableOrBridgeDown
     exp_alerts: []
+  - eval_time: 10m
+    alertname: MacBuildLivenessProbeStale
+    exp_alerts: []
 - interval: 1m
-  name: tailscaled muerto (tailnet=0, el caso del 03-11) -> salta pasados los 5 min del `for`
+  name: tailscaled muerto con el Mac despierto (tailnet=0, awake=1, el caso del 03-11) -> salta pasados los 5 min del `for`
   input_series:
   - series: mac_build_tailnet_up{host="mac-build"}
     values: 0x12
   - series: mac_build_bridge_up{host="mac-build"}
+    values: 1x12
+  - series: mac_build_awake{host="mac-build"}
     values: 1x12
   alert_rule_test:
   - eval_time: 4m
@@ -39,15 +49,17 @@ tests:
         area: monitoring
         host: mac-build
       exp_annotations:
-        summary: 'mac-build no responde por tailnet/ssh o el puente iphone MCP (8815) no responde: builds y pruebas de ux parados'
-        description: 'La sonda mac-build-liveness del x86 (timer de 1 min) lleva >= 5 min viendo mac_build_tailnet_up=0 (tailscale ping muerto — el 03-11 tailscaled murió en el Mac con los runners de GitHub aún "online": el diagnóstico es runner-online-vs-tailnet-muerto, skill `mac-ops`), mac_build_bridge_up=0 (el initialize MCP por el túnel mac-pruebas-tunnel no responde: servidor com.e-dani.iphone-mcp en el Mac, o el propio túnel), o la serie ausente (la sonda misma está muerta: `systemctl --user status mac-build-liveness.timer` en el x86). Comprobación de 1 minuto: reiniciar Tailscale en el Mac; si está apagado, encender e iniciar sesión (sin auto-login por FileVault). Runbook: skill `mac-ops`.'
+        summary: 'mac-build despierto pero no responde por tailnet/ssh o el puente iphone MCP (8815) no responde: builds y pruebas de ux parados'
+        description: 'La sonda mac-build-liveness (company-cron del pod company-0, cada 1 min) lleva >= 5 min viendo mac_build_tailnet_up=0 con el Mac despierto (mac_build_awake=1; el 03-11 tailscaled murió en el Mac con los runners de GitHub aún "online": el diagnóstico es runner-online-vs-tailnet-muerto, skill `mac-ops`), o mac_build_bridge_up=0 (el initialize MCP por el túnel mac-pruebas-tunnel no responde: servidor com.e-dani.iphone-mcp en el Mac, o el propio túnel). Comprobación de 1 minuto: reiniciar Tailscale en el Mac; si está apagado, encender e iniciar sesión (sin auto-login por FileVault). Si las series están AUSENTES en vez de a 0, es la sonda: MacBuildLivenessProbeStale. Runbook: skill `mac-ops`.'
 - interval: 1m
-  name: puente iphone MCP caído (tailnet sano, initialize sin respuesta) -> salta igual
+  name: puente iphone MCP caído con el Mac despierto (tailnet sano, initialize sin respuesta) -> salta igual
   input_series:
   - series: mac_build_tailnet_up{host="mac-build"}
     values: 1x12
   - series: mac_build_bridge_up{host="mac-build"}
     values: 0x12
+  - series: mac_build_awake{host="mac-build"}
+    values: 1x12
   alert_rule_test:
   - eval_time: 6m
     alertname: MacBuildUnreachableOrBridgeDown
@@ -60,18 +72,56 @@ tests:
     values: 1x12
   - series: mac_build_bridge_up{host="mac-build"}
     values: 1x4 0 1x7
+  - series: mac_build_awake{host="mac-build"}
+    values: 1x12
   alert_rule_test:
   - eval_time: 10m
     alertname: MacBuildUnreachableOrBridgeDown
     exp_alerts: []
 - interval: 1m
-  name: 'sonda muerta (sin series: timer parado o x86 caído) -> absent() dispara a los 5 min (INFRA-849: vigilancia ciega = incidente)'
-  input_series: []
+  name: 'sonda parada con el Mac despierto (series de vivacidad ausentes, awake=1) -> CRÍTICO no casa (SC-5609: era el falso positivo de SC-5442/SC-5454); a los 15 min, MacBuildLivenessProbeStale warning'
+  input_series:
+  - series: mac_build_awake{host="mac-build"}
+    values: 1x30
   alert_rule_test:
-  - eval_time: 4m
+  - eval_time: 10m
     alertname: MacBuildUnreachableOrBridgeDown
     exp_alerts: []
-  - eval_time: 6m
-    alertname: MacBuildUnreachableOrBridgeDown
+  - eval_time: 14m
+    alertname: MacBuildLivenessProbeStale
+    exp_alerts: []
+  - eval_time: 16m
+    alertname: MacBuildLivenessProbeStale
     exp_alerts:
-    - *id001
+    - &id002
+      exp_labels:
+        severity: warning
+        area: monitoring
+        host: mac-build
+      exp_annotations:
+        summary: 'mac-build responde pero no reporta su vivacidad hace 15 min: la vigilancia del tailnet/puente está ciega'
+        description: 'mac_build_awake=1 (la sonda de presencia, company-cron de company-0, ve el Mac despierto) pero VictoriaMetrics no ve mac_build_tailnet_up o mac_build_bridge_up hace 15 min, cuando el bucle las empuja cada 1 min: la sonda está rota o el push falla, no el Mac. Comprobar: `kubectl -n paseo logs company-0 | grep mac-build-liveness | tail` (el script vuelca el fallo del push) y que company-0 esté en pie (`kubectl -n paseo get pod company-0`). Runbook: skill `mac-ops`.'
+- interval: 1m
+  name: 'Mac dormido con la sonda de vivacidad sin series (awake=0) -> no salta nada (SC-4378: la ausencia con el Mac dormido es el uso normal)'
+  input_series:
+  - series: mac_build_awake{host="mac-build"}
+    values: 0x30
+  alert_rule_test:
+  - eval_time: 20m
+    alertname: MacBuildUnreachableOrBridgeDown
+    exp_alerts: []
+  - eval_time: 20m
+    alertname: MacBuildLivenessProbeStale
+    exp_alerts: []
+- interval: 1m
+  name: 'sólo falta una de las dos series (bridge ausente, tailnet sano, awake=1) -> ProbeStale igual: la vigilancia está a medias'
+  input_series:
+  - series: mac_build_tailnet_up{host="mac-build"}
+    values: 1x30
+  - series: mac_build_awake{host="mac-build"}
+    values: 1x30
+  alert_rule_test:
+  - eval_time: 16m
+    alertname: MacBuildLivenessProbeStale
+    exp_alerts:
+    - *id002

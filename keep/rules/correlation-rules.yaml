@@ -67,6 +67,37 @@ rules:
   # No se tocan las que deben seguir calladas: InfoInhibitor (4073) y Watchdog son
   # fontanería de Alertmanager, y CPUThrottlingHigh (1181, info) es ruido crónico.
   # ---------------------------------------------------------------------------
+  # INFRA-1264: se agrupa por [namespace, workload] (patrón INFRA-1187, medido
+  # en SC-5033): con `[namespace]`, el dgx3 NotReady del 08-11 (reloj tras
+  # reboot) y la causa del 07-11 —distintas y no reconstruible la segunda—
+  # compartían `workload-degraded:89454cf858` y el detector de recurrencia del
+  # supervisor («misma keep-causa 2 veces en 7 días») no medía nada. `workload`
+  # la traen las 5 familias: rollout-stuck y PV-filling por plantilla en
+  # defaultRules.rules.<X>.spec.labels (victoria-metrics/values.yaml),
+  # KubernetesDaemonSetUnavailable en su VMRule (manifests/rules.yaml) y
+  # KubePodCrashLooping por el join de pocharlies-pod-workload
+  # (manifests/pod-workload-rules.yaml). No se agrupa por [namespace, pod,
+  # deployment, daemonset, persistentvolumeclaim]: Keep da huella «none» a la
+  # alerta a la que le falte CUALQUIER criterio (rulesengine.
+  # _calc_rule_fingerprint) y ninguna alerta las trae todas.
+  #
+  # Lo que se pierde con respecto a [namespace]: un nodo malo que tumba varios
+  # workloads ya no es UN incidente, son varios (uno por workload) — igual que
+  # en deployment-degraded desde INFRA-1187; la causa común se lee en el
+  # instante de disparo, y la recurrencia —lo que se mide— es por workload.
+  #
+  # SC-5386 (causa medida por SC-5348): el halt térmico de un Spark marca
+  # no-ready los pods de TODOS sus DaemonSets y esta regla dispara un incidente
+  # por workload — el 11-11 un solo halt abrió 14 Requests (SC-5345..SC-5362).
+  # La regla NO se cambia (el incidente por workload sigue siendo lo que se
+  # mide): quien correlaciona es ops-watch (`fuente_keep`,
+  # x86-host-runtime-pocharlies), que aparca estas degradaciones mientras hay
+  # un nodo caído — ventana que incluye el incidente del nodo ya acknowledged
+  # (INFRA-1323: la Request del nodo lo aparca en la primera pasada y el halt
+  # vive más; las degradaciones tardías, `for: 15m`, siguen siendo artefacto del
+  # halt) — y deja solo el incidente de `node-degraded`. No agrupar aquí
+  # por nodo: las alertas de esta regla no traen etiqueta `node` (ver
+  # node-degraded más abajo), así que la correlación no cabe en el CEL.
   - ruleName: workload-degraded
     incidentPrefix: WORK
     celQuery: |
@@ -74,22 +105,25 @@ rules:
                "KubeDaemonSetRolloutStuck", "KubernetesDaemonSetUnavailable",
                "KubePersistentVolumeFillingUp"]
     sqlQuery: {"sql": "((name in (:name_1, :name_2, :name_3, :name_4, :name_5)))", "params": {"name_1": "KubePodCrashLooping", "name_2": "KubeDeploymentRolloutStuck", "name_3": "KubeDaemonSetRolloutStuck", "name_4": "KubernetesDaemonSetUnavailable", "name_5": "KubePersistentVolumeFillingUp"}}
-    groupingCriteria: [namespace]
+    groupingCriteria: [namespace, workload]
     createOn: any
     resolveOn: all_resolved
     timeframeInSeconds: 900
     timeUnit: minutes
-    incidentNameTemplate: "Workloads degradados en {{ namespace }}"
+    incidentNameTemplate: "Workloads degradados en {{ namespace }} · {{ workload }}"
     groupDescription: >-
-      Pods en crashloop, rollouts atascados y volúmenes llenándose. Se agrupa por
-      namespace porque un nodo o un despliegue malo tumba varios a la vez y son
-      el mismo incidente, no cinco.
+      Pods en crashloop, rollouts atascados y volúmenes llenándose, por workload:
+      la keep-causa de ops-watch distingue qué workload está degradado (INFRA-1264,
+      patrón INFRA-1187).
 
   - ruleName: llm-plane
     incidentPrefix: LLM
+    # SparkGpuClockStuckLow (SC-5101): el 08-11 dgx3 estuvo ~14 h a 617 MHz con carga y no
+    # avisó — la VMRule existe (dgx-infra) pero ninguna regla de Keep la cubría.
     celQuery: |
-      name in ["LitellmNotReady", "GpuArbiterStateObservationUnavailable"]
-    sqlQuery: {"sql": "((name in (:name_1, :name_2)))", "params": {"name_1": "LitellmNotReady", "name_2": "GpuArbiterStateObservationUnavailable"}}
+      name in ["LitellmNotReady", "GpuArbiterStateObservationUnavailable",
+               "SparkGpuClockStuckLow"]
+    sqlQuery: {"sql": "((name in (:name_1, :name_2, :name_3)))", "params": {"name_1": "LitellmNotReady", "name_2": "GpuArbiterStateObservationUnavailable", "name_3": "SparkGpuClockStuckLow"}}
     groupingCriteria: []
     createOn: any
     resolveOn: all_resolved
@@ -186,6 +220,7 @@ rules:
         name.startsWith("OVHPVCHub") || name.startsWith("Sii") ||
         name.startsWith("Synapse") ||
         name.startsWith("Rabbitmq") || name.startsWith("Keep") ||
+        name.startsWith("LonghornVolume") ||
         name.startsWith("Alertmanager") || name.startsWith("SharedValkey") ||
         name.startsWith("SharedDatastore") || name.startsWith("KubeNode") ||
         name.startsWith("Node") || name.startsWith("MacBuild") ||
@@ -217,10 +252,28 @@ rules:
   # =========================================================================
   # KUBERNETES / INFRA
   # =========================================================================
-  # El patrón que está pasando ahora mismo: control-nexus, comfyui y ltx tienen a
-  # la vez KubernetesDeploymentUnavailable (critical), KubeDeploymentReplicas-
-  # Mismatch, KubePodNotReady y KubeContainerWaiting. 4 síntomas de un deployment
-  # que no levanta: 1 incidente por namespace, no 4 mensajes.
+  # El patrón: un deployment que no levanta dispara a la vez
+  # KubernetesDeploymentUnavailable (critical), KubeDeploymentReplicasMismatch,
+  # KubePodNotReady y KubeContainerWaiting. 4 síntomas de UN workload: 1
+  # incidente por workload, no 4 mensajes — y no 1 incidente por namespace.
+  #
+  # INFRA-1187: se agrupa por [namespace, workload] porque la granularidad del
+  # incidente es la granularidad de la causa: ops-watch deriva `keep-causa` del
+  # sha1 del nombre del incidente, y con `[namespace]` cualquier workload
+  # degradado del ns caía en la misma causa (medido: rollout de stt-turbo,
+  # vaivén de ollaya-cpu y sidecar de nginx — tres fallos ajenos— bajo
+  # deployment-degraded:aaab90c902; SC-2641/SC-4666). `workload` la traen TODAS
+  # las alertas de la regla: deployment/statefulset/PDB por plantilla en su
+  # VMRule (manifests/rules.yaml, victoria-metrics/values.yaml) y los síntomas
+  # de pod por el join kube_pod_owner→kube_replicaset_owner de
+  # pocharlies-pod-workload (manifests/pod-workload-rules.yaml). No se puede
+  # agrupar por [namespace, deployment, statefulset]: Keep da huella «none» a
+  # la alerta a la que le falte CUALQUIER criterio (rulesengine.
+  # _calc_rule_fingerprint) y ninguna alerta lleva las dos etiquetas → todo el
+  # mundo al mismo cubo «none», peor que el estado actual.
+  #
+  # El `alertname` NO entra al nombre: los 4 síntomas del mismo workload son la
+  # misma causa (propósito original de la regla); lo que separa es el workload.
   - ruleName: deployment-degraded
     celQuery: >-
       name in ["KubernetesDeploymentUnavailable", "KubeDeploymentReplicasMismatch",
@@ -228,28 +281,72 @@ rules:
                "KubeStatefulSetReplicasMismatch", "KubernetesStatefulSetUnavailable",
                "KubePdbNotEnoughHealthyPods"]
     sqlQuery:
-      sql: "((name in (:name_1, :name_2, :name_3, :name_4)))"
+      sql: "((name in (:name_1, :name_2, :name_3, :name_4, :name_5, :name_6, :name_7)))"
       params:
         name_1: KubernetesDeploymentUnavailable
         name_2: KubeDeploymentReplicasMismatch
         name_3: KubePodNotReady
         name_4: KubeContainerWaiting
+        name_5: KubeStatefulSetReplicasMismatch
+        name_6: KubernetesStatefulSetUnavailable
+        name_7: KubePdbNotEnoughHealthyPods
     timeframeInSeconds: 900
     timeUnit: minutes
-    groupingCriteria: [namespace]
+    groupingCriteria: [namespace, workload]
     createOn: any
     resolveOn: all_resolved
     incidentPrefix: DEPL
-    incidentNameTemplate: "Deployment degradado en {{ namespace }}"
-    groupDescription: Síntomas de workload que no arranca, por namespace.
+    incidentNameTemplate: "Deployment degradado en {{ namespace }} · {{ workload }}"
+    groupDescription: Síntomas de workload que no arranca, por workload.
 
-  # SIN agrupar por nodo, y no por gusto: estas alertas no traen etiqueta `node`.
-  # Sólo hay `instance` (IP:puerto del pod de node-exporter) y `pod`, y las dos
-  # cambian al recrearse el pod — agrupar por ellas crearía un incidente nuevo en
-  # cada reinicio del exporter. El incidente sigue listando las alertas
-  # afectadas: no se pierde información, sólo no cabe en el título. Para agrupar
-  # por nodo de verdad hay que añadir una etiqueta `node` en el relabeling de
-  # vmagent para el job node-exporter.
+  # INFRA-1265 (causa de SC-5058): el volumen Longhorn de harbor-redis quedó atascado
+  # en attaching/detaching en ks5-cp-1 y Harbor cayó 3,5 h sin que nadie lo supiera
+  # (precedente SC-2840). Es la CAUSA, y va en incidente propio y no dentro de
+  # deployment-degraded: la respuesta (mirar el Volume CR y el csi-attacher, no el
+  # deployment) es otra, y el síntoma ya tiene su regla. Crítica, así que está excluida
+  # del safety-net arriba (INVARIANTE 1: la exclusión delega en esta regla, no silencia).
+  #
+  # Agrupa por `volume` (el nombre del Volume CR, etiqueta de la serie
+  # longhorn_volume_state): el mismo volumen atascado dos veces es la misma causa, y
+  # dos volúmenes atascados son dos incidentes. El nombre del incidente lleva sólo la
+  # etiqueta de agrupación y ningún número volátil — es parte de la clave de causa
+  # (`keep-causa:longhorn-volume-stuck:<sha1>`) con la que ops-watch deduplica la
+  # Request [IT] y el supervisor agrupa por causa y no por síntoma.
+  - ruleName: longhorn-volume-stuck
+    celQuery: 'name.startsWith("LonghornVolume")'
+    sqlQuery:
+      sql: "((name like :name_1))"
+      params:
+        name_1: LonghornVolume%
+    timeframeInSeconds: 900
+    timeUnit: minutes
+    groupingCriteria: [volume]
+    createOn: any
+    resolveOn: all_resolved
+    incidentPrefix: LHB
+    incidentNameTemplate: "Volumen Longhorn {{ volume }} atascado"
+    groupDescription: >-
+      Volumes CR de Longhorn con status.state en attaching/detaching más de 5 min
+      (VMRule LonghornVolumeAttachStuck, manifests/longhorn-rules.yaml). Un volumen
+      en tránsito largo tiene el attach o el detach colgado: los pods que lo esperan
+      se quedan en ContainerCreating/Terminating y el workload degradado es el
+      síntoma. Por volumen: el mismo volumen reincidente es la misma causa.
+
+  # SIN agrupar por nodo, y no por gusto: la familia `Node*` (node-exporter) no
+  # trae etiqueta `node` — sólo `instance` (IP:puerto del pod de node-exporter)
+  # y `pod`, y las dos cambian al recrearse el pod; agrupar por ellas crearía un
+  # incidente nuevo en cada reinicio del exporter. Las `KubeNode*`/
+  # `KubeletInstanceUnreachable` SÍ traen `node` (medido 12-11 sobre la serie
+  # ALERTS: node="gx10-ec3d") — el comentario anterior decía que ninguna la
+  # traía, y era falso para esa mitad. Con groupingCriteria [node] las `Node*`
+  # caerían en la huella «none» y partirían el incidente en dos donde hay una
+  # sola historia, así que la agrupación se queda []. La correlación del halt no
+  # necesita agrupar aquí: la hace ops-watch (`fuente_keep`,
+  # x86-host-runtime-pocharlies, SC-5386 + INFRA-1323) leyendo `node` de las
+  # alertas. ACOPLE: ops-watch prefiltra los incidentes acknowledged de esta
+  # regla con `name.contains` de `incidentNameTemplate` (NOMBRE_INCIDENTE_NODO en
+  # ops-watch.py) porque el CEL de `/incidents` de Keep no indexa `rule_name`
+  # (medido 12-11): si cambias el template, cambia también allí.
   - ruleName: node-degraded
     celQuery: >-
       name.startsWith("KubeNode") || name.startsWith("Node") ||
@@ -316,12 +413,18 @@ rules:
   # `ArgoCD…` de severidad warning. Sin esta regla quedarían registradas y
   # calladas: con ella son incidente, Aurora las investiga y el RCA llega al
   # perfil sre-devops de Hermes (aurora-report-back). Una app = un incidente.
+  # (SC-5453) Se excluye `ArgoCDAppSyncPaused` a propósito: una app con el sync
+  # pausado y OutOfSync no es un "sync fallido ni Degraded" (la app está Healthy y
+  # el sync no falló: está apagado), tiene otra respuesta (volver a GitOps) y otro
+  # prefijo. Sin esta exclusión la alerta del pausado abriría también un incidente
+  # ARGO con un título que miente. La regla propia va justo debajo.
   - ruleName: argocd-app-degraded
-    celQuery: 'name.startsWith("ArgoCD")'
+    celQuery: 'name.startsWith("ArgoCD") && name != "ArgoCDAppSyncPaused"'
     sqlQuery:
-      sql: "((name like :name_1))"
+      sql: "((name like :name_1) and name != :name_2)"
       params:
         name_1: ArgoCD%
+        name_2: ArgoCDAppSyncPaused
     timeframeInSeconds: 1800
     timeUnit: minutes
     groupingCriteria: [app]
@@ -331,6 +434,30 @@ rules:
     incidentNameTemplate: "ArgoCD: {{ app }} con sync fallido o Degraded"
     groupDescription: >-
       Sync fallido o app Degraded en ArgoCD, por app.
+
+  # (SC-5453) App ArgoCD con el sync automático APAGADO y OutOfSync: git cambió y
+  # nada lo va a aplicar (no se auto-cura). Es la deriva que SC-5448 dejó pasar 3
+  # días: una app pausada a mano con pods sanos era INVISIBLE para ops-watch, que
+  # sólo trataba "sync fallido o Degraded" (SC-5451). La emite ArgoCD Notifications
+  # (trigger on-sync-paused, k8s-gitops-pocharlies argocd/values.yaml) como
+  # `ArgoCDAppSyncPaused` por /alerts/event, con su resolved al volver a Synced o
+  # al re-poner el automated. Una app = un incidente, prefijo PAUSA.
+  - ruleName: argocd-app-sync-paused
+    celQuery: 'name == "ArgoCDAppSyncPaused"'
+    sqlQuery:
+      sql: "((name == :name_1))"
+      params:
+        name_1: ArgoCDAppSyncPaused
+    timeframeInSeconds: 1800
+    timeUnit: minutes
+    groupingCriteria: [app]
+    createOn: any
+    resolveOn: all_resolved
+    incidentPrefix: PAUSA
+    incidentNameTemplate: "ArgoCD: {{ app }} con el sync pausado y OutOfSync"
+    groupDescription: >-
+      App OutOfSync sin sync automático: no se auto-cura, acumula deriva. Volver a
+      GitOps (quitar el parche de spec.syncPolicy) o asumir el sync manual.
 
   # =========================================================================
   # X86 — host fuera del clúster, empujado por ops-watch (INFRA-405 / P2)
@@ -381,7 +508,7 @@ rules:
       Units de systemd del x86 en failed, por unit. El sensor es ops-watch
       (fuente `unidades`); el `resolved` lo emite la pasada que deja de verla.
 
-  # INFRA-550 (P4 de INFRA-400): cola y runners de CI atascados. Las 5 alertas
+  # INFRA-550 (P4 de INFRA-400): cola y runners de CI atascados. Las alertas
   # de manifests/arc-rules.yaml (VMRule pocharlies-arc-ci) llegan como
   # `warning`/area=infra y SIN esta regla no creaban incidente: Keep solo
   # notifica incidentes (cabecera de este fichero), así que nunca habrían
@@ -458,10 +585,13 @@ rules:
   # warning). La exclusión del safety-net se ensanchó a la par que esta regla (invariante
   # 1: todo lo excluido tiene regla; la de unreachable es warning y al safety-net no le
   # afecta, pero el prefijo de las dos tiene que ser el mismo).
-  # DGX-1440 añade MacBuildUnreachableOrBridgeDown (critical, sonda mac-build-liveness del
-  # x86: tailnet caído o puente iphone MCP 8815 sin responder >= 5 min): el celQuery de
-  # arriba ya la casa — misma familia, mismo prefijo MBD, mismo destinatario; por eso la
-  # exclusión del safety-net (`startsWith("MacBuild")`) tampoco cambia.
+  # DGX-1440 añade MacBuildUnreachableOrBridgeDown (critical, sonda mac-build-liveness:
+  # Mac despierto con tailnet caído o puente iphone MCP 8815 sin responder >= 5 min) y
+  # SC-5609 su hermana MacBuildLivenessProbeStale (warning, serie de vivacidad ausente
+  # con el Mac despierto: sonda muerta, no Mac caído — espejo de MacBuildDiskMetricStale):
+  # el celQuery de arriba ya las casa — misma familia, mismo prefijo MBD, mismo
+  # destinatario; por eso la exclusión del safety-net (`startsWith("MacBuild")`) tampoco
+  # cambia.
   - ruleName: mac-build-disk
     celQuery: 'name.startsWith("MacBuild")'
     sqlQuery:
@@ -478,8 +608,9 @@ rules:
     groupDescription: >-
       Disco de mac-build (Mac de compilaciones) por encima del 90 % de uso o bajo 46 GB
       libres, el emisor que lo reporta roto con el Mac respondiendo (vigilancia ciega), el
-      Mac 12 h sin responder a la sonda de x86, o el tailnet/puente iphone MCP (8815) sin
-      responder >= 5 min (DGX-1440). manifests/mac-build-disk-rules.yaml y
+      Mac 12 h sin responder a la sonda, el tailnet/puente iphone MCP (8815) sin responder
+      >= 5 min con el Mac despierto (DGX-1440), o la sonda de vivacidad sin empujar con el
+      Mac despierto (SC-5609). manifests/mac-build-disk-rules.yaml y
       manifests/mac-build-liveness-rules.yaml.
 
   # Schedule muerto (fuente `schedules` de ops-watch, SC-2459): un workflow programado
@@ -503,6 +634,70 @@ rules:
       Workflows programados críticos sin runs en su margen esperado. El sensor es
       ops-watch (fuente `schedules`); el `resolved` lo emite la pasada que vuelve a
       ver un run.
+
+  # Tokens de API de Atlassian con caducidad a <=7 días o ya caducada (INFRA-1263,
+  # fuente `tokens-atlassian` de ops-watch sobre el inventario
+  # libexec/atlassian-expiry.yaml de x86-host-runtime-pocharlies). Existe porque la
+  # rotación semanal es estructuralmente más lenta que un vencimiento a <7 días
+  # vista: el token sonda-mcp caducó en servicio el 09-11 con la rotación abierta
+  # 34 h antes (SC-5115). La Request de IT programa la rotación con Dani ANTES del
+  # vencimiento. Agrupa por `account` (la rotación es por cuenta; `label` viaja en
+  # la alerta para el RCA); el nombre sin fechas ni números: es parte de la clave
+  # `keep-causa` de ops-watch.
+  - ruleName: atlassian-token-expiry
+    celQuery: 'name == "AtlassianTokenExpiring"'
+    sqlQuery:
+      sql: "((name = :name_1))"
+      params:
+        name_1: AtlassianTokenExpiring
+    timeframeInSeconds: 1800
+    timeUnit: minutes
+    groupingCriteria: [account]
+    createOn: any
+    resolveOn: all_resolved
+    incidentPrefix: ATLTK
+    incidentNameTemplate: "Token de Atlassian a punto de caducar: {{ account }}"
+    groupDescription: >-
+      Tokens de API de Atlassian próximos a caducar (<=7 días) o caducados, por
+      cuenta. El sensor es ops-watch (fuente `tokens-atlassian`); el `resolved` lo
+      emite la pasada en que la fecha se aleja (token rotado e inventario
+      actualizado). Precedente del patrón: SC-2145 (robots de Harbor, 14 días).
+
+  # SC-5262: la renovación del login de Claude que no se arregla sola. La renueva por refresh
+  # token libexec/claude-cuentas-monitor.py de x86-host-runtime-pocharlies (timer diario del x86
+  # y bucle company-cron del pod company-0 cada 6 h). Un nombre, dos emisores con las mismas
+  # etiquetas de causa (`cuenta`, `sitio`, `causa`):
+  #   - el evento Keep del monitor (contrato keep.claude-cuentas-renovar-fallo.v1): red, HTTP
+  #     inesperado, Cloudflare, cerrojo del CLI ocupado, fichero que no se escribe, o la pasada
+  #     misma rota o con un aviso que no salió (`cuenta` = monitor-<sitio>);
+  #   - el hombre muerto de la VMRule pocharlies-claude-cuentas (manifests/claude-cuentas-rules.yaml):
+  #     un sitio sin pasada completa en dos intervalos (`cuenta` = monitor-<sitio>). Va en su propia PR
+  #     y se fusiona DESPUÉS: esta regla tiene que estar en Keep antes de la primera pasada del monitor
+  #     (las primeras son las que más fallan y el monitor no repite un firing), y la VMRule solo cuando
+  #     los dos sitios ya latan (su absent_over_time abriría un incidente falso).
+  # Del 07-11 al 10-11 la unidad del x86 falló cada día con 203/EXEC y nadie se enteró: sin esta
+  # regla las dos alertas quedarían registradas y calladas. Un refresh muerto (`invalid_grant`) NO
+  # llega aquí: solo lo arregla un /login de Dani y va por Telegram. Agrupa por `cuenta` (una causa
+  # por home, como atlassian-token-expiry por `account`); el nombre sin números (keep-causa).
+  # warning: no toca critical-safety-net.
+  - ruleName: claude-cuentas-renovar-fallo
+    celQuery: 'name == "ClaudeCuentasRenovarFallo"'
+    sqlQuery:
+      sql: "((name = :name_1))"
+      params:
+        name_1: ClaudeCuentasRenovarFallo
+    timeframeInSeconds: 1800
+    timeUnit: minutes
+    groupingCriteria: [cuenta]
+    createOn: any
+    resolveOn: all_resolved
+    incidentPrefix: CCRF
+    incidentNameTemplate: "Login de Claude sin renovar: {{ cuenta }}"
+    groupDescription: >-
+      La renovación por refresh token de un login de Claude (claude-cuentas-monitor, x86 y pod
+      company-0) falló por algo que no es un login caducado, o un sitio dejó de pasar
+      (hombre muerto). El `resolved` lo emite la pasada que vuelve a renovar; el del hombre
+      muerto, el primer latido nuevo.
 
   # Sonda de extremo a extremo de la cadena Alertmanager -> Keep -> Aurora ->
   # Hermes sre-devops. Solo la dispara quien prueba la cadena a mano (amtool con
@@ -590,18 +785,25 @@ rules:
     incidentNameTemplate: "Synapse: {{ alertname }} {{ queue }}"
     groupDescription: Outbox, DLQ y colas del bus.
 
+  # SC-4772 / SC-5206: SynapseTopologyDrift queda fuera a propósito. Mientras
+  # synapse.plugin_actions no tenga línea base (SKIRM-207) el gauge arde
+  # siempre (838 bindings = deriva) y abría un SYNC en cada ventana sin
+  # impacto de servicio. Es severity info y no casa con ninguna otra regla
+  # (critical-safety-net excluye Synapse*), así que no abre incidente. Al
+  # tener el registro línea base se sube a warning y se quita de aquí.
   - ruleName: synapse-control-plane
     celQuery: >-
       name.startsWith("Synapse") && !(
         name.startsWith("SynapseOutbox") || name.startsWith("SynapseJanitor") ||
         name in ["SynapseDLQBacklog", "SynapseScheduledWorkflowStalled",
                  "SynapsePollFaultedBacklog", "SynapseOrphanIndexEntries",
-                 "SynapseWorkflowFailed"]
+                 "SynapseWorkflowFailed", "SynapseTopologyDrift"]
       )
     sqlQuery:
-      sql: "((name like :name_1))"
+      sql: "((name like :name_1 and name != :name_2))"
       params:
         name_1: Synapse%
+        name_2: SynapseTopologyDrift
     timeframeInSeconds: 900
     timeUnit: minutes
     groupingCriteria: []
@@ -911,3 +1113,44 @@ rules:
       Diagnóstico por orden: pods de vmagent y vmsingle (OOMKilled, SC-2907),
       cola de remote-write (rca:remotewrite_pending) y logs en Loki
       (namespace="monitoring", app="vmagent").
+
+  # =========================================================================
+  # PARTICIÓN DEL ENLACE CASA↔OVH (SC-5606)
+  # =========================================================================
+  # Firma medida en SC-5549: al degradarse el enlace casa↔OVH, el path tailscale
+  # casa→control-plane cae al relay DERP y el TCP a 6443 deja de abrir. Los 4
+  # nodos de casa (nvidia-dgx, gx10-ec3d, dgx3, ubuntu) pierden el API a la vez y
+  # node-controller los declara NotReady → «Nodos degradados» critical, cuando
+  # los nodos están sanos y el incidente se resuelve solo con el enlace.
+  #
+  # El disparador es HomeControlPlaneTCPFailing (manifests/rules.yaml), que ya
+  # codifica la condición «API vivo desde OVH, inalcanzable desde casa» en su
+  # PromQL. La regla de Keep NO puede expresar «≥2 nodos de casa NotReady Y cps
+  # Ready»: su motor evalúa celQuery por alerta individual (rulesengine.py), sin
+  # contar entre alertas ni mirar el estado de otros nodos. Esa correlación vive
+  # por tanto en la expresión de la alerta, no aquí. Aquí sólo se agrupa.
+  #
+  # Severidad warning a propósito: critical-safety-net sólo captura
+  # critical/page, así que no solapa y no hay que excluir nada (INVARIANTE 1
+  # respetada: no excluimos lo que no duplicamos). groupingCriteria [] mete los
+  # 3 apiservers de una misma degradación en UN incidente, no tres.
+  - ruleName: home-link-partition
+    celQuery: 'name == "HomeControlPlaneTCPFailing"'
+    sqlQuery:
+      sql: "((name = :name_1))"
+      params:
+        name_1: HomeControlPlaneTCPFailing
+    timeframeInSeconds: 1800
+    timeUnit: minutes
+    groupingCriteria: []
+    createOn: any
+    resolveOn: all_resolved
+    incidentPrefix: PART
+    incidentNameTemplate: "Partición enlace casa↔OVH"
+    groupDescription: >-
+      El TCP casa→apiserver:6443 falla mientras el API sigue vivo desde OVH: el
+      enlace casa↔OVH degrada y el path tailscale cae al relay. Los nodos de casa
+      están SANOS — no tocarlos. Comprueba `tailscale status` en el x86 (peers de
+      ks5-cp por DERP = path relevado). Se resuelve solo al recuperarse el
+      enlace. Si además ves «Nodos degradados» con los 4 de casa a la vez y los
+      ks5-cp Ready, es la misma causa: ésta es la accionable.

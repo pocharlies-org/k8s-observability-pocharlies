@@ -1,15 +1,24 @@
-# SKIRM-351 (C4): SynapseUnroutableMessages fires on BOTH causes — messages in
-# the unroutable sink (original behaviour) and topology drift (a command binding
-# with no row in synapse.plugin_actions). The gauge synapse_topology_drift is
-# emitted by the engine's topology_watch (SKIRM-350) and measures
-# binding-vs-table, not traffic: the drift case needs no published messages,
-# matching the SKIRM-351 fixture (synapse repo, scripts/ci/plugins_drift_fixture.py).
+# SKIRM-351 (C4) + SC-4772 / SC-5206: the two causes of the Synapse contract
+# break are now TWO alerts. SynapseUnroutableMessages keeps only the unroutable
+# sink leg (messages published with no binding) and stays severity warning —
+# unchanged behaviour for the real contract break. The topology-drift leg
+# (a command binding with no row in synapse.plugin_actions, gauge
+# synapse_topology_drift emitted by the engine's topology_watch in SKIRM-350)
+# is its own alert SynapseTopologyDrift at severity info: while the registry
+# has no baseline (SKIRM-207 has not migrated the real adapters and no plugin
+# self-registers yet) EVERY binding reads as drift (838 across 7 tenants), so
+# the old OR term fired permanently and the Keep rule synapse-control-plane
+# opened a SYNC incident in every window. Info + excluded from Keep correlation
+# = no incident while the registry has no baseline; promote back to warning
+# when SKIRM-207 populates it. The gauge is not traffic — the drift fixture
+# (synapse repo, scripts/ci/plugins_drift_fixture.py) proves it without
+# publishing a single message.
 rule_files:
   - synapse-unroutable-drift.rules.yaml
 evaluation_interval: 30s
 tests:
   - interval: 30s
-    name: "sink unroutable con mensajes - dispara (regresión del comportamiento original)"
+    name: "sink unroutable con mensajes - SynapseUnroutableMessages dispara en warning (regresión: pata intacta)"
     input_series:
       - series: 'rabbitmq_detailed_queue_messages_ready{vhost="/synapse",queue="synapse.unroutable"}'
         values: '0 1 1 1'
@@ -27,18 +36,38 @@ tests:
               vhost: /synapse
               queue: synapse.unroutable
             exp_annotations:
-              summary: "Synapse contract break: unroutable messages or topology drift"
-              description: "One alert, two causes. (1) Queue synapse.unroutable holds messages: a publisher used a routing key with no binding — inspect the payload headers (`source`, `connection_name`) and the routing key. (2) synapse_topology_drift > 0: the broker carries a command binding with no row in synapse.plugin_actions (a live consumer nobody registered, or a stale binding); the drifting tenant is in the alert's `tenant` label. Both mean publisher, consumer and registry disagree: reconcile them against libs/synapse-contracts/registry.yaml. Runbook: skill synapse-contracts."
+              summary: "Synapse contract break: unroutable messages"
+              description: "Queue synapse.unroutable holds messages: a publisher used a routing key with no binding — inspect the payload headers (`source`, `connection_name`) and the routing key, and reconcile them against libs/synapse-contracts/registry.yaml. Runbook: skill synapse-contracts."
 
   - interval: 30s
-    name: "deriva topologica (binding sin fila en plugin_actions) - dispara por el termino OR"
+    name: "deriva topologica - ya NO dispara SynapseUnroutableMessages; dispara SynapseTopologyDrift en info (SC-5206)"
     input_series:
       - series: 'synapse_topology_drift{tenant="synapsedrifttest"}'
         values: '0 1 1 1'
     alert_rule_test:
-      - eval_time: 1m
+      - eval_time: 2m
         alertname: SynapseUnroutableMessages
         exp_alerts: []
+      - eval_time: 2m
+        alertname: SynapseTopologyDrift
+        exp_alerts:
+          - exp_labels:
+              severity: info
+              area: messaging
+              component: shared-rabbitmq
+              tenant: synapsedrifttest
+            exp_annotations:
+              summary: "Synapse topology drift (info: registry has no baseline yet)"
+              description: "synapse_topology_drift > 0: the broker carries a command binding with no row in synapse.plugin_actions; the drifting tenant is in the alert's `tenant` label. While the registry has no baseline (SKIRM-207) this is expected permanent noise, not a fault: it opens no Keep incident. Once SKIRM-207 populates the registry, promote this alert back to severity warning. Runbook: skill synapse-contracts."
+
+  - interval: 30s
+    name: "unroutables y deriva a la vez - cada alerta por su lado"
+    input_series:
+      - series: 'rabbitmq_detailed_queue_messages_ready{vhost="/synapse",queue="synapse.unroutable"}'
+        values: '0 1 1 1'
+      - series: 'synapse_topology_drift{tenant="synapsedrifttest"}'
+        values: '0 1 1 1'
+    alert_rule_test:
       - eval_time: 2m
         alertname: SynapseUnroutableMessages
         exp_alerts:
@@ -46,13 +75,25 @@ tests:
               severity: warning
               area: messaging
               component: shared-rabbitmq
+              vhost: /synapse
+              queue: synapse.unroutable
+            exp_annotations:
+              summary: "Synapse contract break: unroutable messages"
+              description: "Queue synapse.unroutable holds messages: a publisher used a routing key with no binding — inspect the payload headers (`source`, `connection_name`) and the routing key, and reconcile them against libs/synapse-contracts/registry.yaml. Runbook: skill synapse-contracts."
+      - eval_time: 2m
+        alertname: SynapseTopologyDrift
+        exp_alerts:
+          - exp_labels:
+              severity: info
+              area: messaging
+              component: shared-rabbitmq
               tenant: synapsedrifttest
             exp_annotations:
-              summary: "Synapse contract break: unroutable messages or topology drift"
-              description: "One alert, two causes. (1) Queue synapse.unroutable holds messages: a publisher used a routing key with no binding — inspect the payload headers (`source`, `connection_name`) and the routing key. (2) synapse_topology_drift > 0: the broker carries a command binding with no row in synapse.plugin_actions (a live consumer nobody registered, or a stale binding); the drifting tenant is in the alert's `tenant` label. Both mean publisher, consumer and registry disagree: reconcile them against libs/synapse-contracts/registry.yaml. Runbook: skill synapse-contracts."
+              summary: "Synapse topology drift (info: registry has no baseline yet)"
+              description: "synapse_topology_drift > 0: the broker carries a command binding with no row in synapse.plugin_actions; the drifting tenant is in the alert's `tenant` label. While the registry has no baseline (SKIRM-207) this is expected permanent noise, not a fault: it opens no Keep incident. Once SKIRM-207 populates the registry, promote this alert back to severity warning. Runbook: skill synapse-contracts."
 
   - interval: 30s
-    name: "sin unroutables y sin deriva - la alerta calla"
+    name: "sin unroutables y sin deriva - las dos alertas callan"
     input_series:
       - series: 'rabbitmq_detailed_queue_messages_ready{vhost="/synapse",queue="synapse.unroutable"}'
         values: '0 0 0 0'
@@ -61,4 +102,7 @@ tests:
     alert_rule_test:
       - eval_time: 2m
         alertname: SynapseUnroutableMessages
+        exp_alerts: []
+      - eval_time: 2m
+        alertname: SynapseTopologyDrift
         exp_alerts: []

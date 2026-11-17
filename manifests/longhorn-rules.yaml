@@ -1,0 +1,58 @@
+# INFRA-1265 (causa de SC-5058) — «Volumen Longhorn atascado en attaching/detaching».
+#
+# Por qué existe. El 08-11 Harbor cayó 3,5 h porque el volumen Longhorn de harbor-redis
+# quedó atascado en attaching/detaching en ks5-cp-1 y solo se supo por la cascada de
+# Keep deployment-degraded (6 Requests en 22 h). No había alerta de attach/detach
+# atascado: el síntoma (deployment degradado) tardaba y la causa no tenía nombre.
+# Precedente: SC-2840 (whatsapp-session-data, 55 min attaching).
+#
+# La métrica es un indicador por estado: `longhorn_volume_state` tiene una serie por
+# (volume, state) y vale 1 sólo en el estado actual — medido en vivo (480 series,
+# job longhorn-backend, expuesta por longhorn-manager :9500). `== 1` sobre
+# attaching|detaching es exactamente «este volumen lleva X en tránsito». Con `for: 5m`
+# el attach normal (segundos) no dispara; un volumen borrado pierde la serie y la
+# alerta se resuelve sola.
+#
+# Lleva lo que pide la petición: `volume` (el nombre del Volume CR), `pvc` y
+# `pvc_namespace` (el PVC y su namespace) y `node` (el nodo destino del attach),
+# todos como etiquetas de la serie — vía a Keep y a la Request que abre ops-watch.
+#
+# La variante por eventos FailedAttachVolume/FailedDetachVolume del VolumeAttachment
+# NO se implementa: kube-event-metrics no está scrapeado (0 series `kube_event*` en
+# VictoriaMetrics) y el equivalente métrico (VolumeAttachment creado sin attach) queda
+# cubierto por esta: el attacher de Longhorn es driver.longhorn.io y un attach que no
+# avanza se manifiesta como el Volume CR parado en attaching.
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMRule
+metadata:
+  name: pocharlies-longhorn
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: longhorn
+    app.kubernetes.io/component: alerting
+spec:
+  groups:
+    - name: pocharlies.longhorn-storage
+      rules:
+        - alert: LonghornVolumeAttachStuck
+          expr: |
+            longhorn_volume_state{state=~"attaching|detaching"} == 1
+          for: 5m
+          labels:
+            severity: critical
+            area: storage
+            component: longhorn
+          annotations:
+            summary: >-
+              Volumen Longhorn {{ $labels.volume }} (PVC {{ $labels.pvc_namespace }}/{{ $labels.pvc }})
+              lleva más de 5 min en {{ $labels.state }} hacia el nodo {{ $labels.node }}
+            description: >-
+              Un Volume CR de Longhorn lleva más de 5 minutos con status.state en
+              {{ $labels.state }}: el attach/detach no avanza y los pods que lo esperan
+              se quedan en ContainerCreating/Terminating (el degradado de workload es el
+              síntoma, esta alerta es la causa). Comprobar:
+              `kubectl -n longhorn-system get volume {{ $labels.volume }} -o jsonpath='{.status.currentState} {.status.robustness}'`,
+              `kubectl get volumeattachment | grep {{ $labels.volume }}` y los logs del
+              csi-attacher y de longhorn-manager en el nodo {{ $labels.node }}. Si el
+              VolumeAttachment no se libera, mirar si el nodo destino está Ready.
+              Causa raíz documentada: SC-5058 (harbor-redis en ks5-cp-1, 3,5 h).

@@ -26,7 +26,7 @@ tests:
               pod: frigate-6b6cd8df4f-lnj9p
             exp_annotations:
               summary: "Frigate no responde: las cámaras de casa no se están grabando ni analizando"
-              description: "VictoriaMetrics lleva 5 min sin poder leer `/api/metrics` de Frigate (puerto 5000 del ns `frigate`). Mirar primero `kubectl -n frigate get pods` y `kubectl -n frigate logs deploy/frigate` (rollout, OOM, GPU ocupada por Krea2: el árbitro lo deja en `coexist`). Si el pod está `1/1`, el culpable es la red: la NetworkPolicy `frigate` de k8s-frigate-pocharlies debe admitir al vmagent del ns `monitoring` en el 5000. Mientras dure, ninguna alerta de cámara ve nada."
+              description: "VictoriaMetrics lleva 5 min sin poder leer `/api/metrics` de Frigate (puerto 5000 del ns `frigate`) con el Deployment queriendo más de 0 réplicas. Mirar primero `kubectl -n frigate get pods` y `kubectl -n frigate logs deploy/frigate` (rollout, OOM, GPU ocupada por Krea2: el árbitro lo deja en `coexist`). Si el pod está `1/1`, el culpable es la red: la NetworkPolicy `frigate` de k8s-frigate-pocharlies debe admitir al vmagent del ns `monitoring` en el 5000. Mientras dure, ninguna alerta de cámara ve nada. (Con el Deployment a 0 réplicas —parada a mano— esta alerta no salta; si debería estar arriba, `kubectl -n frigate get deploy frigate -o jsonpath='{.metadata.annotations}'` dice quién lo paró y por qué.)"
 
   - interval: 1m
     name: Frigate sin target (pod sin Ready, el endpoint desaparece) salta por ausencia
@@ -48,7 +48,51 @@ tests:
               namespace: frigate
             exp_annotations:
               summary: "Frigate no responde: las cámaras de casa no se están grabando ni analizando"
-              description: "VictoriaMetrics lleva 5 min sin poder leer `/api/metrics` de Frigate (puerto 5000 del ns `frigate`). Mirar primero `kubectl -n frigate get pods` y `kubectl -n frigate logs deploy/frigate` (rollout, OOM, GPU ocupada por Krea2: el árbitro lo deja en `coexist`). Si el pod está `1/1`, el culpable es la red: la NetworkPolicy `frigate` de k8s-frigate-pocharlies debe admitir al vmagent del ns `monitoring` en el 5000. Mientras dure, ninguna alerta de cámara ve nada."
+              description: "VictoriaMetrics lleva 5 min sin poder leer `/api/metrics` de Frigate (puerto 5000 del ns `frigate`) con el Deployment queriendo más de 0 réplicas. Mirar primero `kubectl -n frigate get pods` y `kubectl -n frigate logs deploy/frigate` (rollout, OOM, GPU ocupada por Krea2: el árbitro lo deja en `coexist`). Si el pod está `1/1`, el culpable es la red: la NetworkPolicy `frigate` de k8s-frigate-pocharlies debe admitir al vmagent del ns `monitoring` en el 5000. Mientras dure, ninguna alerta de cámara ve nada. (Con el Deployment a 0 réplicas —parada a mano— esta alerta no salta; si debería estar arriba, `kubectl -n frigate get deploy frigate -o jsonpath='{.metadata.annotations}'` dice quién lo paró y por qué.)"
+
+  # SC-4712: la parada a mano (Deployment a 0 réplicas, anotación `e-dani.com/parado-por`) no es una caída.
+  - interval: 1m
+    name: parada a mano (spec.replicas == 0) con up == 0 no dispara
+    input_series:
+      - series: 'up{job="frigate",namespace="frigate",pod="frigate-6b6cd8df4f-lnj9p"}'
+        values: '0x15'
+      - series: 'kube_deployment_spec_replicas{namespace="frigate",deployment="frigate"}'
+        values: '0x15'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: FrigateCaido
+        exp_alerts: []
+
+  - interval: 1m
+    name: parada a mano (spec.replicas == 0) sin series de up (absent) tampoco dispara
+    input_series:
+      - series: 'kube_deployment_spec_replicas{namespace="frigate",deployment="frigate"}'
+        values: '0x15'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: FrigateCaido
+        exp_alerts: []
+
+  - interval: 1m
+    name: con el Deployment queriendo 1 réplica, up == 0 sigue saltando (el guard no oculta caídas)
+    input_series:
+      - series: 'up{job="frigate",namespace="frigate",pod="frigate-6b6cd8df4f-lnj9p"}'
+        values: '0x15'
+      - series: 'kube_deployment_spec_replicas{namespace="frigate",deployment="frigate"}'
+        values: '1x15'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: FrigateCaido
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              area: availability
+              job: frigate
+              namespace: frigate
+              pod: frigate-6b6cd8df4f-lnj9p
+            exp_annotations:
+              summary: "Frigate no responde: las cámaras de casa no se están grabando ni analizando"
+              description: "VictoriaMetrics lleva 5 min sin poder leer `/api/metrics` de Frigate (puerto 5000 del ns `frigate`) con el Deployment queriendo más de 0 réplicas. Mirar primero `kubectl -n frigate get pods` y `kubectl -n frigate logs deploy/frigate` (rollout, OOM, GPU ocupada por Krea2: el árbitro lo deja en `coexist`). Si el pod está `1/1`, el culpable es la red: la NetworkPolicy `frigate` de k8s-frigate-pocharlies debe admitir al vmagent del ns `monitoring` en el 5000. Mientras dure, ninguna alerta de cámara ve nada. (Con el Deployment a 0 réplicas —parada a mano— esta alerta no salta; si debería estar arriba, `kubectl -n frigate get deploy frigate -o jsonpath='{.metadata.annotations}'` dice quién lo paró y por qué.)"
 
   - interval: 1m
     name: un rollout Recreate de 3 min (target ausente) no dispara; Frigate sano tampoco

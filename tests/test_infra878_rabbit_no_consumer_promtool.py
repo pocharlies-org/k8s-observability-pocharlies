@@ -2,9 +2,10 @@
 
 Corre el grupo vivo del VMRule `pocharlies-rabbitmq` de manifests/rules.yaml contra
 tests/promtool/rabbit-no-consumer.test.yaml (harness: tests/promtool_rules.py):
-dispara por cola nueva sin consumidor, excluye `synapse.unroutable` (sin
-consumidor por diseño) y NO excluye `adapter.telegram.ingress` (tiene
-consumidor medido el 17-10; si muere, esta alerta es la única señal).
+dispara por cola nueva sin consumidor, excluye `synapse.unroutable` y
+`adapter.ops_explainer.failures` (sin consumidor por diseño) y NO excluye
+`adapter.telegram.ingress` (tiene consumidor medido el 17-10; si muere, esta
+alerta es la única señal).
 """
 
 import unittest

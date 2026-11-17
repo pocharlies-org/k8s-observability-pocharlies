@@ -1,11 +1,8 @@
-# La compañía: el supervisor `jira-epic-trigger` corre como systemd --user en el x86 (nodo `ubuntu`)
-# y escucha SÓLO en su IP del tailnet. El /metrics lo sirve libexec/jira-epic-trigger.py
-# (x86-host-runtime-pocharlies #229): unidades activas, tope dinámico, peticiones del residente y
-# contadores de eventos (lanzamientos/paradas).
+# La compañía: el supervisor `jira-epic-trigger` corre en el pod paseo/company-0 (SC-3961) tras el
+# Service paseo/company :19911. El /metrics lo sirve libexec/jira-epic-trigger.py (x86-host-runtime):
+# unidades activas, tope dinámico, peticiones del residente y contadores de eventos.
 #
-# VMStaticScrape y NO Service+Endpoints+VMServiceScrape: ArgoCD excluye Endpoints/EndpointSlice del
-# apply (el Endpoints de la primera versión, #35, se quedó en git sin llegar vivo nunca — el gotcha
-# del slice de opencode-edge-host, en carne propia). Un static target del operador no pasa por ahí.
+# VMStaticScrape al nombre del Service (SC-5091): conserva el job y las etiquetas de las alertas.
 apiVersion: operator.victoriametrics.com/v1beta1
 kind: VMStaticScrape
 metadata:
@@ -15,7 +12,7 @@ spec:
   jobName: company-supervisor
   targetEndpoints:
     - targets:
-        - 100.83.56.98:19911   # x86 por el tailnet; el supervisor no escucha en 0.0.0.0 a propósito
+        - company.paseo.svc.cluster.local:19911
       path: /metrics
       interval: 30s
       scrapeTimeout: 10s

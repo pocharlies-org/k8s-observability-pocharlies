@@ -23,6 +23,15 @@ defaultRules:
     # (INFRA-690) también queda fuera: ningún Spark tiene alerta de memoria.
     NodeMemoryHighUtilization:
       create: false
+    # SC-5400 (NODE-19133/NODE-18886): misma clase que la de arriba y mismo
+    # patrón INFRA-690 — reemplazada por la copia de pocharlies-node-memory
+    # (manifests/rules.yaml) con los Sparks excluidos. Disparaba en dgx3 desde
+    # el 02-10: con dgx3_mode=llm su vLLM tp1 (KV cache de 18 GiB + pesos en
+    # memoria unificada) deja ~3 GiB disponibles y el pgmajfault sostenido es
+    # el precio del diseño, no degradación (medido 12-11: idle 89 %, PSI
+    # memory avg10 0.46, sin OOM, nodo sirviendo).
+    NodeMemoryMajorPagesFaults:
+      create: false
     # SC-2641 (DEPL-15279): duplicado de la casa. La condición de esta regla del
     # chart (spec > available, 15 min) es un subconjunto de KubernetesDeploymentUnavailable
     # (manifests/rules.yaml, critical), que además SÍ puede excluir las identidades
@@ -31,6 +40,65 @@ defaultRules:
     # warning. Cobertura: KubernetesDeploymentUnavailable (resto) +
     # LlmResidentDeploymentUnavailable (llm, 2 h).
     KubeDeploymentReplicasMismatch:
+      create: false
+    # INFRA-1187: reemplazadas por pocharlies-pod-workload
+    # (manifests/pod-workload-rules.yaml). La copia del chart agrega
+    # by(namespace, pod) y no sabe quién es el owner del pod, así que no puede
+    # llevar `workload`; la regla `deployment-degraded` agrupa por
+    # [namespace, workload] y Keep da huella «none» a la alerta a la que le
+    # falte cualquier criterio (rulesengine._calc_rule_fingerprint), así que
+    # sin reemplazo los síntomas de pod volverían a un incidente genérico. Las
+    # copias nuevas conservan expr/for/severity y mapean el workload con
+    # kube_pod_owner → kube_replicaset_owner.
+    KubePodNotReady:
+      create: false
+    KubeContainerWaiting:
+      create: false
+    # INFRA-1187: `workload` para que deployment-degraded agrupe por workload.
+    # El valor es plantilla de vmalert (se evalúa por serie al disparar la
+    # alerta), no de Helm: values.yaml no se renderiza como template.
+    KubeStatefulSetReplicasMismatch:
+      spec:
+        labels:
+          workload: "{{ $labels.statefulset }}"
+    KubePdbNotEnoughHealthyPods:
+      spec:
+        labels:
+          workload: "{{ $labels.poddisruptionbudget }}"
+    # INFRA-1264: `workload` para que workload-degraded agrupe por workload
+    # (patrón INFRA-1187). Con [namespace], el dgx3 NotReady del 08-11 y una
+    # causa distinta del mismo ns compartían keep-causa y la recurrencia no era
+    # medible (SC-5033).
+    KubeDeploymentRolloutStuck:
+      spec:
+        labels:
+          workload: "{{ $labels.deployment }}"
+    KubeDaemonSetRolloutStuck:
+      spec:
+        labels:
+          workload: "{{ $labels.daemonset }}"
+    # La plantilla del chart indexa por nombre de alerta y el CRITICAL (for 1m)
+    # y el WARNING (for 1h) comparten nombre, así que `spec` cae en las dos
+    # ramas (templates/victoria-metrics-operator/vmalert/rule.yaml). El PVC es
+    # el identificador de la causa, como el PDB arriba.
+    KubePersistentVolumeFillingUp:
+      spec:
+        labels:
+          workload: "{{ $labels.persistentvolumeclaim }}"
+    # INFRA-1264: reemplazada por pocharlies-pod-workload
+    # (manifests/pod-workload-rules.yaml) con `workload`, por el mismo motivo
+    # que KubePodNotReady/KubeContainerWaiting arriba: la copia del chart
+    # agrega por pod y no sabe quién es el owner.
+    KubePodCrashLooping:
+      create: false
+    # Reemplazada por pocharlies-vmagent-scrape-pools (manifests/rules.yaml): la
+    # copia del chart dispara también con pools de Deployments parados a mano
+    # (spec.replicas 0), que no son una mala configuración — MON-18508 abrió con
+    # frigate (parado el 05-11 para librar la GPU al reranker/embedder, anotación
+    # `e-dani.com/parado-por`) y libreplay-web (dormido). La copia de la casa
+    # guarda por kube_deployment_spec_replicas (patrón SC-4712) y falla hacia
+    # avisar si kube-state-metrics no responde.
+    ScrapePoolHasNoTargets:
       create: false
   groups:
     etcd:
@@ -76,7 +144,16 @@ vmsingle:
         # en consultas pesadas de vmalert/Keep). El OOM de vmsingle abre hueco de
         # ingesta -> absent() de LlmPoolCapabilityUnavailable dispara un critico
         # con el pool sano (CRIT-16462).
-        memory: 16Gi
+        # 2026-11-16 (SC-5643): 16Gi -> 24Gi. El working set ha crecido con las
+        # series activas: anon RSS 12.3 GiB sostenido, pico 7d 13.9 GiB = 0.87 del
+        # limite de 16Gi. VictoriaMetrics dimensiona sus caches a la memoria
+        # disponible (por diseno ocupa hasta el limite y suelta bajo presion),
+        # asi que la regla del operador TooHighMemoryUsage (anon/available > 0.8
+        # durante 5m) disparaba en ciclos: 4 incidentes Keep critical del 15-11
+        # (keep-causa critical-safety-net:43d45ddd35). No era fuga: 0 reinicios y
+        # 0 OOM en 17 dias. Con 24Gi el pico queda en ~0.58 del limite. Nodo con
+        # margen: ks5-cp-3 tenia 22 GiB MemAvailable (medido 16-11).
+        memory: 24Gi
     extraArgs:
       maxLabelsPerTimeseries: "200"
     # Keep metrics for 48 hours. This is intentionally expressed in hours so
@@ -173,6 +250,18 @@ alertmanager:
         memory: 25Mi
       limits:
         memory: 64Mi
+    # SC-5389 (13-11): con el default del operador (limits 256Mi) el contenedor
+    # alertmanager OOMKilled de forma recurrente — working set medido en pico
+    # ~268 MB (container_memory_working_set_bytes, 6 h). Cada OOM corta el
+    # webhook a Keep y abre el incidente keep-hub-degraded (HUB-19110/19114,
+    # 5 y 3 reinicios en las dos réplicas). 512Mi deja ~2x de margen.
+    resources:
+      requests:
+        cpu: 50m
+        memory: 192Mi
+      limits:
+        cpu: 200m
+        memory: 512Mi
     nodeSelector:
       node-pool: ks5-nvme
     storage:

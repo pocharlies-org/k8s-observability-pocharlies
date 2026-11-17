@@ -20,3 +20,11 @@ COPY files/tool_output_cap.py /app/chat/backend/agent/utils/tool_output_cap.py
 COPY files/tool_context_capture.py /app/chat/backend/agent/utils/tool_context_capture.py
 COPY files/datadog_tool.py /app/chat/backend/agent/tools/datadog_tool.py
 COPY files/hpa_vpa_recommendations.py /app/services/actions/hpa_vpa_recommendations.py
+
+# Conjunto sweep de 'summarizing' (SC-2633, rama del fork pocharlies-org/aurora):
+# el cleaner de sesiones clavadas no veía los incidentes en aurora_status='summarizing'
+# cuyo task de resumen murió por time limit (SIGKILL del hard limit: el handler de
+# SoftTimeLimitExceeded no llega a correr) y quedaban clavados para siempre, sin
+# terminal para el indicador de cobertura de RCA (AUR-18781). Es el task.py de la base
+# 1.2.20 con el diff de 93efd635 aplicado sin conflicto (ver README).
+COPY files/task.py /app/chat/background/task.py

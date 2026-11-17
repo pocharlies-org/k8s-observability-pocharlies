@@ -1,0 +1,261 @@
+# INFRA-1187: `KubePodNotReady`/`KubeContainerWaiting` con etiqueta `workload`
+# (pocharlies-pod-workload). `rules` la genera tests/test_infra1187_pod_workload_promtool.py
+# desde la VMRule. Se comprueba el join pod→workload (Deployment por RS, y
+# StatefulSet directo) y la rama `unless` (owner no mapeable → sin workload, no
+# se queda muda).
+rule_files:
+  - pod-workload.rules.yaml
+evaluation_interval: 1m
+tests:
+  - interval: 1m
+    name: pod de un Deployment (owner RS→Deployment) dispara KubePodNotReady con workload
+    input_series:
+      - series: 'kube_pod_status_phase{job="kube-state-metrics",namespace="llm",pod="stt-turbo-7d9-abcde",phase="Pending"}'
+        values: '1x80'
+      - series: 'kube_pod_owner{job="kube-state-metrics",namespace="llm",pod="stt-turbo-7d9-abcde",owner_kind="ReplicaSet",owner_name="stt-turbo-7d9"}'
+        values: '1x80'
+      - series: 'kube_replicaset_owner{job="kube-state-metrics",namespace="llm",replicaset="stt-turbo-7d9",owner_kind="Deployment",owner_name="stt-turbo",owner_is_controller="true"}'
+        values: '1x80'
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: KubePodNotReady
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              namespace: llm
+              pod: stt-turbo-7d9-abcde
+              workload: stt-turbo
+            exp_annotations:
+              summary: "Pod has been in a non-ready state for more than 15 minutes."
+              description: "Pod llm/stt-turbo-7d9-abcde has been in a non-ready state for longer than 15 minutes."
+  - interval: 1m
+    name: pod de un StatefulSet dispara KubePodNotReady con workload=statefulset
+    input_series:
+      - series: 'kube_pod_status_phase{job="kube-state-metrics",namespace="databases",pod="shared-valkey-0",phase="Unknown"}'
+        values: '1x80'
+      - series: 'kube_pod_owner{job="kube-state-metrics",namespace="databases",pod="shared-valkey-0",owner_kind="StatefulSet",owner_name="shared-valkey"}'
+        values: '1x80'
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: KubePodNotReady
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              namespace: databases
+              pod: shared-valkey-0
+              workload: shared-valkey
+            exp_annotations:
+              summary: "Pod has been in a non-ready state for more than 15 minutes."
+              description: "Pod databases/shared-valkey-0 has been in a non-ready state for longer than 15 minutes."
+  - interval: 1m
+    name: pod con owner no mapeable (RS huérfana, sin Deployment) dispara sin workload (rama unless)
+    input_series:
+      - series: 'kube_pod_status_phase{job="kube-state-metrics",namespace="otro",pod="huerfano-abcde",phase="Pending"}'
+        values: '1x80'
+      - series: 'kube_pod_owner{job="kube-state-metrics",namespace="otro",pod="huerfano-abcde",owner_kind="ReplicaSet",owner_name="huerfano-7d9"}'
+        values: '1x80'
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: KubePodNotReady
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              namespace: otro
+              pod: huerfano-abcde
+            exp_annotations:
+              summary: "Pod has been in a non-ready state for more than 15 minutes."
+              description: "Pod otro/huerfano-abcde has been in a non-ready state for longer than 15 minutes."
+  - interval: 1m
+    name: pod de Job NO dispara KubePodNotReady (excluido por el join owner_kind!=Job)
+    input_series:
+      - series: 'kube_pod_status_phase{job="kube-state-metrics",namespace="crons",pod="job-xyz-1",phase="Pending"}'
+        values: '1x80'
+      - series: 'kube_pod_owner{job="kube-state-metrics",namespace="crons",pod="job-xyz-1",owner_kind="Job",owner_name="job-xyz"}'
+        values: '1x80'
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: KubePodNotReady
+        exp_alerts: []
+  - interval: 1m
+    name: container en waiting de un Deployment dispara KubeContainerWaiting con workload
+    input_series:
+      - series: 'kube_pod_container_status_waiting_reason{job="kube-state-metrics",namespace="llm",pod="stt-turbo-7d9-abcde",container="main",reason="ImagePullBackOff"}'
+        values: '1x130'
+      - series: 'kube_pod_owner{job="kube-state-metrics",namespace="llm",pod="stt-turbo-7d9-abcde",owner_kind="ReplicaSet",owner_name="stt-turbo-7d9"}'
+        values: '1x130'
+      - series: 'kube_replicaset_owner{job="kube-state-metrics",namespace="llm",replicaset="stt-turbo-7d9",owner_kind="Deployment",owner_name="stt-turbo",owner_is_controller="true"}'
+        values: '1x130'
+    alert_rule_test:
+      - eval_time: 61m
+        alertname: KubeContainerWaiting
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: kube-state-metrics
+              namespace: llm
+              pod: stt-turbo-7d9-abcde
+              container: main
+              reason: ImagePullBackOff
+              workload: stt-turbo
+            exp_annotations:
+              summary: "Pod container waiting longer than 1 hour"
+              description: 'pod/stt-turbo-7d9-abcde in namespace llm on container main has been in waiting state for longer than 1 hour. (reason: "ImagePullBackOff")'
+  - interval: 1m
+    name: CrashLoopBackOff NO dispara KubeContainerWaiting (lo cubre KubePodCrashLooping)
+    input_series:
+      - series: 'kube_pod_container_status_waiting_reason{job="kube-state-metrics",namespace="llm",pod="stt-turbo-7d9-abcde",container="main",reason="CrashLoopBackOff"}'
+        values: '1x130'
+      - series: 'kube_pod_owner{job="kube-state-metrics",namespace="llm",pod="stt-turbo-7d9-abcde",owner_kind="ReplicaSet",owner_name="stt-turbo-7d9"}'
+        values: '1x130'
+      - series: 'kube_replicaset_owner{job="kube-state-metrics",namespace="llm",replicaset="stt-turbo-7d9",owner_kind="Deployment",owner_name="stt-turbo",owner_is_controller="true"}'
+        values: '1x130'
+    alert_rule_test:
+      - eval_time: 61m
+        alertname: KubeContainerWaiting
+        exp_alerts: []
+  # SC-5575 (DEPL-19428): el job `logical-dump-postgres-shared-29911920` pasó 2 h
+  # con su contenedor `upload` en waiting/PodInitializing (el init del dump) y
+  # disparó deployment-degraded con el job Complete 1/1. PodInitializing en un pod
+  # de Job es el diseño del job, no un fallo.
+  - interval: 1m
+    name: pod de Job en PodInitializing 2 h NO dispara KubeContainerWaiting (dump lógico, DEPL-19428)
+    input_series:
+      - series: 'kube_pod_container_status_waiting_reason{job="kube-state-metrics",namespace="databases",pod="logical-dump-postgres-shared-29911920-6ggcd",container="upload",reason="PodInitializing"}'
+        values: '1x130'
+      - series: 'kube_pod_owner{job="kube-state-metrics",namespace="databases",pod="logical-dump-postgres-shared-29911920-6ggcd",owner_kind="Job",owner_name="logical-dump-postgres-shared-29911920"}'
+        values: '1x130'
+    alert_rule_test:
+      - eval_time: 61m
+        alertname: KubeContainerWaiting
+        exp_alerts: []
+  - interval: 1m
+    name: pod de Job en ImagePullBackOff 2 h SÍ dispara KubeContainerWaiting (la exclusión es sólo PodInitializing)
+    input_series:
+      - series: 'kube_pod_container_status_waiting_reason{job="kube-state-metrics",namespace="databases",pod="logical-dump-postgres-shared-29911920-6ggcd",container="upload",reason="ImagePullBackOff"}'
+        values: '1x130'
+      - series: 'kube_pod_owner{job="kube-state-metrics",namespace="databases",pod="logical-dump-postgres-shared-29911920-6ggcd",owner_kind="Job",owner_name="logical-dump-postgres-shared-29911920"}'
+        values: '1x130'
+    alert_rule_test:
+      - eval_time: 61m
+        alertname: KubeContainerWaiting
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: kube-state-metrics
+              namespace: databases
+              pod: logical-dump-postgres-shared-29911920-6ggcd
+              container: upload
+              reason: ImagePullBackOff
+              workload: logical-dump-postgres-shared-29911920
+            exp_annotations:
+              summary: "Pod container waiting longer than 1 hour"
+              description: 'pod/logical-dump-postgres-shared-29911920-6ggcd in namespace databases on container upload has been in waiting state for longer than 1 hour. (reason: "ImagePullBackOff")'
+  - interval: 1m
+    name: pod de Deployment en PodInitializing 2 h SÍ dispara (la exclusión es sólo para pods de Job)
+    input_series:
+      - series: 'kube_pod_container_status_waiting_reason{job="kube-state-metrics",namespace="llm",pod="stt-turbo-7d9-abcde",container="main",reason="PodInitializing"}'
+        values: '1x130'
+      - series: 'kube_pod_owner{job="kube-state-metrics",namespace="llm",pod="stt-turbo-7d9-abcde",owner_kind="ReplicaSet",owner_name="stt-turbo-7d9"}'
+        values: '1x130'
+      - series: 'kube_replicaset_owner{job="kube-state-metrics",namespace="llm",replicaset="stt-turbo-7d9",owner_kind="Deployment",owner_name="stt-turbo",owner_is_controller="true"}'
+        values: '1x130'
+    alert_rule_test:
+      - eval_time: 61m
+        alertname: KubeContainerWaiting
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: kube-state-metrics
+              namespace: llm
+              pod: stt-turbo-7d9-abcde
+              container: main
+              reason: PodInitializing
+              workload: stt-turbo
+            exp_annotations:
+              summary: "Pod container waiting longer than 1 hour"
+              description: 'pod/stt-turbo-7d9-abcde in namespace llm on container main has been in waiting state for longer than 1 hour. (reason: "PodInitializing")'
+  # SC-4763 (DEPL-18565): el aprovisionador y la caché de imágenes de la ventana
+  # creative de dgx3 no quedan Ready durante la apertura (bajan decenas de GB;
+  # dgx3_mode.py OPEN_TIMEOUT_S 2 h). Su no-Ready es el diseño: la cobertura de
+  # una provisión colgada la pone Dgx3ProvisionStuck (dgx-infra, 2 h).
+  - interval: 1m
+    name: pod de la ventana dgx3 (dgx3-provision) Pending 25 min NO dispara KubePodNotReady
+    input_series:
+      - series: 'kube_pod_status_phase{job="kube-state-metrics",namespace="comfyui",pod="dgx3-provision-6b9-abcde",phase="Pending"}'
+        values: '1x40'
+      - series: 'kube_pod_owner{job="kube-state-metrics",namespace="comfyui",pod="dgx3-provision-6b9-abcde",owner_kind="ReplicaSet",owner_name="dgx3-provision-6b9"}'
+        values: '1x40'
+      - series: 'kube_replicaset_owner{job="kube-state-metrics",namespace="comfyui",replicaset="dgx3-provision-6b9",owner_kind="Deployment",owner_name="dgx3-provision",owner_is_controller="true"}'
+        values: '1x40'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: KubePodNotReady
+        exp_alerts: []
+  - interval: 1m
+    name: un pod normal del mismo namespace comfyui SÍ dispara (la exclusión va por nombre)
+    input_series:
+      - series: 'kube_pod_status_phase{job="kube-state-metrics",namespace="comfyui",pod="krea2-dataset-store-7d9-abcde",phase="Pending"}'
+        values: '1x40'
+      - series: 'kube_pod_owner{job="kube-state-metrics",namespace="comfyui",pod="krea2-dataset-store-7d9-abcde",owner_kind="ReplicaSet",owner_name="krea2-dataset-store-7d9"}'
+        values: '1x40'
+      - series: 'kube_replicaset_owner{job="kube-state-metrics",namespace="comfyui",replicaset="krea2-dataset-store-7d9",owner_kind="Deployment",owner_name="krea2-dataset-store",owner_is_controller="true"}'
+        values: '1x40'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: KubePodNotReady
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              namespace: comfyui
+              pod: krea2-dataset-store-7d9-abcde
+              workload: krea2-dataset-store
+            exp_annotations:
+              summary: "Pod has been in a non-ready state for more than 15 minutes."
+              description: "Pod comfyui/krea2-dataset-store-7d9-abcde has been in a non-ready state for longer than 15 minutes."
+  # INFRA-1264: KubePodCrashLooping reemplazada del chart con `workload`, para
+  # que workload-degraded agrupe por [namespace, workload] (SC-5033).
+  - interval: 1m
+    name: pod de un Deployment en CrashLoopBackOff dispara KubePodCrashLooping con workload
+    input_series:
+      - series: 'kube_pod_container_status_waiting_reason{job="kube-state-metrics",namespace="llm",pod="stt-turbo-7d9-abcde",container="main",reason="CrashLoopBackOff"}'
+        values: '1x80'
+      - series: 'kube_pod_owner{job="kube-state-metrics",namespace="llm",pod="stt-turbo-7d9-abcde",owner_kind="ReplicaSet",owner_name="stt-turbo-7d9"}'
+        values: '1x80'
+      - series: 'kube_replicaset_owner{job="kube-state-metrics",namespace="llm",replicaset="stt-turbo-7d9",owner_kind="Deployment",owner_name="stt-turbo",owner_is_controller="true"}'
+        values: '1x80'
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: KubePodCrashLooping
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: kube-state-metrics
+              namespace: llm
+              pod: stt-turbo-7d9-abcde
+              container: main
+              reason: CrashLoopBackOff
+              workload: stt-turbo
+            exp_annotations:
+              summary: "Pod is crash looping."
+              description: 'Pod llm/stt-turbo-7d9-abcde (main) is in waiting state (reason: "CrashLoopBackOff").'
+  - interval: 1m
+    name: pod con owner no mapeable en CrashLoopBackOff dispara sin workload (rama unless)
+    input_series:
+      - series: 'kube_pod_container_status_waiting_reason{job="kube-state-metrics",namespace="otro",pod="huerfano-abcde",container="main",reason="CrashLoopBackOff"}'
+        values: '1x80'
+      - series: 'kube_pod_owner{job="kube-state-metrics",namespace="otro",pod="huerfano-abcde",owner_kind="ReplicaSet",owner_name="huerfano-7d9"}'
+        values: '1x80'
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: KubePodCrashLooping
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: kube-state-metrics
+              namespace: otro
+              pod: huerfano-abcde
+              container: main
+              reason: CrashLoopBackOff
+            exp_annotations:
+              summary: "Pod is crash looping."
+              description: 'Pod otro/huerfano-abcde (main) is in waiting state (reason: "CrashLoopBackOff").'

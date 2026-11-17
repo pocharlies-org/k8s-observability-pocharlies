@@ -1,72 +1,104 @@
 # SC-1835: casos de AtlassianMcpToolDown (promtool test rules). `rules` la genera
 # tests/test_sc1835_atlassian_mcp_promtool.py desde manifests/atlassian-mcp-rules.yaml.
-# Los tres términos del `or` (up=0 / sonda atascada / serie ausente) se cubren: el de
-# sonda atascada no tiene caso propio porque su valor depende del epoch de `time()`
-# dentro del test — se comprueba que no interfiere (caso sano sin serie de last_success).
+# INFRA-1262: los tres términos del `or` se cubren cada uno con su down_term
+# (respuesta_mala / sonda_atascada / sonda_sin_metricas) y se comprueba que el
+# `unless on()` no deja salir dos alertas por el mismo fallo (up=0 + last_success
+# vieja = UNA alerta con down_term=respuesta_mala).
 rule_files:
-  - atlassian-mcp.rules.yaml
+- atlassian-mcp.rules.yaml
 evaluation_interval: 1m
 tests:
-  - interval: 1m
-    name: up=0 sostenido dispara pasados los 5 min del for
-    input_series:
-      - series: 'atlassian_mcp_tool_up{job="monitoring/atlassian-mcp-probe"}'
-        values: '0x10'
-    alert_rule_test:
-      - eval_time: 4m
-        alertname: AtlassianMcpToolDown
-        exp_alerts: []
-      - eval_time: 10m
-        alertname: AtlassianMcpToolDown
-        exp_alerts:
-          - exp_labels:
-              severity: critical
-              area: compania
-              component: atlassian-mcp-probe
-              job: monitoring/atlassian-mcp-probe
-            exp_annotations:
-              summary: "Jira/MCP de Atlassian no contesta"
-              description: >-
-                La sonda atlassian-mcp-probe (ns monitoring) no consigue leer una issue via
-                el MCP de Atlassian: `tools/call jira_get_issue` falla o la sonda no publica
-                métricas. Comprobar: `kubectl -n monitoring logs deploy/atlassian-mcp-probe`,
-                el contador de fallos del supervisor en el x86 (journalctl --user -u
-                jira-epic-trigger | grep -i mcp) y el conector Jira del MCP
-                (`kubectl -n agentgateway logs deploy/agentgateway-mcp`). Consecuencia mientras dure:
-                los roles pierden `jira_*` y deben usar `jira_rest.py` por REST. La Request única la
-                abre el supervisor o este incidente vía ops-watch (SC-1728); el Operador IT
-                la cierra con la causa.
-
-  - interval: 1m
-    name: sonda muerta (serie ausente) dispara por absent_over_time, sin labels de serie
-    input_series: []
-    alert_rule_test:
-      - eval_time: 10m
-        alertname: AtlassianMcpToolDown
-        exp_alerts:
-          - exp_labels:
-              severity: critical
-              area: compania
-              component: atlassian-mcp-probe
-            exp_annotations:
-              summary: "Jira/MCP de Atlassian no contesta"
-              description: >-
-                La sonda atlassian-mcp-probe (ns monitoring) no consigue leer una issue via
-                el MCP de Atlassian: `tools/call jira_get_issue` falla o la sonda no publica
-                métricas. Comprobar: `kubectl -n monitoring logs deploy/atlassian-mcp-probe`,
-                el contador de fallos del supervisor en el x86 (journalctl --user -u
-                jira-epic-trigger | grep -i mcp) y el conector Jira del MCP
-                (`kubectl -n agentgateway logs deploy/agentgateway-mcp`). Consecuencia mientras dure:
-                los roles pierden `jira_*` y deben usar `jira_rest.py` por REST. La Request única la
-                abre el supervisor o este incidente vía ops-watch (SC-1728); el Operador IT
-                la cierra con la causa.
-
-  - interval: 1m
-    name: sonda sana (up=1) no dispara
-    input_series:
-      - series: 'atlassian_mcp_tool_up{job="monitoring/atlassian-mcp-probe"}'
-        values: '1x10'
-    alert_rule_test:
-      - eval_time: 10m
-        alertname: AtlassianMcpToolDown
-        exp_alerts: []
+- interval: 1m
+  name: up=0 sostenido dispara pasados los 5 min del for (down_term=respuesta_mala)
+  input_series:
+  - series: atlassian_mcp_tool_up{job="monitoring/atlassian-mcp-probe"}
+    values: '0x10'
+  alert_rule_test:
+  - eval_time: 4m
+    alertname: AtlassianMcpToolDown
+    exp_alerts: []
+  - eval_time: 10m
+    alertname: AtlassianMcpToolDown
+    exp_alerts:
+    - exp_labels:
+        severity: critical
+        area: compania
+        component: atlassian-mcp-probe
+        job: monitoring/atlassian-mcp-probe
+        down_term: respuesta_mala
+      exp_annotations:
+        summary: Jira/MCP de Atlassian no contesta
+        termino: respuesta_mala
+        description: 'La sonda atlassian-mcp-probe (ns monitoring) no consigue leer una issue via el MCP de Atlassian: `tools/call jira_get_issue` falla o la sonda no publica métricas. Término que dispara: respuesta_mala (respuesta_mala = responde mal, ver `atlassian_mcp_probe_last_error_info` y el log del ciclo fallido con status y mensaje; sonda_atascada = viva pero 5 ciclos sin completar; sonda_sin_metricas = muerta o sin scrape). Comprobar: `kubectl -n monitoring logs deploy/atlassian-mcp-probe`, el contador de fallos del supervisor en el x86 (journalctl --user -u jira-epic-trigger | grep -i mcp) y el conector Jira del MCP (`kubectl -n agentgateway logs deploy/agentgateway-mcp`). Consecuencia mientras dure: los roles pierden `jira_*` y deben usar `jira_rest.py` por REST. La Request única la abre el supervisor o este incidente vía ops-watch (SC-1728); el Operador IT la cierra con la causa.'
+- interval: 1m
+  name: 'up=0 con last_success vieja: UNA sola alerta, gana respuesta_mala (unless excluye sonda_atascada)'
+  input_series:
+  - series: atlassian_mcp_tool_up{job="monitoring/atlassian-mcp-probe"}
+    values: '0x10'
+  - series: atlassian_mcp_tool_last_success_timestamp_seconds{job="monitoring/atlassian-mcp-probe"}
+    values: '0x10'
+  alert_rule_test:
+  - eval_time: 10m
+    alertname: AtlassianMcpToolDown
+    exp_alerts:
+    - exp_labels:
+        severity: critical
+        area: compania
+        component: atlassian-mcp-probe
+        job: monitoring/atlassian-mcp-probe
+        down_term: respuesta_mala
+      exp_annotations:
+        summary: Jira/MCP de Atlassian no contesta
+        termino: respuesta_mala
+        description: 'La sonda atlassian-mcp-probe (ns monitoring) no consigue leer una issue via el MCP de Atlassian: `tools/call jira_get_issue` falla o la sonda no publica métricas. Término que dispara: respuesta_mala (respuesta_mala = responde mal, ver `atlassian_mcp_probe_last_error_info` y el log del ciclo fallido con status y mensaje; sonda_atascada = viva pero 5 ciclos sin completar; sonda_sin_metricas = muerta o sin scrape). Comprobar: `kubectl -n monitoring logs deploy/atlassian-mcp-probe`, el contador de fallos del supervisor en el x86 (journalctl --user -u jira-epic-trigger | grep -i mcp) y el conector Jira del MCP (`kubectl -n agentgateway logs deploy/agentgateway-mcp`). Consecuencia mientras dure: los roles pierden `jira_*` y deben usar `jira_rest.py` por REST. La Request única la abre el supervisor o este incidente vía ops-watch (SC-1728); el Operador IT la cierra con la causa.'
+- interval: 1m
+  name: sonda atascada (up=1, last_success muy vieja) dispara con down_term=sonda_atascada
+  input_series:
+  - series: atlassian_mcp_tool_up{job="monitoring/atlassian-mcp-probe"}
+    values: 1x10
+  - series: atlassian_mcp_tool_last_success_timestamp_seconds{job="monitoring/atlassian-mcp-probe"}
+    values: '0x10'
+  alert_rule_test:
+  - eval_time: 4m
+    alertname: AtlassianMcpToolDown
+    exp_alerts: []
+  - eval_time: 12m
+    alertname: AtlassianMcpToolDown
+    exp_alerts:
+    - exp_labels:
+        severity: critical
+        area: compania
+        component: atlassian-mcp-probe
+        job: monitoring/atlassian-mcp-probe
+        down_term: sonda_atascada
+      exp_annotations:
+        summary: Jira/MCP de Atlassian no contesta
+        termino: sonda_atascada
+        description: 'La sonda atlassian-mcp-probe (ns monitoring) no consigue leer una issue via el MCP de Atlassian: `tools/call jira_get_issue` falla o la sonda no publica métricas. Término que dispara: sonda_atascada (respuesta_mala = responde mal, ver `atlassian_mcp_probe_last_error_info` y el log del ciclo fallido con status y mensaje; sonda_atascada = viva pero 5 ciclos sin completar; sonda_sin_metricas = muerta o sin scrape). Comprobar: `kubectl -n monitoring logs deploy/atlassian-mcp-probe`, el contador de fallos del supervisor en el x86 (journalctl --user -u jira-epic-trigger | grep -i mcp) y el conector Jira del MCP (`kubectl -n agentgateway logs deploy/agentgateway-mcp`). Consecuencia mientras dure: los roles pierden `jira_*` y deben usar `jira_rest.py` por REST. La Request única la abre el supervisor o este incidente vía ops-watch (SC-1728); el Operador IT la cierra con la causa.'
+- interval: 1m
+  name: sonda muerta (serie ausente) dispara por absent_over_time con down_term=sonda_sin_metricas, sin labels de serie
+  input_series: []
+  alert_rule_test:
+  - eval_time: 10m
+    alertname: AtlassianMcpToolDown
+    exp_alerts:
+    - exp_labels:
+        severity: critical
+        area: compania
+        component: atlassian-mcp-probe
+        down_term: sonda_sin_metricas
+      exp_annotations:
+        summary: Jira/MCP de Atlassian no contesta
+        termino: sonda_sin_metricas
+        description: 'La sonda atlassian-mcp-probe (ns monitoring) no consigue leer una issue via el MCP de Atlassian: `tools/call jira_get_issue` falla o la sonda no publica métricas. Término que dispara: sonda_sin_metricas (respuesta_mala = responde mal, ver `atlassian_mcp_probe_last_error_info` y el log del ciclo fallido con status y mensaje; sonda_atascada = viva pero 5 ciclos sin completar; sonda_sin_metricas = muerta o sin scrape). Comprobar: `kubectl -n monitoring logs deploy/atlassian-mcp-probe`, el contador de fallos del supervisor en el x86 (journalctl --user -u jira-epic-trigger | grep -i mcp) y el conector Jira del MCP (`kubectl -n agentgateway logs deploy/agentgateway-mcp`). Consecuencia mientras dure: los roles pierden `jira_*` y deben usar `jira_rest.py` por REST. La Request única la abre el supervisor o este incidente vía ops-watch (SC-1728); el Operador IT la cierra con la causa.'
+- interval: 1m
+  name: sonda sana (up=1) no dispara
+  input_series:
+  - series: atlassian_mcp_tool_up{job="monitoring/atlassian-mcp-probe"}
+    values: 1x10
+  - series: atlassian_mcp_tool_last_success_timestamp_seconds{job="monitoring/atlassian-mcp-probe"}
+    values: 999999999999x10
+  alert_rule_test:
+  - eval_time: 10m
+    alertname: AtlassianMcpToolDown
+    exp_alerts: []
