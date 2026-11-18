@@ -1,4 +1,4 @@
-# SC-5631 — comprobacion de salud de los backups restic (ubuntu/gx10 --> sauvage),
+# SC-5631 — comprobacion de salud de los backups restic (ubuntu/dgx/gx10 --> sauvage),
 # trasladada del crontab del x86 (`30 9 * * * check-backup-health.sh`). Diaria a las
 # 09:30 Europe/Madrid, tras la ventana de backups, igual que en el host.
 #
@@ -6,13 +6,13 @@
 # exit 1 cuando un repo esta viejo. En el host la alarma era `logger -t backup-health`
 # y el exit code del cron (que no consumia nadie); aqui el exit code es
 # K8sCronJobFailed (manifests/rules.yaml), que enruta al cron-alert-analyzer con los
-# logs del Job. Umbral: 36 h por repo.
+# logs del Job. Umbrales: 36 h por repo, 72 h para el repo dgx.
 #
-# dgx-->sauvage retirado del check (SC-5753, 16-11): era el disparo de CRON-19624. La
-# unidad restic-hostpath-backup@nvidia-dgx no tenia contenido que respaldar desde el
-# 11-ago (README de dgx-infra) y su timer quedo desactivado en dgx. Si algun dia se le
-# da contenido al backup de dgx, volver a meter el repo aqui y en el comando forzado
-# de sauvage (backup-age-report).
+# dgx-->sauvage de vuelta (SC-5757, 17-11): la unidad restic-hostpath-backup@nvidia-dgx
+# se reactivo con dgx-infra/data como payload (dgx-infra PR #2140) y su timer vuelve a
+# estar activo en dgx. La habia sacado SC-5753 (16-11) cuando no tenia contenido que
+# respaldar; este bloque es el "volver a meter el repo aqui y en el comando forzado de
+# sauvage (backup-age-report)" que SC-5753 dejo escrito.
 #
 # Credencial (1Password -> ESO -> Secret, nada en git): item `infra-ssh-backup-health`
 # del vault `k8s-pocharlies`, campo `private_key` (sembrado por security, SC-5631). Es
@@ -71,6 +71,7 @@ data:
     MAX_AGE_HOURS="${MAX_AGE_HOURS:-36}"
     SAUVAGE="${SAUVAGE_HOST:-100.109.183.9}"
     SSH_KEY="${SSH_KEY:-/secrets/ssh-key}"
+    declare -A MAX_AGE_OVERRIDE=( ["dgx-->sauvage"]=72 )   # repo dgx: el primer snapshot puede cruzar dos ventanas
     log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
 
     report=$(ssh -F /dev/null -i "$SSH_KEY" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
@@ -79,11 +80,12 @@ data:
 
     now_ts=$(date +%s)
     overall_status=0
-    # dgx-->sauvage fuera (SC-5753): la unidad nvidia-dgx se retiro (sin contenido desde
-    # 2026-08-11 y timer desactivado en dgx). El repo sigue en sauvage sin tocar.
-    for name in "ubuntu-->sauvage" "gx10-->sauvage"; do
+    # dgx-->sauvage de vuelta (SC-5757, 17-11): la unidad nvidia-dgx se reactivo con
+    # dgx-infra/data como payload (dgx-infra PR #2140); el timer vuelve a estar activo
+    # en dgx. SC-5753 la habia sacado del check cuando no tenia contenido que respaldar.
+    for name in "ubuntu-->sauvage" "dgx-->sauvage" "gx10-->sauvage"; do
         snap_ts=$(awk -v n="$name" '$1==n {print $2}' <<<"$report")
-        repo_max="$MAX_AGE_HOURS"
+        repo_max="${MAX_AGE_OVERRIDE[$name]:-$MAX_AGE_HOURS}"
         if [[ ! "$snap_ts" =~ ^[0-9]+$ ]]; then
             log "ALERT [$name]: sin snapshot legible en el informe de sauvage"
             overall_status=1
