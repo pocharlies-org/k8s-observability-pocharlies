@@ -8,13 +8,12 @@ casa: los nombres no empiezan por ``Synapse`` para no caer en
 ``synapse-control-plane`` (servicios, no credenciales).
 
 The checks every such rule shares live in ``keep_correlation.CorrelationContract``;
-this file keeps only what is specific to the family.
-
-Hermetic: no kubectl, no network.
+this file keeps only what is specific to the family (the two alert names and
+their severity). Runs hermetically — no kubectl, no cluster.
 """
 
-from pathlib import Path
 import unittest
+from pathlib import Path
 
 from keep_correlation import CorrelationContract
 
