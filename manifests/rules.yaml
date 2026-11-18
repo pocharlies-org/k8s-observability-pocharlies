@@ -3071,6 +3071,7 @@ spec:
               caché y `... prune` para podarla; si el GC (buildkitd.toml, SC-2759) no está
               podando, revisar el ConfigMap buildkitd-amd64-config.
 
+---
 apiVersion: operator.victoriametrics.com/v1beta1
 kind: VMRule
 metadata:
