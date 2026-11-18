@@ -2447,6 +2447,62 @@ spec:
 apiVersion: operator.victoriametrics.com/v1beta1
 kind: VMRule
 metadata:
+  name: pocharlies-vmsingle-memory
+  namespace: monitoring
+spec:
+  groups:
+    - name: pocharlies.vmsingle-memory
+      rules:
+        # INFRA-1418: par calibrado que reemplaza a TooHighMemoryUsage del
+        # operador (desactivada en victoria-metrics/values.yaml). Misma
+        # expresión que ella — min_over_time(anon RSS [10m]) / vm_available_
+        # memory_bytes, ambas series del propio proceso, así que la relación es
+        # anon-vs-LÍMITE del contenedor, no vs el nodo. El problema (SC-5644):
+        # VictoriaMetrics dimensiona sus caches hasta el límite por diseño, y
+        # el umbral único 0.8/5m del operador cruzaba en ciclos con el working
+        # set creciendo (4 críticos el 15-11, 0 OOM en 17 días). Aquí el umbral
+        # se desdobla según lo que significa cruzarlo:
+        #   - 0.75 sostenido 24 h = el working set se acerca al límite de
+        #     forma ESTABLE: es capacidad, no incidente (rotación planificada
+        #     del límite o revisión de cardinalidad de series activas);
+        #   - 0.92 sostenido 5 m = queda <8 % de margen bajo el límite: riesgo
+        #     real de OOMKill ahora (el nodo ks5-cp-3 donde vive vmsingle tenía
+        #     22 GiB MemAvailable medido 16-11).
+        # Medido 16-11 con límite 24Gi: ratio vivo 0.45, pico 7d histórico
+        # 13.9/16Gi = 0.87 con el límite anterior. Calibrado con el límite
+        # actual: si se vuelve a rotar, recalcular (runbook `infra-alert-ops`,
+        # receta vmsingle).
+        - alert: VmsingleMemoryMargin
+          expr: |
+            (min_over_time(process_resident_memory_anon_bytes{job="vmsingle-vm-victoria-metrics-k8s-stack"}[10m])
+              / vm_available_memory_bytes{job="vmsingle-vm-victoria-metrics-k8s-stack"}) > 0.75
+          for: 24h
+          labels:
+            severity: warning
+            area: capacity
+            domain: observability
+            component: vmsingle
+          annotations:
+            summary: "vmsingle working set sits above 75% of its memory limit for a day"
+            description: "vmsingle anon RSS is at {{ printf \"%.2f\" $value }} of its container limit, sustained 24 h. This is capacity, not an incident: VictoriaMetrics fills to the limit by design and the growth tracks active series (~0.1 GiB/d measured). Do NOT rotate the limit blind — check the 7d peak vs the limit and the series trend; if the 7d peak exceeds 0.75×limit the rotation is a planned capacity task (or a cardinality review), not an emergency. Runbook: skill `infra-alert-ops`, receta vmsingle (INFRA-1418)."
+        - alert: VmsingleMemoryOOMRisk
+          expr: |
+            (min_over_time(process_resident_memory_anon_bytes{job="vmsingle-vm-victoria-metrics-k8s-stack"}[10m])
+              / vm_available_memory_bytes{job="vmsingle-vm-victoria-metrics-k8s-stack"}) > 0.92
+          for: 5m
+          labels:
+            severity: critical
+            area: capacity
+            domain: observability
+            component: vmsingle
+          annotations:
+            summary: "vmsingle is within 8% of its memory limit — OOM risk"
+            description: "vmsingle anon RSS is at {{ printf \"%.2f\" $value }} of its container limit for 5 minutes: less than 8% of margin below the cgroup limit, an OOMKill is imminent. Unlike the 0.75/24h margin alert this IS an incident: raise the limit now (victoria-metrics/values.yaml, same rotation as PR #213) and check whether a cardinality spike in active series explains the jump."
+
+---
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMRule
+metadata:
   name: pocharlies-skirmbooks-ingest
   namespace: monitoring
 spec:
