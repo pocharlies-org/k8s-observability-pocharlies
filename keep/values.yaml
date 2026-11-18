@@ -1011,14 +1011,27 @@ backend:
     # SC-1600 (02-10-2026): con 2+3, la ráfaga del stale-reaper agota el pool
     # de cada worker y el check del API-key de Alertmanager espera los 30 s
     # exactos del `pool_timeout` de SQLAlchemy y devuelve 401 (`POST
-    # /alerts/event/prometheus 401 in 30.03s`). 3+5 mantiene el techo por
-    # debajo del que motivó el recorte de julio (5 procesos × 8 = 40/pod, con
-    # 1 réplica) y deja margen para que el webhook nunca espere por una
-    # conexión.
+    # /alerts/event/prometheus 401 in 30.03s`). Se subió a 3+5.
+    #
+    # SC-5932 (17-11-2026): 3+5 vuelve a ser el cuello. 24 timeouts de
+    # `QueuePool limit of size 3 overflow 5` en 3 h 30 min de backend y
+    # Alertmanager cortando el webhook (`context deadline exceeded`,
+    # `AlertmanagerFailedToSendAlerts` → incidente HUB-19862). El mecanismo es
+    # la fuga de (2): cada conexión fugada ocupa plaza hasta que el servidor la
+    # corta a los 5 min, y una ráfaga de enrichment llena las 8 plazas de un
+    # worker; el webhook espera 30 s por conexión y Alertmanager tira el
+    # evento. Se sube a 5+10 (los defaults de db_utils.py): techo potencial de
+    # 15/worker y 75/pod, pero el techo es potencial — la base `keep` medía 16
+    # conexiones reales con el fallo en curso, y postgres-shared va a ~250 de
+    # 500 (en julio, cuando se recortó, iba a 367 de 400 y keep eran 64 con 2
+    # réplicas; hoy hay 1). Si el shared volviera a acercarse a su techo, la
+    # palanca correcta es el `idle_in_transaction_session_timeout` del rol
+    # (bajarlo de 5 min), no recortar de nuevo este pool: con 8 plazas por
+    # worker el webhook vuelve a quedarse sin conexión.
     - name: DATABASE_POOL_SIZE
-      value: "3"
-    - name: DATABASE_MAX_OVERFLOW
       value: "5"
+    - name: DATABASE_MAX_OVERFLOW
+      value: "10"
     - name: KEEP_DB_PRE_PING_ENABLED
       value: "true"
 
