@@ -65,9 +65,17 @@ spec:
           # 17:58Z coincidieron con el load del head qwen38). Cada muerte deja al
           # vmagent sin target -> TargetDown + TooManyScrapeErrors + TooManyLogs.
           # Doble de techo = margen medido, no parche de sintoma.
+          # 2026-11-18 (it, SC-5889): el techo de 384Mi VOLVIO a clavarse. El 17-18/11
+          # container_memory_max_usage_bytes marco 384.0/384.0/383.9 MiB (clipped) en
+          # nvidia-dgx/gx10-ec3d/dgx3 y siguieron los OOMKills (48/89/6 restarts). Cada
+          # muerte reabre el incidente Keep «Monitorización degradada» (regla
+          # TooManyScrapeErrors: increase(vm_promscrape_scrapes_failed_total[5m])>0
+          # for 15m). Otro doble = 768Mi; el page cache del enumerado crece con el
+          # techo, asi que el pico medido siempre clava el limit -- lo que corta el
+          # OOM es margen por encima del pico, no el valor exacto.
           resources:
             requests: { cpu: 10m, memory: 64Mi }
-            limits: { memory: 384Mi }
+            limits: { memory: 768Mi }
           # privileged: nsenter into PID 1 for live host systemd state needs
           # it — caps+seccomp+apparmor unconfined are NOT enough for setns into
           # the host mount ns (standard node-agent reality). Decision 2026-06-11,
