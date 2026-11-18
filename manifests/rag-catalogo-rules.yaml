@@ -1,0 +1,57 @@
+# SC-5827 (condición C9 del dictamen architect): frescura de la proyección de
+# catálogo, ahora que el dueño es rag-app. Nace en el mismo corte que borra
+# `pocharlies-brain-door` y la alerta `BrainIngestConsecutiveFailures` de
+# `pocharlies-brain-ingest` (rules.yaml): sin esto, el riesgo principal del
+# corte —`catalogo` y el espejo Hindsight `tienda` quedándose viejos en
+# silencio si el webhook propio (/webhooks/catalogo) deja de aplicar eventos—
+# se queda sin detección. El handler nunca lanza (acusa recibo siempre y
+# registra en el logger `webhook-catalogo`), así que la edad de lo aplicado es
+# la señal.
+#
+# La serie la expone el exporter CNPG de postgres-shared con la consulta a
+# medida `catalogo_webhook_freshness` (catalogo-freshness-queries.yaml de
+# k8s-infra-pocharlies, patrón aurora-rca-coverage-queries). Guardas que ya
+# existen y no se repiten aquí: `PostgresSharedMetricsMissing` y
+# `PostgresSharedDown` (databases/postgres-shared/monitoring.yaml de
+# k8s-infra) avisan si la serie desaparece o el clúster cae — sin serie no hay
+# falsa frescura.
+#
+# Umbral: 48 h sin un `updated_at` (versión de Shopify) más reciente aplicado,
+# mantenido 6 h. Elegido sobre el ritmo medido de la tienda (~8 webhooks/h en
+# las 37 h del inventario SC-5827): 48 h sin ni un producto tocado no es una
+# tienda tranquila, es un webhook muerto. Limitación asumida (documentada en
+# el ConfigMap): una temporada entera sin editar productos también envejece la
+# serie; si algún día pasa, el fix es un heartbeat del handler, no bajar el
+# umbral.
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMRule
+metadata:
+  name: pocharlies-rag-catalogo
+  namespace: monitoring
+spec:
+  groups:
+    - name: pocharlies.rag-catalogo
+      rules:
+        - alert: RagCatalogoWebhookStale
+          expr: >-
+            cnpg_catalogo_webhook_freshness_max_product_age_seconds{namespace="databases"} > 172800
+          for: 6h
+          labels:
+            severity: warning
+            area: availability
+            domain: catalogo
+          annotations:
+            summary: >-
+              El catalogo de Shopify lleva {{ $value | humanizeDuration }} sin
+              aplicar un products/update (webhook propio de rag-app)
+            description: >-
+              La fila mas reciente de catalogo.product por updated_at tiene mas
+              de 48 h. El webhook /webhooks/catalogo de rag-app (ns skirmshop)
+              es el unico escritor desde SC-5827: o la tienda no ha tocado un
+              producto en dos dias (raro, ver Shopify), o el webhook deja de
+              aplicar. Diagnostico: logs del pod rag-app con el logger
+              `webhook-catalogo` (Loki, retencion 14 d), las suscripciones
+              products/create|update de la app en el admin de Shopify, y
+              `SELECT max(updated_at) FROM catalogo.product` via
+              postgres-shared-nvme-rw. El espejo Hindsight `tienda` comparte
+              camino: si el catalogo esta viejo, el espejo tambien.
