@@ -27,6 +27,16 @@
 # Como red de seguridad final, si tras el replay el incident sigue firing y no
 # queda ninguna alerta suya firing, se resuelve por API (mismo camino que la UI).
 #
+# SC-5867 (17-11-2026): las alerts se leen en UN `POST /alerts/query` agrupado
+# por incident, NO con `/incidents/<id>/alerts` por incident. En keep 0.52.1 ese
+# endpoint ejecuta query.count()/all() fuera del contexto de sesión
+# (get_incident_alerts_and_links_by_incident_id, keep/api/core/db.py): cada
+# llamada deja una transacción huérfana que no vuelve al pool; el propio job,
+# con ~70 llamadas por pasada, mataba el pool de los workers (3+5) y desde ahí
+# todo 500 — 71 incidents sin resolver 5 días mientras el CronJob decía
+# "Complete". Si el fetch de alerts falla, el job sale con exit != 0 (ruidoso):
+# sin alerts no hay decisión, y el silencio fue justo el daño de SC-5867.
+#
 # NUNCA resuelve nada si no puede confirmar el estado vivo: ante cualquier fallo
 # contra la API del clúster para esa app (o para listar incidents), sale sin tocar
 # nada — la ausencia de datos no es prueba de salud. Idempotente: resolved sobre
@@ -198,15 +208,54 @@ data:
             "description": f"{app} {why} — resolved por la red de seguridad de Keep (SC-5269)",
         }
 
+    ALERTS_CEL = 'name == "ArgoCDAppDegraded" || name == "ArgoCDSyncFailed"'
+
+    def argocd_alerts_by_incident():
+        """Últimas alertas ArgoCD (una por fingerprint) agrupadas por incident id.
+
+        SC-5867: NO se usa /incidents/<id>/alerts. En keep 0.52.1,
+        get_incident_alerts_and_links_by_incident_id (keep/api/core/db.py) ejecuta
+        query.count() y query.all() DESPUÉS de cerrar el `with
+        existed_or_new_session(...)`: cada llamada reabre una transacción huérfana
+        (idle in transaction sobre lastalerttoincident) que no vuelve al pool. Con
+        pool 3+5 por worker, 8 llamadas agotan el pool de un worker y desde ahí
+        toda petición enrutada a él da 500 en el middleware del API key
+        (QueuePool TimeoutError) — medido 17-11-2026: 71 incidents sin resolver
+        durante 5 días en silencio. POST /alerts/query (query_last_alerts) ejecuta
+        todo dentro de la sesión: no fuga. El campo `incident` del DTO es la lista
+        de incidents vinculados al fingerprint, separada por comas (un fingerprint
+        ArgoCD se vincula a todos los incidents que abrió su alerta).
+        """
+        by_inc = {}
+        offset = 0
+        while True:
+            resp = call(f"{KEEP}/alerts/query", method="POST", headers=keep_h,
+                        payload={"cel": ALERTS_CEL, "limit": 1000, "offset": offset})
+            items = resp.get("results", [])
+            for a in items:
+                for inc_id in (a.get("incident") or "").split(","):
+                    inc_id = inc_id.strip()
+                    if inc_id:
+                        by_inc.setdefault(inc_id, []).append(a)
+            if not items or offset + len(items) >= resp.get("count", 0):
+                return by_inc
+            offset += 1000
+
+    # SC-5867: sin este fetch no hay decisión posible. El job termina RUIDOSO
+    # (exit != 0) si falla — antes el fallo por incident se tragaba con un
+    # "sin alerts" y el CronJob quedaba Complete sin resolver nada 5 días.
+    alerts_by_inc = {}
+    if firing:
+        try:
+            alerts_by_inc = argocd_alerts_by_incident()
+        except Exception as e:
+            print(f"KEEP: fetch de alerts falló ({e}); no puedo decidir, salgo con error", file=sys.stderr)
+            sys.exit(1)
+
     now = time.time()
     replayed = resolved = 0
     for inc in firing:
-        try:
-            resp = call(f"{KEEP}/incidents/{inc['id']}/alerts?limit=1000", headers=keep_h)
-        except Exception as e:
-            print(f"  {inc['id'][:8]}: sin alerts ({e})", file=sys.stderr)
-            continue
-        items = resp.get("items", resp) if isinstance(resp, dict) else resp
+        items = alerts_by_inc.get(str(inc["id"]), [])
         # Mismo criterio que el filtro de incidents: el claim de Aurora pasa a
         # acknowledged también las ALERTAS al crearse (medido en SC-5288: el
         # ArgoCDSyncFailed de sc5269-test quedó acknowledged y el filtro de solo
@@ -258,8 +307,7 @@ data:
             if fresh.get("status") != "firing":
                 resolved += 1
             else:
-                resp2 = call(f"{KEEP}/incidents/{inc['id']}/alerts?limit=1000", headers=keep_h)
-                s2 = resp2.get("items", resp2) if isinstance(resp2, dict) else resp2
+                s2 = argocd_alerts_by_incident().get(str(inc["id"]), [])
                 if not [a for a in s2 if a.get("status") == "firing"]:
                     call(f"{KEEP}/incidents/{inc['id']}/status", method="POST",
                          payload={"status": "resolved"}, headers=keep_h)
