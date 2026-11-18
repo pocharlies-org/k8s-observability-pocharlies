@@ -1,0 +1,58 @@
+# SC-5955 — «el refresh OAuth de Gmail ha muerto (invalid_grant)», al primer fallo.
+#
+# Por qué existe. SC-5911: el refresh_token de info@e-dani.com llevaba revocado
+# en Google y el DLQ `dlq.adapter.gmail.webhooks` ya crecía cuando saltó
+# RabbitmqDlqGrowth — tarde, el daño estaba hecho. Los dos consumidores del OAuth
+# de Gmail exponen su contador desde hace meses, diseñado explícitamente como
+# señal de alerta, y ninguna regla lo miraba:
+#   - synapse_gmail_token_invalid_total{tenant,account}  (adapter-gmail, main.py
+#     _refresh_failed: cada RefreshError invalid_grant suma uno por buzón)
+#   - correo_gmail_token_invalido_total{motivo,buzon}    (correo-core,
+#     puertos/gmail_google.py _llamar: el buzón no se activa; `motivo` es
+#     refresh|scope, `buzon` el índice de la configuración)
+# El DLQ (RabbitmqDlqGrowth) queda como backstop, no como detector.
+#
+# `for: 1m` con ventana [5m]: dispara en el primer ciclo de evaluación tras el
+# primer incremento (minutos, no horas). Ningún término `absent`: la serie del
+# adapter no existe hasta el primer fallo (el contador no se pre-inicializa) y
+# su ausencia es el estado sano — una regla `absent` sería falsa crítica.
+#
+# Severidad `warning` a propósito: `critical-safety-net` no la toca y la regla
+# de correlación `gmail-oauth-token` (keep/rules/correlation-rules.yaml) es la
+# que la convierte en incidente notificado. Los nombres NO empiezan por
+# `Synapse` para no casar con `synapse-control-plane` (servicios, no credenciales).
+#
+# Re-grantar un token caído: skill `oauth-gmail-regrant` (catálogo), ~10 min por
+# agente. Pruebas de la expresión: tests/promtool/gmail-token.test.yaml.
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMRule
+metadata:
+  name: pocharlies-gmail-token
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: gmail-oauth
+    app.kubernetes.io/component: alerting
+spec:
+  groups:
+    - name: pocharlies.gmail-token
+      rules:
+        - alert: GmailTokenInvalid
+          expr: increase(synapse_gmail_token_invalid_total[5m]) > 0
+          for: 1m
+          labels:
+            severity: warning
+            area: correo
+            component: synapse-adapter-gmail
+          annotations:
+            summary: "OAuth de Gmail caído (invalid_grant): {{ $labels.account }}"
+            description: "El refresh_token de {{ $labels.account }} (tenant {{ $labels.tenant }}) está revocado o caducado en Google: el adapter-gmail deja de leer ese buzón y sus webhooks irán al DLQ. Es el detector temprano, antes de que RabbitmqDlqGrowth vea crecer la cola. Comprobar: `kubectl -n synapse logs deploy/synapse-adapter-gmail --since=1h | grep -i invalid_grant`. Arreglo: skill `oauth-gmail-regrant` (re-consentimiento por agent-jake + security escribe el JSON en 1Password + force-sync del ExternalSecret + rollout)."
+        - alert: CorreoTokenInvalido
+          expr: increase(correo_gmail_token_invalido_total[5m]) > 0
+          for: 1m
+          labels:
+            severity: warning
+            area: correo
+            component: correo-core
+          annotations:
+            summary: "correo-core no activa el buzón {{ $labels.buzon }} de la configuración ({{ $labels.motivo }})"
+            description: "Google rechazó el refresh del buzón {{ $labels.buzon }} (motivo {{ $labels.motivo }}: refresh = token revocado/caducado, scope = el token no es el grant estrecho del cliente): ese buzón queda sin leer por correo-core hasta re-grantarlo. Comprobar: `kubectl -n correo logs deploy/correo --since=1h | grep 'no se activa'`. Arreglo: skill `oauth-gmail-regrant`."

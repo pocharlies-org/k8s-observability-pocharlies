@@ -843,6 +843,35 @@ rules:
       Synapse empujando a Alertmanager; ahora sale de sus métricas.
 
   # =========================================================================
+  # CORREO — OAuth de Gmail caído (SC-5955)
+  # =========================================================================
+  # SC-5911: un refresh_token revocado en Google pasó horas desapercibido y
+  # saltó por RabbitmqDlqGrowth, cuando el DLQ ya crecía. Las dos alertas
+  # (manifests/gmail-token-rules.yaml) disparan al PRIMER invalid_grant; el DLQ
+  # queda como backstop. Los nombres no empiezan por Synapse a propósito:
+  # `synapse-control-plane` agrupa servicios, no credenciales, y no debe
+  # tragárselas (test_sc5955_gmail_token_correlation: cada alerta casa SOLO con
+  # esta regla). `warning`: critical-safety-net no las toca.
+  - ruleName: gmail-oauth-token
+    celQuery: 'name in ["GmailTokenInvalid", "CorreoTokenInvalido"]'
+    sqlQuery:
+      sql: "((name = :name_1 or name = :name_2))"
+      params:
+        name_1: GmailTokenInvalid
+        name_2: CorreoTokenInvalido
+    timeframeInSeconds: 1800
+    timeUnit: minutes
+    groupingCriteria: [alertname]
+    createOn: any
+    resolveOn: all_resolved
+    incidentPrefix: MAIL
+    incidentNameTemplate: "OAuth de Gmail caído: {{ alertname }}"
+    groupDescription: >-
+      El refresh OAuth de un buzón de Gmail ha muerto (invalid_grant): adapter-gmail
+      (buzón en la alerta) o correo-core (buzón de la configuración). Re-grantar:
+      skill `oauth-gmail-regrant`, ~10 min por agente.
+
+  # =========================================================================
   # CRONJOBS — sustituye la lane al cron-alert-analyzer
   # =========================================================================
   # Hasta ahora K8sCronJobFailed se reenviaba a un microservicio propio que leía
