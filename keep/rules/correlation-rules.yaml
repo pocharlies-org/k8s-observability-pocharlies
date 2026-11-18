@@ -825,6 +825,15 @@ rules:
   #
   # El detalle de qué workflow concreto falló va en las alertas del incidente y
   # en el resumen del LLM; el título sólo necesita decir de quién es el problema.
+  #
+  # SC-5925: también por `severity`. La rama critical (impacto negocio-critico
+  # declarado en synapse) tiene que ABRIR su propio incidente: aurora-investigate
+  # solo despacha en `created`, así que un critical que cayera en el incidente
+  # warning ya abierto del mismo tenant subiría su severidad (Keep toma la máxima)
+  # pero se quedaría sin RCA. `severity` siempre viene en la alerta: agrupar por una
+  # etiqueta que solo llevara la rama crítica mandaría las demás al grupo `none`,
+  # común a todos los tenants (rulesengine._calc_rule_fingerprint). El nombre no
+  # cambia: la clave keep-causa de ops-watch se deriva de él.
   - ruleName: synapse-workflow-failures
     celQuery: 'name == "SynapseWorkflowFailed"'
     sqlQuery:
@@ -833,7 +842,7 @@ rules:
         name_1: SynapseWorkflowFailed
     timeframeInSeconds: 1800
     timeUnit: minutes
-    groupingCriteria: [tenant]
+    groupingCriteria: [tenant, severity]
     createOn: any
     resolveOn: all_resolved
     incidentPrefix: SYNW
