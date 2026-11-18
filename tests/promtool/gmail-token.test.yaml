@@ -1,0 +1,70 @@
+# SC-5955: casos de GmailTokenInvalid y CorreoTokenInvalido (promtool test rules).
+# `rules` la genera tests/test_sc5955_gmail_token_promtool.py desde
+# manifests/gmail-token-rules.yaml. El criterio de la Request: el PRIMER
+# invalid_grant dispara (buzón nombrado), no el crecimiento del DLQ.
+rule_files:
+- gmail-token.rules.yaml
+evaluation_interval: 1m
+tests:
+- interval: 1m
+  name: adapter-gmail — el primer invalid_grant dispara con el buzón nombrado
+  input_series:
+  - series: synapse_gmail_token_invalid_total{job="synapse",tenant="skirmshop",account="info@e-dani.com"}
+    values: '0x5 1x5'
+  alert_rule_test:
+  - eval_time: 4m
+    alertname: GmailTokenInvalid
+    exp_alerts: []
+  - eval_time: 7m
+    alertname: GmailTokenInvalid
+    exp_alerts:
+    - exp_labels:
+        severity: warning
+        area: correo
+        component: synapse-adapter-gmail
+        job: synapse
+        tenant: skirmshop
+        account: info@e-dani.com
+      exp_annotations:
+        summary: 'OAuth de Gmail caído (invalid_grant): info@e-dani.com'
+        description: 'El refresh_token de info@e-dani.com (tenant skirmshop) está revocado o caducado en Google: el adapter-gmail deja de leer ese buzón y sus webhooks irán al DLQ. Es el detector temprano, antes de que RabbitmqDlqGrowth vea crecer la cola. Comprobar: `kubectl -n synapse logs deploy/synapse-adapter-gmail --since=1h | grep -i invalid_grant`. Arreglo: skill `oauth-gmail-regrant` (re-consentimiento por agent-jake + security escribe el JSON en 1Password + force-sync del ExternalSecret + rollout).'
+- interval: 1m
+  name: adapter-gmail — sin incrementos no dispara nunca
+  input_series:
+  - series: synapse_gmail_token_invalid_total{job="synapse",tenant="skirmshop",account="info@e-dani.com"}
+    values: '0x10'
+  alert_rule_test:
+  - eval_time: 10m
+    alertname: GmailTokenInvalid
+    exp_alerts: []
+- interval: 1m
+  name: correo-core — el primer fallo de refresh dispara con buzón y motivo
+  input_series:
+  - series: correo_gmail_token_invalido_total{job="correo-machine",motivo="refresh",buzon="3"}
+    values: '0x5 1x5'
+  alert_rule_test:
+  - eval_time: 4m
+    alertname: CorreoTokenInvalido
+    exp_alerts: []
+  - eval_time: 7m
+    alertname: CorreoTokenInvalido
+    exp_alerts:
+    - exp_labels:
+        severity: warning
+        area: correo
+        component: correo-core
+        job: correo-machine
+        motivo: refresh
+        buzon: "3"
+      exp_annotations:
+        summary: 'correo-core no activa el buzón 3 de la configuración (refresh)'
+        description: 'Google rechazó el refresh del buzón 3 (motivo refresh: refresh = token revocado/caducado, scope = el token no es el grant estrecho del cliente): ese buzón queda sin leer por correo-core hasta re-grantarlo. Comprobar: `kubectl -n correo logs deploy/correo --since=1h | grep ''no se activa''`. Arreglo: skill `oauth-gmail-regrant`.'
+- interval: 1m
+  name: correo-core — serie a cero desde el arranque (pre-inicializada) no dispara
+  input_series:
+  - series: correo_gmail_token_invalido_total{job="correo-machine",motivo="scope",buzon="1"}
+    values: '0x10'
+  alert_rule_test:
+  - eval_time: 10m
+    alertname: CorreoTokenInvalido
+    exp_alerts: []
