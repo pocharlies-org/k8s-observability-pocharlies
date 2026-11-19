@@ -418,13 +418,18 @@ rules:
   # el sync no falló: está apagado), tiene otra respuesta (volver a GitOps) y otro
   # prefijo. Sin esta exclusión la alerta del pausado abriría también un incidente
   # ARGO con un título que miente. La regla propia va justo debajo.
+  # (INFRA-1477) Se excluye también `ArgoCDAppStuckOutOfSync` por el mismo
+  # motivo: una app con automated y OutOfSync de 24 h tampoco es "sync fallido
+  # ni Degraded" (el sync no falló: hay un huérfano que prune:false no poda);
+  # tiene su regla debajo, prefijo ATASCADO.
   - ruleName: argocd-app-degraded
-    celQuery: 'name.startsWith("ArgoCD") && name != "ArgoCDAppSyncPaused"'
+    celQuery: 'name.startsWith("ArgoCD") && name != "ArgoCDAppSyncPaused" && name != "ArgoCDAppStuckOutOfSync"'
     sqlQuery:
-      sql: "((name like :name_1) and name != :name_2)"
+      sql: "((name like :name_1) and name != :name_2 and name != :name_3)"
       params:
         name_1: ArgoCD%
         name_2: ArgoCDAppSyncPaused
+        name_3: ArgoCDAppStuckOutOfSync
     timeframeInSeconds: 1800
     timeUnit: minutes
     groupingCriteria: [app]
@@ -458,6 +463,35 @@ rules:
     groupDescription: >-
       App OutOfSync sin sync automático: no se auto-cura, acumula deriva. Volver a
       GitOps (quitar el parche de spec.syncPolicy) o asumir el sync manual.
+
+  # (INFRA-1477) Cuarta clase de deriva, la cuarta que medía INFRA-1472: app CON
+  # el sync automático ENCENDIDO y OutOfSync más de 24 h. No la puede emitir
+  # ArgoCD Notifications (sus `when` no tienen duración: avisarían a los minutos
+  # de cada deploy, cuando el OutOfSync de minutos es normal); la emite la VMRule
+  # `pocharlies-argocd` (manifests/argocd-rules.yaml) con `for: 24h`, llega por
+  # el catch-all `receiver: keep` de Alertmanager y aquí se vuelve incidente.
+  # Es la firma de los huérfanos con requiresPruning bajo prune:false: SC-6069
+  # (14 días OutOfSync, descubierta por casualidad) e INFRA-1009 (7 apps).
+  # Las de sync manual por diseño quedan fuera en la propia métrica
+  # (autosync_enabled="true"), no por lista de nombres. Una app = un incidente,
+  # prefijo ATASCADO.
+  - ruleName: argocd-app-stuck-outofsync
+    celQuery: 'name == "ArgoCDAppStuckOutOfSync"'
+    sqlQuery:
+      sql: "((name == :name_1))"
+      params:
+        name_1: ArgoCDAppStuckOutOfSync
+    timeframeInSeconds: 1800
+    timeUnit: minutes
+    groupingCriteria: [app]
+    createOn: any
+    resolveOn: all_resolved
+    incidentPrefix: ATASCADO
+    incidentNameTemplate: "ArgoCD: {{ app }} atascada OutOfSync con sync automático"
+    groupDescription: >-
+      App con automated encendido y OutOfSync más de 24 h: el sync no falló,
+      hay recursos que ArgoCD no poda (requiresPruning bajo prune:false).
+      Runbook en manifests/argocd-rules.yaml (patrón SC-6069).
 
   # =========================================================================
   # X86 — host fuera del clúster, empujado por ops-watch (INFRA-405 / P2)

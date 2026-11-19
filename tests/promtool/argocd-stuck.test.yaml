@@ -1,0 +1,51 @@
+# Casos de ArgoCDAppStuckOutOfSync (promtool test rules, INFRA-1477). `rules` la genera
+# tests/test_infra1477_argocd_stuck_promtool.py desde la VMRule pocharlies-argocd.
+# time() en promtool cuenta desde 0; la regla lleva `for: 24h`, así que los cortes se
+# comprueban a los dos lados de las 1440 min.
+rule_files:
+  - argocd.rules.yaml
+evaluation_interval: 1m
+tests:
+  - interval: 1m
+    name: app con automated y OutOfSync sostenida -> salta pasadas las 24 h
+    input_series:
+      - series: 'argocd_app_info{name="demo", sync_status="OutOfSync", autosync_enabled="true"}'
+        values: '1x1500'
+    alert_rule_test:
+      - eval_time: 1430m
+        alertname: ArgoCDAppStuckOutOfSync
+        exp_alerts: []
+      - eval_time: 1450m
+        alertname: ArgoCDAppStuckOutOfSync
+        exp_alerts:
+          - exp_labels: {severity: warning, app: demo, name: demo, sync_status: OutOfSync, autosync_enabled: "true"}
+            exp_annotations:
+              summary: "ArgoCD: demo lleva >24 h OutOfSync con el sync automático (no se va a auto-curar)"
+              description: "App con automated encendido y OutOfSync más de 24 h: el sync no falló (eso lo avisa ArgoCDSyncFailed), es que hay recursos que ArgoCD no puede podar. Runbook (patrón SC-6069): mirar recursos con requiresPruning — `kubectl get application demo -n argocd -o jsonpath='{.status.resources}'` y filtrar requiresPruning=true. Si los hay, es un recurso borrado de git con prune:false: verificar consumidores y borrarlo del clúster por nombre. No tocar Secrets ni datos."
+  - interval: 1m
+    name: sync manual por diseño (autosync_enabled=false) -> no salta nunca (lo cubre el PAUSA)
+    input_series:
+      - series: 'argocd_app_info{name="synapse", sync_status="OutOfSync", autosync_enabled="false"}'
+        values: '1x1800'
+    alert_rule_test:
+      - eval_time: 1790m
+        alertname: ArgoCDAppStuckOutOfSync
+        exp_alerts: []
+  - interval: 1m
+    name: OutOfSync de minutos durante un deploy (se resuelve antes de 24 h) -> no salta
+    input_series:
+      - series: 'argocd_app_info{name="demo", sync_status="OutOfSync", autosync_enabled="true"}'
+        values: '1x720 stale'
+    alert_rule_test:
+      - eval_time: 1500m
+        alertname: ArgoCDAppStuckOutOfSync
+        exp_alerts: []
+  - interval: 1m
+    name: app Synced con automated -> no salta
+    input_series:
+      - series: 'argocd_app_info{name="demo", sync_status="Synced", autosync_enabled="true"}'
+        values: '1x1500'
+    alert_rule_test:
+      - eval_time: 1450m
+        alertname: ArgoCDAppStuckOutOfSync
+        exp_alerts: []

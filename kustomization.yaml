@@ -80,6 +80,12 @@ resources:
   # mismo motivo que arc-scrape.yaml: los scrapes y reglas de plataforma viven en este repo.
   - manifests/frigate-scrape.yaml
   - manifests/frigate-rules.yaml
+  # INFRA-1477: el application-controller de ArgoCD emitía argocd_app_info desde
+  # siempre y nadie la scrapeaba (0 series en VM, medido 19-11). El scrape + la
+  # regla de app ATASCADA OutOfSync con automated >24 h, por el mismo motivo que
+  # arc-scrape.yaml: los scrapes y reglas de plataforma viven en este repo.
+  - manifests/argocd-scrape.yaml
+  - manifests/argocd-rules.yaml
   # DGX-1401: alerta del disco de mac-build (off-cluster, series empujadas por su
   # LaunchAgent com.e-dani.disk-metric — dgx-infra scripts/mac-build-disk-metric.sh).
   - manifests/mac-build-disk-rules.yaml

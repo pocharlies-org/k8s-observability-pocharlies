@@ -1,0 +1,62 @@
+# INFRA-1477 — app ArgoCD ATASCADA OutOfSync con el sync automático encendido.
+#
+# La cuarta clase de deriva, la que no cubría nadie (medido por la sesión
+# problem de INFRA-1472): ArgoCD Notifications + Keep cubren sync fallido
+# (on-sync-failed), Degraded (on-health-degraded) y app PAUSADA con
+# OutOfSync (on-sync-paused, SC-5453). Faltaba la app CON automated encendido
+# y OutOfSync persistente: la que producen los huérfanos con requiresPruning
+# bajo prune:false (SC-6069: 14 días OutOfSync descubiertos por casualidad;
+# antes, INFRA-1009 limpió 7 apps en el mismo cuadro).
+#
+# POR QUÉ VMRule y no un trigger de ArgoCD Notifications: el umbral de 24 h
+# es un `for`, y las notificaciones no tienen duración — su `when` evalúa el
+# estado en el instante y el `oncePer` deduplica por transición; un trigger
+# «OutOfSync con automated» habría avisado a los minutos de cada deploy
+# (el OutOfSync de minutos durante un sync es normal, y la Request lo prohíbe
+# expresamente). Con `for: 24h` vmalert solo abre la alerta si el estado se
+# sostiene un día entero.
+#
+# POR QUÉ NO HACE FALTA LISTA DE EXCLUIDAS: `autosync_enabled="true"` deja
+# fuera por sí sola a las apps de sync manual por diseño (synapse,
+# synapse-migrations, hermes, company-crm, shopify-back-in-stock, traefik-*:
+# las 8 medidas sin syncPolicy.automated el 19-11-2026), que siguen
+# cubiertas por el PAUSA de SC-5453. La etiqueta se verificó en el endpoint
+# real (cabecera de manifests/argocd-scrape.yaml), no en la documentación.
+#
+# Enrutado: el catch-all `receiver: keep` de Alertmanager la entrega a Keep,
+# y la regla `argocd-app-stuck-outofsync` de keep/rules/correlation-rules.yaml
+# (prefijo ATASCADO) la convierte en incidente — sin esa regla la alerta
+# queda registrada y calla (INFRA-912). Lo vigila
+# tests/test_infra1477_argocd_stuck_correlation.py.
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMRule
+metadata:
+  name: pocharlies-argocd
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: argocd
+    app.kubernetes.io/component: alerting
+spec:
+  groups:
+    - name: pocharlies.argocd
+      rules:
+        # 24 h enteras: un OutOfSync de minutos durante un deploy es normal.
+        # `app` viaja como etiqueta para que la correla agrupe por app (una
+        # app = un incidente, patrón argocd-app-degraded/argocd-app-sync-paused).
+        - alert: ArgoCDAppStuckOutOfSync
+          expr: argocd_app_info{sync_status="OutOfSync", autosync_enabled="true"}
+          for: 24h
+          labels:
+            severity: warning
+            app: '{{ $labels.name }}'
+          annotations:
+            summary: "ArgoCD: {{ $labels.name }} lleva >24 h OutOfSync con el sync automático (no se va a auto-curar)"
+            description: >-
+              App con automated encendido y OutOfSync más de 24 h: el sync no
+              falló (eso lo avisa ArgoCDSyncFailed), es que hay recursos que
+              ArgoCD no puede podar. Runbook (patrón SC-6069): mirar recursos
+              con requiresPruning — `kubectl get application {{ $labels.name }}
+              -n argocd -o jsonpath='{.status.resources}'` y filtrar
+              requiresPruning=true. Si los hay, es un recurso borrado de git
+              con prune:false: verificar consumidores y borrarlo del clúster
+              por nombre. No tocar Secrets ni datos.
