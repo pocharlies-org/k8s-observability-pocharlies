@@ -1,0 +1,51 @@
+# INFRA-1477 — scrape del application-controller de ArgoCD.
+#
+# Medido el 19-11-2026: en VictoriaMetrics no había NINGUNA serie `argocd_*`
+# (label __name__ sin coincidencias en vmsingle y en vmsingle-rca) aunque el
+# endpoint /metrics del controller las emite desde siempre. Es decir: la
+# premisa de la Request («argocd_app_info existe en lo que scrapea VM») era
+# falsa hasta hoy — sin este scrape la VMRule de manifests/argocd-rules.yaml
+# no tendría sobre qué evaluar.
+#
+# Verificado en vivo contra el endpoint (proxy de API a
+# `argocd-application-controller-metrics:8082/metrics`): 2009 líneas, 1235
+# `argocd_*`, de ellas 131 `argocd_app_info` (una por app, valor 1). Etiquetas
+# reales, no copiadas de ningún dashboard:
+#
+#   argocd_app_info{autosync_enabled="true|false", dest_namespace, dest_server,
+#                   health_status, name, namespace, operation, project, repo,
+#                   sync_status} 1
+#
+# Ojo: el nombre de la app va en `name` (no en `app`) y `autosync_enabled`
+# es la etiqueta que distingue sync automático de manual — por eso la regla
+# excluye las apps de sync manual sin lista de nombres (el trigger
+# on-sync-paused de k8s-gitops sí necesita lista: las notificaciones de
+# ArgoCD leen el spec, pero aquí la métrica ya trae el flag).
+#
+# Se recorta a `argocd_app_info` (131 series): el resto del endpoint
+# (workqueue, grpc, rest_client, ~1100 líneas) no lo lee ninguna regla ni
+# panel. Si un dashboard pide más familias, ampliar el regex y revisar el
+# coste — patrón arc-scrape.yaml.
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMServiceScrape
+metadata:
+  name: argocd-application-controller
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: argocd-health-metrics
+spec:
+  namespaceSelector:
+    matchNames: ["argocd"]
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: argocd-metrics
+      app.kubernetes.io/component: application-controller
+  endpoints:
+    - port: http-metrics
+      path: /metrics
+      interval: 60s
+      scrapeTimeout: 20s
+      metricRelabelConfigs:
+        - sourceLabels: [__name__]
+          regex: argocd_app_info
+          action: keep

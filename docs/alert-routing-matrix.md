@@ -17,15 +17,15 @@ aviso lo decide una regla de correlación de `keep/rules/correlation-rules.yaml`
 
 | destino hoy | series | % |
 |---|---:|---:|
-| keep | 371 | 97% |
+| keep | 374 | 97% |
 | **BLACKHOLE (se descarta)** | 12 | 3% |
-| **TOTAL** | **383** | 100% |
+| **TOTAL** | **386** | 100% |
 
 ### Taxonomía de severidad realmente emitida
 
 | valor | series | ¿lo contempla el árbol? |
 |---|---:|---|
-| `warning` | 228 | sí — catch-all → `keep` |
+| `warning` | 231 | sí — catch-all → `keep` |
 | `critical` | 142 | sí — `severity = critical` |
 | `info` | 11 | **no** — cae al receiver raíz |
 | `none` | 2 | **no** — cae al receiver raíz |
@@ -38,7 +38,7 @@ LibrePlay, Tracking) que nunca se alineó con el resto.
 
 1. **12 series (3%) no pueden notificar a nadie.**
    Descontando los heartbeats (InfoInhibitor, Watchdog), son 11
-   series ciegas; 2 de ellas están disparadas ahora mismo
+   series ciegas; 3 de ellas están disparadas ahora mismo
    (11 instancias activas).
    `Watchdog` e `InfoInhibitor` deben seguir sin notificar, pero **sí** tienen que
    llegar a Keep: son la señal de que la ingesta sigue viva.
@@ -86,6 +86,12 @@ despiertan a nadie pese a llamarse `page`.
 | `AlertmanagerMembersInconsistent` | `critical` | keep |  |
 | `AlertmanagerWebhookDeliveryFailed` | `warning` | keep |  |
 
+### Argo (1)
+
+| alertname | sev | destino hoy | firing |
+|---|---|---|---:|
+| `ArgoCDAppStuckOutOfSync` | `warning` | keep |  |
+
 ### Blackbox (1)
 
 | alertname | sev | destino hoy | firing |
@@ -113,7 +119,7 @@ despiertan a nadie pese a llamarse `page`.
 
 | alertname | sev | destino hoy | firing |
 |---|---|---|---:|
-| `KeycloakRoleDriftConsecutiveFailures` | `warning` | keep | 1 |
+| `KeycloakRoleDriftConsecutiveFailures` | `warning` | keep |  |
 
 ### Krea2 (3)
 
@@ -246,7 +252,7 @@ despiertan a nadie pese a llamarse `page`.
 |---|---|---|---:|
 | `NodeBecomesReadonlyIn3Days` | `warning` | keep |  |
 | `NodeBondingDegraded` | `warning` | keep |  |
-| `NodeCPUHighUsage` | `info` | **BLACKHOLE** |  |
+| `NodeCPUHighUsage` | `info` | **BLACKHOLE** | 1 |
 | `NodeClockNotSynchronising` | `warning` | keep |  |
 | `NodeClockSkewDetected` | `warning` | keep |  |
 | `NodeDiskFilling` | `warning` | keep |  |
@@ -279,7 +285,7 @@ despiertan a nadie pese a llamarse `page`.
 | `NodeSystemdServiceFailed` | `warning` | keep |  |
 | `NodeTextFileCollectorScrapeError` | `warning` | keep |  |
 
-### Postgres (8)
+### Postgres (9)
 
 | alertname | sev | destino hoy | firing |
 |---|---|---|---:|
@@ -291,6 +297,7 @@ despiertan a nadie pese a llamarse `page`.
 | `PostgresSharedInstancesNotReady` | `critical` | keep |  |
 | `PostgresSharedMetricsMissing` | `warning` | keep |  |
 | `PostgresSharedOldestIdleSession` | `warning` | keep |  |
+| `PostgresSharedRoleConnectionsHigh` | `warning` | keep |  |
 
 ### Rabbitmq (16)
 
@@ -299,7 +306,7 @@ despiertan a nadie pese a llamarse `page`.
 | `RabbitmqClusterPartition` | `critical` | keep |  |
 | `RabbitmqClusterSizeBelowExpected` | `critical` | keep |  |
 | `RabbitmqContactSyncBacklogAfterWindow` | `warning` | keep |  |
-| `RabbitmqDlqGrowth` | `warning` | keep |  |
+| `RabbitmqDlqGrowth` | `warning` | keep | 2 |
 | `RabbitmqExpensesBacklogAfterWindow` | `warning` | keep |  |
 | `RabbitmqFunctionalQueueNoConsumer` | `warning` | keep |  |
 | `RabbitmqHeadMessageStale` | `critical` | keep |  |
@@ -406,7 +413,7 @@ despiertan a nadie pese a llamarse `page`.
 | `TrackingIngestionSilent` | `warning` | keep |  |
 | `TrackingPage404Spike` | `critical` | keep |  |
 
-### otros (163 — 3 ciegas)
+### otros (164 — 3 ciegas)
 
 | alertname | sev | destino hoy | firing |
 |---|---|---|---:|
@@ -419,7 +426,7 @@ despiertan a nadie pese a llamarse `page`.
 | `AgentGatewayRouteErrorRateHigh` | `warning` | keep |  |
 | `AlertingRulesError` | `warning` | keep |  |
 | `AnalisisPuertaCerrada` | `warning` | keep |  |
-| `AnalisisRevisorParado` | `warning` | keep | 8 |
+| `AnalisisRevisorParado` | `warning` | keep | 1 |
 | `AnalisisSinMetricas` | `warning` | keep |  |
 | `AtlassianMcpToolDown` | `critical` | keep |  |
 | `AuroraRcaCoverageAbsent` | `warning` | keep |  |
@@ -427,7 +434,6 @@ despiertan a nadie pese a llamarse `page`.
 | `BackupRecoveryKitStale` | `critical` | keep |  |
 | `BackupWeeklySnapshotStale` | `critical` | keep |  |
 | `BgePoolLatencyAboveGate` | `critical` | keep |  |
-| `BrainDoorAuthFailure` | `warning` | keep |  |
 | `BrainWindowsLlmStalled` | `warning` | keep |  |
 | `BrainWindowsMassDeleteRefused` | `warning` | keep |  |
 | `BuildkitAmd64CacheHigh` | `critical` | keep |  |
@@ -438,12 +444,12 @@ despiertan a nadie pese a llamarse `page`.
 | `CIQueueNexusMacQueueStuck` | `warning` | keep |  |
 | `CIQueueSelfHostedJobQueuedTooLong` | `warning` | keep |  |
 | `CIRunnerNoProgress` | `warning` | keep |  |
-| `CPUThrottlingHigh` | `info` | **BLACKHOLE** | 4 |
+| `CPUThrottlingHigh` | `info` | **BLACKHOLE** | 3 |
 | `CertManagerCertificateMetricsMissing` | `critical` | keep |  |
 | `CertificateExpiresSoon` | `warning` | keep |  |
 | `CertificateNotReady` | `critical` | keep |  |
 | `ClaudeCuentasRenovarFallo` | `warning` | keep |  |
-| `ClaudeKeySinCuentas` | `warning` | keep |  |
+| `ClaudeKeySinCuentas` | `warning` | keep | 1 |
 | `ClaudeRcStatusMemoryHeadroomLow` | `warning` | keep |  |
 | `CompaniaPreguntasSinEntregar` | `critical` | keep |  |
 | `CompaniaSupervisorSinMetricas` | `critical` | keep |  |
@@ -454,7 +460,7 @@ despiertan a nadie pese a llamarse `page`.
 | `CorreoBridgeDespertaresPerdidos` | `warning` | keep |  |
 | `CorreoBridgeMensajesPerdidos` | `warning` | keep |  |
 | `CorreoTokenInvalido` | `warning` | keep |  |
-| `DashProductorAusente` | `warning` | keep | 10 |
+| `DashProductorAusente` | `warning` | keep | 37 |
 | `DeepSeekTpSpinWaitSuspected` | `critical` | keep |  |
 | `DiskRunsOutOfSpace` | `critical` | keep |  |
 | `DiskRunsOutOfSpaceIn3Days` | `critical` | keep |  |
@@ -470,7 +476,7 @@ despiertan a nadie pese a llamarse `page`.
 | `HighQueueDepth` | `warning` | keep |  |
 | `HomeControlPlaneTCPFailing` | `warning` | keep |  |
 | `IndexDBRecordsDrop` | `critical` | keep |  |
-| `InfoInhibitor` | `none` | **BLACKHOLE** | 8 |
+| `InfoInhibitor` | `none` | **BLACKHOLE** | 9 |
 | `K8sCronJobFailed` | `warning` | keep | 1 |
 | `KeepBackendAbsent` | `critical` | keep |  |
 | `KeepBackendNotSpread` | `warning` | keep |  |
@@ -547,6 +553,8 @@ despiertan a nadie pese a llamarse `page`.
 | `SkirmshopAppRestartSpike` | `critical` | keep |  |
 | `SparkGpuClockStuckLow` | `warning` | keep |  |
 | `SparkGpuMemoryRetained` | `critical` | keep |  |
+| `SparkUsbPdFwExportStale` | `warning` | keep |  |
+| `SparkUsbPdSafeMode` | `warning` | keep |  |
 | `StreamAggrDedupFlushTimeout` | `warning` | keep |  |
 | `StreamAggrFlushTimeout` | `warning` | keep |  |
 | `Studio3dJobsStuckWaitingGpu` | `warning` | keep |  |
