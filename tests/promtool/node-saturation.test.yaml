@@ -1,0 +1,113 @@
+# Casos de pocharlies.node-saturation (promtool test rules, SC-6015). `rules` la
+# genera tests/test_sc6015_node_saturation_promtool.py desde la VMRule
+# pocharlies-node-saturation. Contrato probado: el join `* on(pod)
+# group_left(node)` propaga la label `node` (firma keep-causa por nodo,
+# SC-5736), el warning NodeSystemSaturation SOLO salta en nodos no-cómputo y
+# los de cómputo viven en NodeSystemSaturationCompute (info, sin Request).
+# 4 núcleos idle por nodo (count(node_cpu_seconds_total{mode="idle"}) = 4):
+# load1 12 -> ratio 3 (> 2), load1 6 -> ratio 1.5 (no salta).
+rule_files:
+  - node-saturation.rules.yaml
+evaluation_interval: 1m
+tests:
+  - interval: 1m
+    name: ks5-cp-1 (no cómputo), load/core 3 sostenido -> warning con label node a los 15 min
+    input_series:
+      - series: 'node_load1{job="node-exporter",instance="10.42.1.5:9100",pod="vm-prometheus-node-exporter-aaaaa"}'
+        values: '12x40'
+      - series: 'node_cpu_seconds_total{job="node-exporter",mode="idle",instance="10.42.1.5:9100",pod="vm-prometheus-node-exporter-aaaaa",cpu="cpu0"}'
+        values: '0x40'
+      - series: 'node_cpu_seconds_total{job="node-exporter",mode="idle",instance="10.42.1.5:9100",pod="vm-prometheus-node-exporter-aaaaa",cpu="cpu1"}'
+        values: '0x40'
+      - series: 'node_cpu_seconds_total{job="node-exporter",mode="idle",instance="10.42.1.5:9100",pod="vm-prometheus-node-exporter-aaaaa",cpu="cpu2"}'
+        values: '0x40'
+      - series: 'node_cpu_seconds_total{job="node-exporter",mode="idle",instance="10.42.1.5:9100",pod="vm-prometheus-node-exporter-aaaaa",cpu="cpu3"}'
+        values: '0x40'
+      - series: 'kube_pod_info{namespace="monitoring",pod="vm-prometheus-node-exporter-aaaaa",node="ks5-cp-1"}'
+        values: '1x40'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: NodeSystemSaturation
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: NodeSystemSaturation
+        exp_alerts:
+          - exp_labels: {severity: warning, area: capacity, job: node-exporter, instance: "10.42.1.5:9100", pod: vm-prometheus-node-exporter-aaaaa, node: ks5-cp-1}
+            exp_annotations:
+              summary: "System saturated, load per core is very high"
+              description: "System load per core at ks5-cp-1 (10.42.1.5:9100) has been above 2 for the last 15 minutes, is currently at 3.00. This might indicate this instance resources saturation and can cause it becoming unresponsive. Nodos de cómputo (nvidia-dgx/gx10-ec3d/dgx3/atlantic) excluidos: su carga sostenida es el punto de operación (sesiones de la compañía, vLLM, lanes creative) y viven en NodeSystemSaturationCompute (info)."
+      - eval_time: 20m
+        alertname: NodeSystemSaturationCompute
+        exp_alerts: []
+  - interval: 1m
+    name: atlantic (nodo de cómputo), load/core 3 sostenido -> NO warning; info en la gemela, con node
+    input_series:
+      - series: 'node_load1{job="node-exporter",instance="10.42.10.228:9100",pod="vm-prometheus-node-exporter-bbbbb"}'
+        values: '12x40'
+      - series: 'node_cpu_seconds_total{job="node-exporter",mode="idle",instance="10.42.10.228:9100",pod="vm-prometheus-node-exporter-bbbbb",cpu="cpu0"}'
+        values: '0x40'
+      - series: 'node_cpu_seconds_total{job="node-exporter",mode="idle",instance="10.42.10.228:9100",pod="vm-prometheus-node-exporter-bbbbb",cpu="cpu1"}'
+        values: '0x40'
+      - series: 'node_cpu_seconds_total{job="node-exporter",mode="idle",instance="10.42.10.228:9100",pod="vm-prometheus-node-exporter-bbbbb",cpu="cpu2"}'
+        values: '0x40'
+      - series: 'node_cpu_seconds_total{job="node-exporter",mode="idle",instance="10.42.10.228:9100",pod="vm-prometheus-node-exporter-bbbbb",cpu="cpu3"}'
+        values: '0x40'
+      - series: 'kube_pod_info{namespace="monitoring",pod="vm-prometheus-node-exporter-bbbbb",node="atlantic"}'
+        values: '1x40'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: NodeSystemSaturation
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: NodeSystemSaturationCompute
+        exp_alerts:
+          - exp_labels: {severity: info, area: capacity, job: node-exporter, instance: "10.42.10.228:9100", pod: vm-prometheus-node-exporter-bbbbb, node: atlantic}
+            exp_annotations:
+              summary: "System saturated, load per core is very high (nodo de cómputo)"
+              description: "System load per core at atlantic (10.42.10.228:9100) has been above 2 for the last 15 minutes, is currently at 3.00. Esperado en nodos de cómputo bajo carga normal: no abre Request. Si el nodo además está NotReady o con DiskPressure, eso lo dicen sus propias reglas (warning)."
+  - interval: 1m
+    name: ubuntu (no cómputo), load/core 1.5 -> no salta nada (el umbral global no baja)
+    input_series:
+      - series: 'node_load1{job="node-exporter",instance="10.42.0.147:9100",pod="vm-prometheus-node-exporter-ccccc"}'
+        values: '6x40'
+      - series: 'node_cpu_seconds_total{job="node-exporter",mode="idle",instance="10.42.0.147:9100",pod="vm-prometheus-node-exporter-ccccc",cpu="cpu0"}'
+        values: '0x40'
+      - series: 'node_cpu_seconds_total{job="node-exporter",mode="idle",instance="10.42.0.147:9100",pod="vm-prometheus-node-exporter-ccccc",cpu="cpu1"}'
+        values: '0x40'
+      - series: 'node_cpu_seconds_total{job="node-exporter",mode="idle",instance="10.42.0.147:9100",pod="vm-prometheus-node-exporter-ccccc",cpu="cpu2"}'
+        values: '0x40'
+      - series: 'node_cpu_seconds_total{job="node-exporter",mode="idle",instance="10.42.0.147:9100",pod="vm-prometheus-node-exporter-ccccc",cpu="cpu3"}'
+        values: '0x40'
+      - series: 'kube_pod_info{namespace="monitoring",pod="vm-prometheus-node-exporter-ccccc",node="ubuntu"}'
+        values: '1x40'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: NodeSystemSaturation
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: NodeSystemSaturationCompute
+        exp_alerts: []
+  - interval: 1m
+    name: atlantic, CPU 100 % (rate user 1.0/s) -> NodeCPUHighUsage info con label node
+    input_series:
+      - series: 'node_cpu_seconds_total{job="node-exporter",mode="user",instance="10.42.10.228:9100",pod="vm-prometheus-node-exporter-bbbbb",cpu="cpu0"}'
+        values: '0+60x40'
+      - series: 'node_cpu_seconds_total{job="node-exporter",mode="user",instance="10.42.10.228:9100",pod="vm-prometheus-node-exporter-bbbbb",cpu="cpu1"}'
+        values: '0+60x40'
+      - series: 'node_cpu_seconds_total{job="node-exporter",mode="user",instance="10.42.10.228:9100",pod="vm-prometheus-node-exporter-bbbbb",cpu="cpu2"}'
+        values: '0+60x40'
+      - series: 'node_cpu_seconds_total{job="node-exporter",mode="user",instance="10.42.10.228:9100",pod="vm-prometheus-node-exporter-bbbbb",cpu="cpu3"}'
+        values: '0+60x40'
+      - series: 'kube_pod_info{namespace="monitoring",pod="vm-prometheus-node-exporter-bbbbb",node="atlantic"}'
+        values: '1x40'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: NodeCPUHighUsage
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: NodeCPUHighUsage
+        exp_alerts:
+          - exp_labels: {severity: info, area: capacity, job: node-exporter, instance: "10.42.10.228:9100", pod: vm-prometheus-node-exporter-bbbbb, node: atlantic}
+            exp_annotations:
+              summary: "High CPU usage"
+              description: "CPU usage at atlantic (10.42.10.228:9100) has been above 90% for the last 15 minutes, is currently at 100.00%."
