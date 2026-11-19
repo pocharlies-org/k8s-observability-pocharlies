@@ -4,6 +4,9 @@
 # group_left(node)` propaga la label `node` (firma keep-causa por nodo,
 # SC-5736), el warning NodeSystemSaturation SOLO salta en nodos no-cómputo y
 # los de cómputo viven en NodeSystemSaturationCompute (info, sin Request).
+# Desde SC-6061 el cómputo se distingue por la etiqueta de nodo
+# node-role.kubernetes.io/compute (serie kube_node_role{role="compute"}), no
+# por una lista fija de nombres: un nodo de cómputo nuevo no queda fuera.
 # 4 núcleos idle por nodo (count(node_cpu_seconds_total{mode="idle"}) = 4):
 # load1 12 -> ratio 3 (> 2), load1 6 -> ratio 1.5 (no salta).
 rule_files:
@@ -35,7 +38,7 @@ tests:
           - exp_labels: {severity: warning, area: capacity, job: node-exporter, instance: "10.42.1.5:9100", pod: vm-prometheus-node-exporter-aaaaa, node: ks5-cp-1}
             exp_annotations:
               summary: "System saturated, load per core is very high"
-              description: "System load per core at ks5-cp-1 (10.42.1.5:9100) has been above 2 for the last 15 minutes, is currently at 3.00. This might indicate this instance resources saturation and can cause it becoming unresponsive. Nodos de cómputo (nvidia-dgx/gx10-ec3d/dgx3/atlantic) excluidos: su carga sostenida es el punto de operación (sesiones de la compañía, vLLM, lanes creative) y viven en NodeSystemSaturationCompute (info)."
+              description: "System load per core at ks5-cp-1 (10.42.1.5:9100) has been above 2 for the last 15 minutes, is currently at 3.00. This might indicate this instance resources saturation and can cause it becoming unresponsive. Nodos de cómputo (etiqueta node-role.kubernetes.io/compute) excluidos: su carga sostenida es el punto de operación (sesiones de la compañía, vLLM, lanes creative, CI efímero) y viven en NodeSystemSaturationCompute (info)."
       - eval_time: 20m
         alertname: NodeSystemSaturationCompute
         exp_alerts: []
@@ -54,6 +57,8 @@ tests:
         values: '0x40'
       - series: 'kube_pod_info{namespace="monitoring",pod="vm-prometheus-node-exporter-bbbbb",node="atlantic"}'
         values: '1x40'
+      - series: 'kube_node_role{node="atlantic",role="compute"}'
+        values: '1x40'
     alert_rule_test:
       - eval_time: 20m
         alertname: NodeSystemSaturation
@@ -66,7 +71,7 @@ tests:
               summary: "System saturated, load per core is very high (nodo de cómputo)"
               description: "System load per core at atlantic (10.42.10.228:9100) has been above 2 for the last 15 minutes, is currently at 3.00. Esperado en nodos de cómputo bajo carga normal: no abre Request. Si el nodo además está NotReady o con DiskPressure, eso lo dicen sus propias reglas (warning)."
   - interval: 1m
-    name: ubuntu (no cómputo), load/core 1.5 -> no salta nada (el umbral global no baja)
+    name: ubuntu (nodo de cómputo, SC-6061), load/core 1.5 -> no salta nada (el umbral global no baja)
     input_series:
       - series: 'node_load1{job="node-exporter",instance="10.42.0.147:9100",pod="vm-prometheus-node-exporter-ccccc"}'
         values: '6x40'
@@ -80,6 +85,8 @@ tests:
         values: '0x40'
       - series: 'kube_pod_info{namespace="monitoring",pod="vm-prometheus-node-exporter-ccccc",node="ubuntu"}'
         values: '1x40'
+      - series: 'kube_node_role{node="ubuntu",role="compute"}'
+        values: '1x40'
     alert_rule_test:
       - eval_time: 20m
         alertname: NodeSystemSaturation
@@ -87,6 +94,34 @@ tests:
       - eval_time: 20m
         alertname: NodeSystemSaturationCompute
         exp_alerts: []
+  - interval: 1m
+    name: ubuntu (nodo de cómputo, SC-6061), load/core 3 sostenido -> NO warning; info en la gemela
+    input_series:
+      - series: 'node_load1{job="node-exporter",instance="10.42.0.147:9100",pod="vm-prometheus-node-exporter-ddddd"}'
+        values: '12x40'
+      - series: 'node_cpu_seconds_total{job="node-exporter",mode="idle",instance="10.42.0.147:9100",pod="vm-prometheus-node-exporter-ddddd",cpu="cpu0"}'
+        values: '0x40'
+      - series: 'node_cpu_seconds_total{job="node-exporter",mode="idle",instance="10.42.0.147:9100",pod="vm-prometheus-node-exporter-ddddd",cpu="cpu1"}'
+        values: '0x40'
+      - series: 'node_cpu_seconds_total{job="node-exporter",mode="idle",instance="10.42.0.147:9100",pod="vm-prometheus-node-exporter-ddddd",cpu="cpu2"}'
+        values: '0x40'
+      - series: 'node_cpu_seconds_total{job="node-exporter",mode="idle",instance="10.42.0.147:9100",pod="vm-prometheus-node-exporter-ddddd",cpu="cpu3"}'
+        values: '0x40'
+      - series: 'kube_pod_info{namespace="monitoring",pod="vm-prometheus-node-exporter-ddddd",node="ubuntu"}'
+        values: '1x40'
+      - series: 'kube_node_role{node="ubuntu",role="compute"}'
+        values: '1x40'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: NodeSystemSaturation
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: NodeSystemSaturationCompute
+        exp_alerts:
+          - exp_labels: {severity: info, area: capacity, job: node-exporter, instance: "10.42.0.147:9100", pod: vm-prometheus-node-exporter-ddddd, node: ubuntu}
+            exp_annotations:
+              summary: "System saturated, load per core is very high (nodo de cómputo)"
+              description: "System load per core at ubuntu (10.42.0.147:9100) has been above 2 for the last 15 minutes, is currently at 3.00. Esperado en nodos de cómputo bajo carga normal: no abre Request. Si el nodo además está NotReady o con DiskPressure, eso lo dicen sus propias reglas (warning)."
   - interval: 1m
     name: atlantic, CPU 100 % (rate user 1.0/s) -> NodeCPUHighUsage info con label node
     input_series:
