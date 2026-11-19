@@ -57,6 +57,7 @@ multi-source: chart upstream + `values` de este repo, salvo indicación):
 | Reglas de Frigate (INFRA-712) | `VMRule pocharlies-frigate` (`FrigateCaido`, `FrigateDetectorLento` >100 ms, `FrigateCamaraSinFps` de `c8w`/`hp7`, `FrigateAlmacenamientoLleno` de `frigate-media` <8 % 15 min) + scrape `frigate_*` | `manifests/frigate-rules.yaml`, `manifests/frigate-scrape.yaml`; casos en `tests/promtool/frigate-rules.test.yaml`, correlación en `tests/test_infra712_frigate_correlation.py` | Keep → incidente, como las de ARC: el catch-all de Alertmanager las lleva a `keep` (**no hay ruta por alertname ni blackhole de warnings**) y la regla de correlación `frigate-vigilancia` (prefijo `FRG`, `Frigate*`) las convierte en incidente. El `/` del nodo `ubuntu` no se duplica: lo cubre `NodeRootDiskLowOrFilling` |
 | Claim de despacho a Aurora (solo critical, una vez por incidente de Keep, cooldown 6 h) | step `claim-dispatch` del workflow `aurora-investigate` | `keep/values.yaml` | Keep → Aurora; lectores `rca-datos`, `link-datos`, `mark-linked`, `aurora_rca_coverage()` (cruzan por `fingerprint`) |
 | Alerta de disco raíz de los nodos del matcher `node` — ubuntu y sauvage (INFRA-623, SC-2986): <20 % libre o llena en 3 días | `VMRule NodeRootDiskLowOrFilling` (`pocharlies-node-disk`) + test promtool | `manifests/rules.yaml`, `tests/promtool/node-disk.test.yaml` | los defaults del chart (`NodeFilesystem*`) no saltaron el 07-10: el kubelet desaloja a <5 % libre. El resto de nodos no está vigilado: añadir un nodo = añadirlo al regex `node` (alphalink estaba a ~15 % libre el 28-10 sin aviso) |
+| Saturación de load/CPU de nodos, calibrada por clase (SC-6015) | `VMRule pocharlies-node-saturation` (`NodeSystemSaturation` warning solo no-cómputo, `NodeSystemSaturationCompute` info, `NodeCPUHighUsage` info — las tres con el join `node`) | `manifests/rules.yaml`, `tests/promtool/node-saturation.test.yaml`; upstream `NodeSystemSaturation`/`NodeCPUHighUsage` desactivadas en `victoria-metrics/values.yaml` | la copia del chart no propaga `node` (sin join, dos nodos distintos compartían keep-causa → falso [PROBLEMA] SC-5976) y el load >2/core es el punto de operación en los nodos de cómputo (atlantic, los Sparks); añadir un nodo de cómputo = añadirlo a los dos regex `node` del grupo |
 | Dashboards | `manifests/dashboards.yaml`, `grafana-company-dashboard.yaml`, `grafana-keep.yaml` | ídem | Grafana |
 | Modelo LLM de Aurora y Keep | nombre directo `qwen38-flash-next` (residente único del perfil `llm-tp`; fallback y allowlist en LiteLLM) | `aurora/values.yaml`, `keep/values.yaml` | Aurora, Keep |
 | Notificación de incidentes | el incidente de Keep ES la notificación; `ops-watch` (x86-host-runtime) lo convierte en Request | `keep/rules/correlation-rules.yaml`; `docs/keep-aurora-contract.md` | INFRA-912 (2026-10-17): retirados los workflows de aviso por Telegram (`notify-incident*`, `notify-alert-summary`, `incident-summary`) y el receiver `backstop-telegram` de Alertmanager |
@@ -87,6 +88,14 @@ igual). Necesita Postgres: sin `AURORA_TEST_PG_DSN` se salta en local y **falla 
   prueba que llegue a Keep y a Synapse, Loki devolviendo logs recientes de `sauvage`. Synced ≠ funcionando. Pendiente de ejecutar.
 
 ## 8. Decisiones y trampas
+
+- `2026-11-19` · SC-6015 (desde el problema SC-5976, keep-causa node-degraded:80563cc44e): `NodeSystemSaturation` y
+  `NodeCPUHighUsage` del chart desactivadas y reemplazadas por `pocharlies-node-saturation` (mismo patrón SC-5736/INFRA-690):
+  el join `* on(pod) group_left(node)` propaga `node` (dos saturaciones en nodos distintos ya no comparten keep-causa —
+  SC-5941 en atlantic y SC-5975 en dgx3 montaban el mismo hash) y el warning de load >2/core se queda solo en los nodos
+  que NO son de cómputo; atlantic y los tres Sparks viven en `NodeSystemSaturationCompute` (info → blackhole, sin Request).
+  El umbral global no baja: una saturación real fuera de cómputo (ks5-cp-3 medía 2.0 el 19-11) sigue abriendo incidente.
+  Pin: `tests/promtool/node-saturation.test.yaml`.
 
 - `2026-11-16` · SC-5736 (desde el problema SC-5518): clase de nodo «servidor de modelos» (los tres Sparks, los que
   corren un worker vLLM residente) calibrada a disco alto: la rama `predict_linear` de `NodeRootDiskLowOrFilling` sale

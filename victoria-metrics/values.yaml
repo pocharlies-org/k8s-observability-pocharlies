@@ -32,6 +32,27 @@ defaultRules:
     # memory avg10 0.46, sin OOM, nodo sirviendo).
     NodeMemoryMajorPagesFaults:
       create: false
+    # SC-6015 (problema SC-5976, keep-causa node-degraded:80563cc44e): reemplazada
+    # por pocharlies-node-saturation (manifests/rules.yaml), mismo patrón que
+    # NodeMemoryHighUtilization arriba. Dos motivos:
+    #   1. su PromQL no hace el join con kube_pod_info, así que la alerta no lleva
+    #      label `node` y dos saturaciones en nodos DISTINTOS comparten la firma
+    #      keep-causa de ops-watch: SC-5941 (atlantic) y SC-5975 (dgx3) montaron
+    #      el mismo keep-causa y detectar_problemas abrió un [PROBLEMA] falso;
+    #   2. dispara de forma legítima bajo carga normal en los nodos de cómputo
+    #      (atlantic: sesiones de la compañía; los Sparks: worker vLLM / lanes
+    #      creative). La copia mantiene el warning >2/core en los nodos que no
+    #      son de cómputo y desdobla los de cómputo en NodeSystemSaturationCompute
+    #      (info → blackhole, sin Request): el umbral global no baja y una
+    #      saturación real fuera de cómputo sigue abriendo incidente.
+    NodeSystemSaturation:
+      create: false
+    # SC-6015: reemplazada por la copia de pocharlies-node-saturation con el join
+    # `* on(pod) group_left(node)`. Ya era info (→ blackhole, no abre Request),
+    # pero sin `node` compartía firma keep-causa entre nodos dentro del
+    # incidente node-degraded (evidencia SC-5941: NodeCPUHighUsage en atlantic).
+    NodeCPUHighUsage:
+      create: false
     # INFRA-1418 (causa del problema SC-5644, keep-causa critical-safety-net:
     # 43d45ddd35): reemplazada por el par calibrado pocharlies.vmsingle-memory
     # (manifests/rules.yaml). La regla del operador (anon/available > 0.8, for

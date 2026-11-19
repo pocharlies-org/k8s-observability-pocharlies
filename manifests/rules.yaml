@@ -3312,3 +3312,91 @@ spec:
               tocar los nodos. Diagnóstico: `tailscale status` en el x86 — peers
               de ks5-cp por DERP (no `direct`) = path relevado. El incidente se
               resuelve solo al recuperarse el enlace.
+---
+# SC-6015 (problema SC-5976, keep-causa node-degraded:80563cc44e). Copias de
+# NodeSystemSaturation y NodeCPUHighUsage del chart (desactivadas en
+# victoria-metrics/values.yaml) con el join `* on(pod) group_left(node)`
+# (patrón SC-5736): las series de node-exporter no traen label de nodo
+# (instance = podIP:9100), y sin `node` dos saturaciones en nodos DISTINTOS
+# compartían la firma keep-causa de ops-watch — SC-5941 (atlantic) y SC-5975
+# (dgx3) montaron el mismo hash y detectar_problemas abrió un [PROBLEMA] falso.
+# Calibración (decisión del dueño del repo, mismo patrón que el disco SC-5736 y
+# la memoria INFRA-690/SC-5400): la saturación de load >2/core es esperada bajo
+# carga normal en los nodos de cómputo — atlantic (sesiones de la compañía) y
+# los tres Sparks (worker vLLM en dgx3, lanes creative en su ventana) —. El
+# warning se queda SOLO en los nodos que no son de cómputo (el umbral global no
+# baja: ks5-cp-3 medía 2.0 el 19-11 y una saturación real fuera de cómputo
+# sigue abriendo incidente); los de cómputo viven en la gemela
+# NodeSystemSaturationCompute (info → blackhole del alertmanager, sin Keep, sin
+# Request). Nodos de cómputo = los cuatro del workaround del problema
+# (nvidia-dgx, gx10-ec3d, dgx3, atlantic); añadir uno = añadirlo a los dos
+# regex de node de este grupo.
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMRule
+metadata:
+  name: pocharlies-node-saturation
+  namespace: monitoring
+spec:
+  groups:
+    - name: pocharlies.node-saturation
+      rules:
+        - alert: NodeSystemSaturation
+          expr: |
+            ((node_load1{job="node-exporter"} / count(node_cpu_seconds_total{job="node-exporter",mode="idle"}) without(cpu,mode)) > 2)
+            * on(pod) group_left(node)
+            kube_pod_info{namespace="monitoring", pod=~"vm-prometheus-node-exporter-.*", node!~"nvidia-dgx|gx10-ec3d|dgx3|atlantic"}
+          for: 15m
+          labels:
+            severity: warning
+            area: capacity
+          annotations:
+            summary: "System saturated, load per core is very high"
+            description: >-
+              System load per core at {{ $labels.node }} ({{ $labels.instance }})
+              has been above 2 for the last 15 minutes, is currently at
+              {{ printf "%.2f" $value }}. This might indicate this instance
+              resources saturation and can cause it becoming unresponsive.
+              Nodos de cómputo (nvidia-dgx/gx10-ec3d/dgx3/atlantic) excluidos:
+              su carga sostenida es el punto de operación (sesiones de la
+              compañía, vLLM, lanes creative) y viven en
+              NodeSystemSaturationCompute (info).
+        - alert: NodeSystemSaturationCompute
+          # Gemela en severity info de la de arriba, para los cuatro nodos de
+          # cómputo: misma señal, sin Request (el blackhole de `severity=info`
+          # de manifests/alertmanager-config.yaml la descarta antes de Keep).
+          # Existe para que la saturación del cómputo sea consultable y para
+          # que el nodo siga distinguiéndose si algún día sube de severidad.
+          expr: |
+            ((node_load1{job="node-exporter"} / count(node_cpu_seconds_total{job="node-exporter",mode="idle"}) without(cpu,mode)) > 2)
+            * on(pod) group_left(node)
+            kube_pod_info{namespace="monitoring", pod=~"vm-prometheus-node-exporter-.*", node=~"nvidia-dgx|gx10-ec3d|dgx3|atlantic"}
+          for: 15m
+          labels:
+            severity: info
+            area: capacity
+          annotations:
+            summary: "System saturated, load per core is very high (nodo de cómputo)"
+            description: >-
+              System load per core at {{ $labels.node }} ({{ $labels.instance }})
+              has been above 2 for the last 15 minutes, is currently at
+              {{ printf "%.2f" $value }}. Esperado en nodos de cómputo bajo
+              carga normal: no abre Request. Si el nodo además está NotReady o
+              con DiskPressure, eso lo dicen sus propias reglas (warning).
+        - alert: NodeCPUHighUsage
+          # Copia de la del chart (ya info → blackhole) solo con el join: sin
+          # `node` compartía firma keep-causa entre nodos dentro del incidente
+          # node-degraded (evidencia SC-5941).
+          expr: |
+            ((sum(avg(rate(node_cpu_seconds_total{job="node-exporter",mode!~"idle|iowait"}[2m])) without(cpu)) without(mode) * 100) > 90)
+            * on(pod) group_left(node)
+            kube_pod_info{namespace="monitoring", pod=~"vm-prometheus-node-exporter-.*"}
+          for: 15m
+          labels:
+            severity: info
+            area: capacity
+          annotations:
+            summary: "High CPU usage"
+            description: >-
+              CPU usage at {{ $labels.node }} ({{ $labels.instance }}) has been
+              above 90% for the last 15 minutes, is currently at
+              {{ printf "%.2f" $value }}%.
