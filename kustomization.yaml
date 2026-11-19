@@ -54,6 +54,9 @@ resources:
   - manifests/pushgateway.yaml
   - manifests/keep-scrape.yaml
   - manifests/grafana-keep.yaml
+  # DGX-722: datasource litellm-pg por ExternalSecret (el ConfigMap heredado lleva
+  # la contraseña en claro; este YAML lo regenera con el mismo uid desde Connect).
+  - manifests/grafana-refusal.yaml
   - manifests/dashboards.yaml
   - manifests/dcgm-scrape.yaml
   - manifests/rabbitmq-scrape.yaml
@@ -114,6 +117,17 @@ configMapGenerator:
     namespace: monitoring
     files:
       - correlation-rules.yaml=keep/rules/correlation-rules.yaml
+  # DGX-722: el dashboard de negativas como fichero en el repo (dashboards/refusal.json),
+  # no inline. El nombre lleva «refusal» y la etiqueta grafana_dashboard "1" es lo que
+  # hace que el sidecar de Grafana lo monte (P2-C1).
+  - name: grafana-dashboard-refusal
+    namespace: monitoring
+    files:
+      - refusal.json=dashboards/refusal.json
+    options:
+      labels:
+        grafana_dashboard: "1"
+      disableNameSuffixHash: true
 generatorOptions:
   # El Job referencia el nombre literal, sin sufijo de hash. Se recrea en cada
   # sync (hook PostSync + BeforeHookCreation), así que siempre lee la versión

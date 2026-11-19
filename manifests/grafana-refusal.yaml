@@ -1,0 +1,59 @@
+# Datasource de Grafana para el dashboard de negativas (DGX-722, P2 de DGX-391).
+#
+# POR QUÉ EXISTE ESTE YAML: el datasource litellm-pg vive hoy en el clúster como
+# ConfigMap creado a mano (kubectl apply, sin YAML en GitOps) y con la contraseña
+# en claro dentro del propio ConfigMap. Este ExternalSecret lo regenera con el
+# MISMO uid `litellm-pg` (los paneles de dashboards/refusal.json y del dashboard
+# de referencia de dgx-infra apuntan a ese uid y no se renombran) y la contraseña
+# llega de 1Password por el ClusterSecretStore onepassword, calcado del patrón de
+# manifests/grafana-keep.yaml:21-63. El ítem `litellm` del vault k8s-pocharlies
+# (DB_USER / DB_PASSWORD) es la fuente sancionada: ya la consume el ExternalSecret
+# de LiteLLM en k8s-litellm-pocharlies.
+#
+# El ConfigMap vivo con la contraseña en claro NO se toca desde aquí: su retirada
+# y rotación son de `security` (rotacion-semanal), no de esta PR.
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: grafana-datasource-litellm-pg
+  namespace: monitoring
+spec:
+  refreshInterval: 24h
+  secretStoreRef:
+    name: onepassword
+    kind: ClusterSecretStore
+  target:
+    name: grafana-datasource-litellm-pg
+    creationPolicy: Owner
+    template:
+      metadata:
+        labels:
+          # Lo que hace que el sidecar de Grafana lo recoja y lo escriba en
+          # /etc/grafana/provisioning/datasources (corre con RESOURCE=both, por
+          # eso vale un Secret además del ConfigMap heredado).
+          grafana_datasource: "1"
+      data:
+        litellm-pg.yaml: |
+          apiVersion: 1
+          datasources:
+            - name: litellm-pg
+              uid: litellm-pg
+              type: postgres
+              access: proxy
+              url: postgres-shared-rw.databases.svc.cluster.local:5432
+              database: litellm
+              user: "{{ .db_user }}"
+              editable: false
+              jsonData:
+                sslmode: require
+                postgresVersion: 1600
+                timescaledb: false
+              secureJsonData:
+                password: "{{ .db_password }}"
+  data:
+    - secretKey: db_user
+      remoteRef:
+        key: litellm/DB_USER
+    - secretKey: db_password
+      remoteRef:
+        key: litellm/DB_PASSWORD
