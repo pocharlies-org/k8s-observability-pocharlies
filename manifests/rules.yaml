@@ -59,8 +59,10 @@ spec:
         # (head, worker, worker-dgx3 y sus variantes) y `omnivoice-tts-nvfp4`. Los
         # nombres muertos (`vllm-*`, `.*-bench`) se retiran: el sistema de benches ya
         # no existe (~/k8s/CLAUDE.md).
-        # SC-4763 (DEPL-18565): los Deployments de la ventana creative de dgx3
-        # (etiqueta dgx-infra/dgx3-window) están a 0 con la ventana cerrada y el eje
+        # SC-4763 (DEPL-18565) y SC-6138: los Deployments de la ventana creative de dgx3
+        # (etiqueta dgx-infra/dgx3-window, expuesta por kube-state-metrics como
+        # label_dgx_infra_dgx3_window; excluidos por etiqueta y no por nombre porque la
+        # lista dejó fuera partcrafter- y trellis-image-cache) están a 0 con la ventana cerrada y el eje
         # dgx3 los sube a 1 al abrirla; el aprovisionador baja decenas de GB y no
         # queda Ready hasta tenerlos en sitio (dgx3_mode.py: OPEN_TIMEOUT_S 2 h,
         # ~30 min medidos la primera vez). Estar unavailable durante la apertura es
@@ -74,7 +76,7 @@ spec:
               unless on(namespace, deployment)
             kube_deployment_spec_replicas{namespace="llm",deployment=~"qwen38-flash-next.*|omnivoice-tts-nvfp4"}
               unless on(namespace, deployment)
-            kube_deployment_spec_replicas{namespace="comfyui",deployment=~"dgx3-provision|comfyui-image-cache"}
+            kube_deployment_labels{label_dgx_infra_dgx3_window="true"}
           for: 15m
           labels:
             severity: critical
