@@ -434,6 +434,9 @@ kube-state-metrics:
     - services=[infra]
     - namespaces=[infra]
     - persistentvolumeclaims=[excluded_from_alerts]
+    # SC-6138: la ventana creative de dgx3 se reconoce por su etiqueta (la misma que usa
+    # el eje, dgx3_mode.py WINDOW_LABEL), no por una lista de nombres en las reglas.
+    - deployments=[dgx-infra/dgx3-window]
   resources:
     requests:
       cpu: 25m

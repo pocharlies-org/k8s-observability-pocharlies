@@ -71,8 +71,8 @@ spec:
         # owner_kind!="Job" se conserva tal cual: los pods sin owner y los de
         # Job tampoco disparaban antes. La segunda rama (`unless`) mantiene
         # disparando a los pods cuyo owner no se mapea, sin etiqueta workload.
-        # SC-4763 (DEPL-18565): los pods de la ventana creative de dgx3
-        # (dgx3-provision, comfyui-image-cache) están a 0 con la ventana cerrada y
+        # SC-4763 (DEPL-18565) y SC-6138: los pods de los Deployments de la ventana
+        # creative de dgx3 (etiqueta dgx-infra/dgx3-window) están a 0 con la ventana cerrada y
         # el eje dgx3 los sube a 1 al abrirla; el aprovisionador no queda Ready
         # hasta tener los pesos en sitio (dgx3_mode.py: OPEN_TIMEOUT_S 2 h, ~30 min
         # medidos la primera vez). Su no-Ready durante la apertura es el diseño.
@@ -100,7 +100,11 @@ spec:
               )
             )
             unless on (namespace, pod)
-            kube:pod_workload:info{namespace="comfyui",workload=~"dgx3-provision|comfyui-image-cache"}
+            (
+              kube:pod_workload:info
+              * on (namespace, workload) group_left ()
+              label_replace(kube_deployment_labels{label_dgx_infra_dgx3_window="true"}, "workload", "$1", "deployment", "(.*)")
+            )
           for: 15m
           labels:
             severity: warning

@@ -187,18 +187,38 @@ tests:
         values: '1x40'
       - series: 'kube_replicaset_owner{job="kube-state-metrics",namespace="comfyui",replicaset="dgx3-provision-6b9",owner_kind="Deployment",owner_name="dgx3-provision",owner_is_controller="true"}'
         values: '1x40'
+      - series: 'kube_deployment_labels{namespace="comfyui",deployment="dgx3-provision",label_dgx_infra_dgx3_window="true"}'
+        values: '1x40'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: KubePodNotReady
+        exp_alerts: []
+  # SC-6138 (DEPL-20132): misma ventana, otro namespace; la lista por nombre lo dejaba fuera.
+  - interval: 1m
+    name: pod de la caché de imagen de la ventana dgx3 en partcrafter Pending 25 min NO dispara KubePodNotReady
+    input_series:
+      - series: 'kube_pod_status_phase{job="kube-state-metrics",namespace="partcrafter",pod="partcrafter-image-cache-596-abcde",phase="Pending"}'
+        values: '1x40'
+      - series: 'kube_pod_owner{job="kube-state-metrics",namespace="partcrafter",pod="partcrafter-image-cache-596-abcde",owner_kind="ReplicaSet",owner_name="partcrafter-image-cache-596"}'
+        values: '1x40'
+      - series: 'kube_replicaset_owner{job="kube-state-metrics",namespace="partcrafter",replicaset="partcrafter-image-cache-596",owner_kind="Deployment",owner_name="partcrafter-image-cache",owner_is_controller="true"}'
+        values: '1x40'
+      - series: 'kube_deployment_labels{namespace="partcrafter",deployment="partcrafter-image-cache",label_dgx_infra_dgx3_window="true"}'
+        values: '1x40'
     alert_rule_test:
       - eval_time: 25m
         alertname: KubePodNotReady
         exp_alerts: []
   - interval: 1m
-    name: un pod normal del mismo namespace comfyui SÍ dispara (la exclusión va por nombre)
+    name: un pod normal del mismo namespace comfyui SÍ dispara (la exclusión va por la etiqueta de la ventana)
     input_series:
       - series: 'kube_pod_status_phase{job="kube-state-metrics",namespace="comfyui",pod="krea2-dataset-store-7d9-abcde",phase="Pending"}'
         values: '1x40'
       - series: 'kube_pod_owner{job="kube-state-metrics",namespace="comfyui",pod="krea2-dataset-store-7d9-abcde",owner_kind="ReplicaSet",owner_name="krea2-dataset-store-7d9"}'
         values: '1x40'
       - series: 'kube_replicaset_owner{job="kube-state-metrics",namespace="comfyui",replicaset="krea2-dataset-store-7d9",owner_kind="Deployment",owner_name="krea2-dataset-store",owner_is_controller="true"}'
+        values: '1x40'
+      - series: 'kube_deployment_labels{namespace="comfyui",deployment="krea2-dataset-store"}'
         values: '1x40'
     alert_rule_test:
       - eval_time: 25m
