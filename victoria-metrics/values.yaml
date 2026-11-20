@@ -434,6 +434,10 @@ kube-state-metrics:
     - services=[infra]
     - namespaces=[infra]
     - persistentvolumeclaims=[excluded_from_alerts]
+    # SC-6137: la ventana creative de dgx3 se excluye de las alertas genéricas por
+    # su etiqueta (la misma con la que la descubre el eje, dgx3_mode.py), no por
+    # una lista de nombres que se queda atrás (trellis-image-cache, DEPL-19825/20133).
+    - deployments=[dgx-infra/dgx3-window]
   resources:
     requests:
       cpu: 25m

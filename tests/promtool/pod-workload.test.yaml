@@ -187,12 +187,31 @@ tests:
         values: '1x40'
       - series: 'kube_replicaset_owner{job="kube-state-metrics",namespace="comfyui",replicaset="dgx3-provision-6b9",owner_kind="Deployment",owner_name="dgx3-provision",owner_is_controller="true"}'
         values: '1x40'
+      - series: 'kube_deployment_labels{job="kube-state-metrics",namespace="comfyui",deployment="dgx3-provision",label_dgx_infra_dgx3_window="true"}'
+        values: '1x40'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: KubePodNotReady
+        exp_alerts: []
+  # SC-6137 (DEPL-20133): la caché de Trellis (ventana desde DGX-1624) tira 23 GB en
+  # ~17 min; la exclusión por la etiqueta la cubre sin listarla por nombre.
+  - interval: 1m
+    name: pod de la ventana dgx3 en otro namespace (trellis-image-cache) Pending 25 min NO dispara
+    input_series:
+      - series: 'kube_pod_status_phase{job="kube-state-metrics",namespace="trellis",pod="trellis-image-cache-674-abcde",phase="Pending"}'
+        values: '1x40'
+      - series: 'kube_pod_owner{job="kube-state-metrics",namespace="trellis",pod="trellis-image-cache-674-abcde",owner_kind="ReplicaSet",owner_name="trellis-image-cache-674"}'
+        values: '1x40'
+      - series: 'kube_replicaset_owner{job="kube-state-metrics",namespace="trellis",replicaset="trellis-image-cache-674",owner_kind="Deployment",owner_name="trellis-image-cache",owner_is_controller="true"}'
+        values: '1x40'
+      - series: 'kube_deployment_labels{job="kube-state-metrics",namespace="trellis",deployment="trellis-image-cache",label_dgx_infra_dgx3_window="true"}'
+        values: '1x40'
     alert_rule_test:
       - eval_time: 25m
         alertname: KubePodNotReady
         exp_alerts: []
   - interval: 1m
-    name: un pod normal del mismo namespace comfyui SÍ dispara (la exclusión va por nombre)
+    name: un pod normal del mismo namespace comfyui SÍ dispara (la exclusión va por la etiqueta de la ventana)
     input_series:
       - series: 'kube_pod_status_phase{job="kube-state-metrics",namespace="comfyui",pod="krea2-dataset-store-7d9-abcde",phase="Pending"}'
         values: '1x40'
