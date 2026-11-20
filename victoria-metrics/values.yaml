@@ -199,9 +199,13 @@ vmsingle:
       resources:
         requests:
           storage: 100Gi
+    # SC-6096 (mitigacion SC-6094): sale de ks5-cp-3. El plano de control va a llevar
+    # taint control-plane:NoSchedule y aqui solo debe quedar lo que no pueda vivir en
+    # otro sitio; la PVC es longhorn (RWO) -> el volumen se re-adjunta en atlantic sin
+    # perdida de series. atlantic (128 GiB, 36 % de requests de memoria) tiene el margen
+    # de los 24 GiB de limite; ubuntu estaba al 74 % y recibe las rafagas de runners.
     nodeSelector:
-      node-pool: ks5-nvme
-      kubernetes.io/arch: amd64
+      kubernetes.io/hostname: atlantic
 
 vmcluster:
   enabled: false   # single-node mode
@@ -236,8 +240,11 @@ vmagent:
     # a 30s siguen teniendo 2-4. Esas reglas las genera el chart, asi que
     # ensancharlas seria pelearse con el operador en cada upgrade.
     scrapeInterval: 30s
+    # SC-6096: con vmsingle (arriba). Sin PVC propia: el buffer en memoria se pierde en
+    # el reinicio (segundos de scrapes), las series almacenadas no. Scrapea por red de
+    # pods, le da igual el nodo.
     nodeSelector:
-      node-pool: ks5-nvme
+      kubernetes.io/hostname: atlantic
 
 vmalert:
   enabled: true
