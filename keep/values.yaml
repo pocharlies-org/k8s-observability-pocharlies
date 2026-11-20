@@ -459,16 +459,31 @@ backend:
           # El `if` es el guard de "no hay nada pendiente": con 0 filas,
           # {{ …results.0.0 }} renderiza cadena vacía (comprobado contra el
           # chevron del propio pod), y sin él se insertaría un fingerprint vacío.
-          # 01-10-2026 (SC-1422/SC-1432): el POST del RCA al webhook del perfil
-          # sre-devops queda FUERA: cada POST abría una sesión suelta sin clave en
-          # el perfil (criterio C1: 0 sesiones sin ticket). El camino ahora: la
-          # misma alerta de Alertmanager la ve `ops-watch` (x86) como hallazgo, le
-          # abre/busca su Request de IT (etiqueta `it-request`), y el supervisor da
-          # el único turno al bot en `epica-<request>` — con el diagnóstico de
-          # Aurora a un clic (la Request enlaza el incidente). El RCA queda
-          # guardado en Aurora/Keep (INFRA-912 retiró el aviso a Telegram). La
-          # ruta `rca` del chart sigue viva
-          # como fallback sin clave (provider `hermes_sre` conservado).
+          # DGX-1751 (Dani 20-11, al revés de SC-1422/SC-1432, que exigía el ticket
+          # antes que la sesión): alerta → Keep → RCA de Aurora → EVENTO → sesión, y
+          # la sesión hace su Request. `avisar-rca` saca el RCA al bus por el gateway
+          # de Synapse (`webhook.keep.received` con `tipo: rca`); synapse-adapter-
+          # supervisor lo lleva firmado a POST /api/arreglar/keep del dashboard, que
+          # abre una sesión Claude en el workspace Alertas de Paseo (dedupe por
+          # fingerprint). La sesión trabaja sobre la Request de ops-watch si ya la
+          # hay, o la crea en vivo y hace `ops-watch keep ack` para que no haya dos.
+          # Los incidentes sin RCA siguen el camino de ops-watch de siempre. Va antes
+          # de mark-reported: si el aviso falla, la pasada siguiente lo reintenta.
+          # Solo el fingerprint en el `if`: el texto del LLM puede traer comillas.
+          - name: avisar-rca
+            if: "'{{ steps.rca-datos.results.0.0 }}' != ''"
+            provider:
+              type: webhook
+              config: "{{ providers.synapse_keep }}"
+              with:
+                body:
+                  tipo: rca
+                  fingerprint: "{{ steps.rca-datos.results.0.0 }}"
+                  incidente: "{{ steps.rca-datos.results.0.6 }}"
+                  titulo: "{{ steps.rca-datos.results.0.1 }}"
+                  severidad: "{{ steps.rca-datos.results.0.2 }}"
+                  rca: "{{ steps.llm-rca.results.response }}"
+                  aurora_url: "https://aurora.e-dani.com/incidents/{{ steps.rca-datos.results.0.5 }}"
           - name: mark-reported
             if: "'{{ steps.rca-datos.results.0.0 }}' != ''"
             provider:
