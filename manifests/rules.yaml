@@ -3138,13 +3138,18 @@ spec:
 # amd64 de toda la org caían con "no space left on device" (el 19-10 tumbó correo-app, el
 # dashboard de dgx-infra y el chat durante horas).
 # Medición: no hay métrica de df para un emptyDir tmpfs; las páginas del tmpfs se cobran al
-# cgroup del contenedor que las escribe, así que container_memory_working_set_bytes del
-# contenedor buildkitd ES la ocupación del tmpfs más el RSS del daemon y sus builds. Con el
-# GC de SC-2759 (~9Gi en reposo) el día a día está muy por debajo del umbral, así que el
-# RSS no introduce ruido.
-# Umbral: 85 % del sizeLimit de 30Gi = 26.1Gi (28057006694 bytes), con for 10m: margen para
-# podar (`buildctl prune` contra el socket del builder) antes del ENOSPC. La referencia
-# desde el manifiesto está en k8s-infra-pocharlies buildkit/buildkitd-amd64.yaml.
+# cgroup del contenedor que las escribe y el shmem (tmpfs) no es reclamable → se cuenta
+# como archivo activo. La ocupación del tmpfs es por tanto
+# container_memory_cache - container_memory_total_inactive_file_bytes: medido 14.4Gi en
+# reposo (= `df` dentro del pod), 30.0Gi lleno y 24.5Gi de pico con un build corriendo.
+# (SC-6224, 21-11) Hasta hoy la regla usaba container_memory_working_set_bytes, que además
+# del tmpfs incluye el RSS del daemon y de sus builds — y fallaba en las dos direcciones
+# (medido el 21-11): la incidencia CRIT-20191/20193 disparó a las 17:31Z con la caché a
+# 14.4Gi (48 %) — RSS 4.2Gi + page cache activo subieron el ws a 27.3Gi — falsa alarma; y a
+# las 11:54Z el tmpfs SÍ se llenó (ENOSPC, builds amd64 cayendo, INFRA-953) sin dispararse:
+# llenó a ~2.5Gi/min (9→31Gi en 9 min) y nunca estuvo 10 min por encima de 26.1Gi.
+# Umbral: 85 % del sizeLimit de 30Gi = 26.1Gi (28057006694 bytes). La referencia desde el
+# manifiesto está en k8s-infra-pocharlies buildkit/buildkitd-amd64.yaml.
 apiVersion: operator.victoriametrics.com/v1beta1
 kind: VMRule
 metadata:
@@ -3156,8 +3161,13 @@ spec:
       rules:
         - alert: BuildkitAmd64CacheHigh
           expr: |
-            container_memory_working_set_bytes{namespace="buildkit", pod=~"buildkitd-amd64.*", container="buildkitd"} > 26.1Gi
-          for: 10m
+            (container_memory_cache{namespace="buildkit", pod=~"buildkitd-amd64.*", container="buildkitd"}
+              - container_memory_total_inactive_file_bytes{namespace="buildkit", pod=~"buildkitd-amd64.*", container="buildkitd"}) > 26.1Gi
+          # 1m, no 10m: con el ritmo de llenado medido (~2.5Gi/min) nunca hay 10 min de
+          # margen hasta el ENOSPC — el 21-11 el evento real cruzó el 85 % ~1 min antes de
+          # fallar. El margen útil son ~2 min: para avisar, no para podar a mano (el GC
+          # poda solo al llenarse: medido 31→12Gi en 4 min).
+          for: 1m
           labels:
             # critical, no warning: la safety-net de correlación de Keep
             # (keep/rules/correlation-rules.yaml) solo crea incidencia para
@@ -3166,21 +3176,22 @@ spec:
             # 03-11: la prueba con warning generó filas firing y ningún
             # incidente; con critical, CRIT-18361 en 4 s). Mismo criterio que
             # NodeRootDiskLowOrFilling: el lleno tumba los builds amd64 de la
-            # org entera (INFRA-953), y el `for: 10m` ya es el margen de poda,
-            # así que quien arde es el incidente, no el ruido.
+            # org entera (INFRA-953).
             severity: critical
             area: capacity
             namespace: buildkit
           annotations:
             summary: "Caché de buildkitd-amd64 por encima del 85 % del tmpfs de 30Gi ({{ $value | humanize1024 }}B)"
             description: >-
-              El working set del contenedor buildkitd (que incluye las páginas del tmpfs de la
-              caché) lleva 10 min por encima de 26.1Gi = 85 % del sizeLimit de 30Gi. A 30Gi el
-              tmpfs da ENOSPC y caen todos los builds amd64 de la org (INFRA-953: 4 veces sin
-              aviso). Actuar antes del lleno: `kubectl -n buildkit exec deploy/buildkitd-amd64 --
-              buildctl --addr unix:///run/user/1000/buildkit/buildkitd.sock du` para ver la
-              caché y `... prune` para podarla; si el GC (buildkitd.toml, SC-2759) no está
-              podando, revisar el ConfigMap buildkitd-amd64-config.
+              La caché tmpfs de buildkitd-amd64 (cache - inactive_file, que excluye el RSS
+              del daemon y de sus builds) lleva 1 min por encima de 26.1Gi = 85 % del
+              sizeLimit de 30Gi. A 30Gi el tmpfs da ENOSPC y caen todos los builds amd64
+              de la org (INFRA-953). El GC (buildkitd.toml, SC-2759) poda solo al
+              llenarse; si se repite sin que el GC pode, revisar el ConfigMap
+              buildkitd-amd64-config y el suelo de registros «in use» (INFRA-953).
+              Estado: `kubectl -n buildkit exec deploy/buildkitd-amd64 -- df -h
+              /home/user/.local/share/buildkit` y `... buildctl --addr
+              unix:///run/user/1000/buildkit/buildkitd.sock du`.
 
 ---
 apiVersion: operator.victoriametrics.com/v1beta1
