@@ -98,6 +98,12 @@ controller:
   nodeSelector:
     kubernetes.io/os: linux
   tolerations:
+    # Alloy recoge logs y métricas de TODOS los nodos menos alphalink (dedicated=alpha).
+    # control-plane: los ks5-cp-* se taintearon el 20-11 (SC-6195); sin esta toleration
+    # el DaemonSet los marca misscheduled y pierde la recogida en el control plane.
+    - key: node-role.kubernetes.io/control-plane
+      operator: Exists
+      effect: NoSchedule
     - key: dedicated
       operator: Equal
       value: llm
