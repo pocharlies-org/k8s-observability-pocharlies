@@ -2082,10 +2082,24 @@ spec:
           #   - == 0         -> existe pero no hay ninguna réplica disponible
           # El scrape propio de Keep está en manifests/keep-scrape.yaml; cuando
           # lleve tiempo estable se le puede añadir una condición sobre `up`.
+          #
+          # INFRA-1527 (HUB-20314, 22-11): la regla sin más es un falso positivo
+          # cada vez que el scrape de KSM flappea — la serie desaparece >5 min,
+          # absent() se cumple y el incidente se abre contra un hub sano (6 veces
+          # en 2 semanas: HUB-18767, 19114, 19862, 19970, 19982, 20314; medido en
+          # vivo: up{job="kube-state-metrics"}=0 con keep-backend Running y 0
+          # restarts). La guarda `and on() up==1` exige que el sensor esté sano
+          # para poder afirmar ausencia; con KSM ciego la ceguera la cubren
+          # TargetDown/monitoring-degraded. Verificado en MetricsQL: deployment
+          # inexistente + up=1 -> dispara; + up=0 -> silenciado.
           expr: |
-            absent(kube_deployment_status_replicas_available{namespace="monitoring", deployment="keep-backend"})
-              or
-            max(kube_deployment_status_replicas_available{namespace="monitoring", deployment="keep-backend"}) == 0
+            (
+              absent(kube_deployment_status_replicas_available{namespace="monitoring", deployment="keep-backend"})
+                or
+              max(kube_deployment_status_replicas_available{namespace="monitoring", deployment="keep-backend"}) == 0
+            )
+            and on()
+            max(up{job="kube-state-metrics"}) == 1
           for: 2m
           labels:
             severity: critical

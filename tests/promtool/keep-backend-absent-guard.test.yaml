@@ -1,0 +1,72 @@
+# INFRA-1527 (HUB-20314, 22-11): KeepBackendAbsent solo arde si el scrape de
+# kube-state-metrics está sano. Sin la guarda, cada flap del scrape de KSM (serie
+# kube_deployment_status_replicas_available ausente >5 min) abría un incidente
+# keep-hub-degraded contra un hub sano — 6 veces en 2 semanas. El caso 2 es el
+# falso positivo medido (up{job="kube-state-metrics"}=0 con keep-backend Running).
+rule_files:
+  - keep-hub-health.rules.yaml
+evaluation_interval: 1m
+tests:
+  - interval: 1m
+    name: "KSM sano y la serie del deployment desaparece - dispara tras el for de 2 min"
+    input_series:
+      - series: 'up{job="kube-state-metrics", instance="10.42.6.4:8080"}'
+        values: '1x10'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: KeepBackendAbsent
+        exp_alerts: []
+      - eval_time: 3m
+        alertname: KeepBackendAbsent
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              area: availability
+              deployment: keep-backend
+              namespace: monitoring
+            exp_annotations:
+              summary: "Keep backend caído — no hay ingesta de alertas"
+              description: "El hub de alertas no está disponible. No hay lane directa que la sustituya (INFRA-912 retiró backstop-telegram): mientras dure, las alertas no se registran ni se notifican."
+  - interval: 1m
+    name: "scrape de KSM caído (up=0) y serie ausente - NO dispara (HUB-20314)"
+    input_series:
+      - series: 'up{job="kube-state-metrics", instance="10.42.6.4:8080"}'
+        values: '0x20'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: KeepBackendAbsent
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: KeepBackendAbsent
+        exp_alerts: []
+  - interval: 1m
+    name: "KSM sano y keep-backend con réplica disponible - silencio"
+    input_series:
+      - series: 'up{job="kube-state-metrics", instance="10.42.6.4:8080"}'
+        values: '1x10'
+      - series: 'kube_deployment_status_replicas_available{namespace="monitoring", deployment="keep-backend"}'
+        values: '1x10'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: KeepBackendAbsent
+        exp_alerts: []
+  - interval: 1m
+    name: "KSM sano y el deployment con 0 réplicas disponibles - dispara"
+    input_series:
+      - series: 'up{job="kube-state-metrics", instance="10.42.6.4:8080"}'
+        values: '1x10'
+      - series: 'kube_deployment_status_replicas_available{namespace="monitoring", deployment="keep-backend"}'
+        values: '0x10'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: KeepBackendAbsent
+        exp_alerts: []
+      - eval_time: 3m
+        alertname: KeepBackendAbsent
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              area: availability
+            exp_annotations:
+              summary: "Keep backend caído — no hay ingesta de alertas"
+              description: "El hub de alertas no está disponible. No hay lane directa que la sustituya (INFRA-912 retiró backstop-telegram): mientras dure, las alertas no se registran ni se notifican."
