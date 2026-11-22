@@ -1,0 +1,109 @@
+{
+  "__comment": "Autoría: la base de este JSON es dashboards/grafana-refusal.json del repo pocharlies-org/refusal-probe (licencia PolyForm Noncommercial 1.0.0 — uso interno, sin distribución; la revisión legal es decisión de Dani). DGX-722 lo amplía a los cuatro paneles de la épica DGX-391 y lo provisiona por configMapGenerator. Cifras SIN VALIDAR: el detector (DGX-324) sigue abierto y el sello refusal_score no cubre la ruta anthropic_messages (26,56 % global medido 15-11): las negativas de ese tráfico infra-cuentan.",
+  "description": "Negativas (refusals) sobre LiteLLM_SpendLogs, desde el sello del hook en spend_logs_metadata. Denominador = peticiones selladas (con señal de sonda), nunca tráfico total: un cubo sin señal es un hueco, no un 0 %. TODAS las cifras están SIN VALIDAR hasta el cierre de DGX-324.",
+  "title": "Negativas (refusal probe) — sin validar",
+  "uid": "refusal-probe",
+  "schemaVersion": 39,
+  "editable": true,
+  "refresh": "10m",
+  "time": { "from": "now-7d", "to": "now" },
+  "timezone": "browser",
+  "templating": {
+    "list": [
+      {
+        "name": "route",
+        "type": "custom",
+        "label": "Route (censored/uncensored)",
+        "query": "all,censored,uncensored",
+        "current": { "text": "all", "value": "all" },
+        "options": [
+          { "text": "all", "value": "all", "selected": true },
+          { "text": "censored", "value": "censored", "selected": false },
+          { "text": "uncensored", "value": "uncensored", "selected": false }
+        ]
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Negativas — contador (sin validar)",
+      "description": "Peticiones negadas sobre peticiones selladas en la ventana. SIN VALIDAR (DGX-324 abierto; anthropic_messages sin sello).",
+      "type": "stat",
+      "datasource": { "type": "postgres", "uid": "litellm-pg" },
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 0 },
+      "fieldConfig": { "defaults": { "unit": "short", "min": 0 }, "overrides": [] },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value_and_name"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "datasource": { "type": "postgres", "uid": "litellm-pg" },
+          "rawSql": "SELECT count(*) FILTER (WHERE sl.metadata->'spend_logs_metadata'->>'refusal_flag' = 'true' OR (sl.metadata->'spend_logs_metadata'->>'refusal_flag' IS NULL AND sl.metadata->'spend_logs_metadata'->>'refusal_text' = 'refusal')) AS \"negativas\", count(*) FILTER (WHERE sl.metadata->'spend_logs_metadata'->>'refusal_flag' IS NOT NULL OR sl.metadata->'spend_logs_metadata'->>'refusal_text' IS NOT NULL) AS \"selladas\" FROM \"LiteLLM_SpendLogs\" sl WHERE sl.\"endTime\" > $__timeFrom() AND sl.\"endTime\" <= $__timeTo() AND sl.api_key != 'litellm-internal-health-check' AND ('$route' = 'all' OR ('$route' = 'uncensored') = (COALESCE(sl.model_group, sl.model, '') ILIKE '%uncensored%'))"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Tasa de negativas sobre selladas (sin validar)",
+      "description": "Serie horaria. Denominador = selladas (refusal_flag presente; si no, refusal_text presente). SIN VALIDAR (DGX-324 abierto; anthropic_messages sin sello).",
+      "type": "timeseries",
+      "datasource": { "type": "postgres", "uid": "litellm-pg" },
+      "gridPos": { "h": 9, "w": 18, "x": 6, "y": 0 },
+      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1 }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "datasource": { "type": "postgres", "uid": "litellm-pg" },
+          "rawSql": "SELECT date_bin(interval '1 hour', sl.\"endTime\", TIMESTAMPTZ '2000-01-01') AS time, CASE WHEN count(*) FILTER (WHERE sl.metadata->'spend_logs_metadata'->>'refusal_flag' IS NOT NULL) > 0 THEN count(*) FILTER (WHERE sl.metadata->'spend_logs_metadata'->>'refusal_flag' = 'true')::float8 / NULLIF(count(*) FILTER (WHERE sl.metadata->'spend_logs_metadata'->>'refusal_flag' IS NOT NULL), 0) WHEN count(*) FILTER (WHERE sl.metadata->'spend_logs_metadata'->>'refusal_text' IS NOT NULL) > 0 THEN count(*) FILTER (WHERE sl.metadata->'spend_logs_metadata'->>'refusal_text' = 'refusal')::float8 / NULLIF(count(*) FILTER (WHERE sl.metadata->'spend_logs_metadata'->>'refusal_text' IS NOT NULL), 0) END AS \"refusal rate\" FROM \"LiteLLM_SpendLogs\" sl WHERE sl.\"endTime\" > $__timeFrom() AND sl.\"endTime\" <= $__timeTo() AND sl.api_key != 'litellm-internal-health-check' AND ('$route' = 'all' OR ('$route' = 'uncensored') = (COALESCE(sl.model_group, sl.model, '') ILIKE '%uncensored%')) GROUP BY 1 ORDER BY 1"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Peticiones negadas (sin validar)",
+      "description": "Últimas peticiones negadas de la ventana, con agente (user_api_key_alias) y modelo. SIN VALIDAR (DGX-324 abierto; anthropic_messages sin sello).",
+      "type": "table",
+      "datasource": { "type": "postgres", "uid": "litellm-pg" },
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 6 },
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "datasource": { "type": "postgres", "uid": "litellm-pg" },
+          "rawSql": "SELECT sl.\"endTime\" AS time, COALESCE(sl.model_group, sl.model, 'unknown') AS modelo, COALESCE(sl.metadata->>'user_api_key_alias', 'unknown') AS agente, sl.model, sl.metadata->'spend_logs_metadata'->>'refusal_score' AS refusal_score, sl.metadata->'spend_logs_metadata'->>'refusal_flag' AS refusal_flag, sl.metadata->'spend_logs_metadata'->>'refusal_text' AS refusal_text FROM \"LiteLLM_SpendLogs\" sl WHERE sl.\"endTime\" > $__timeFrom() AND sl.\"endTime\" <= $__timeTo() AND sl.api_key != 'litellm-internal-health-check' AND ('$route' = 'all' OR ('$route' = 'uncensored') = (COALESCE(sl.model_group, sl.model, '') ILIKE '%uncensored%')) AND (sl.metadata->'spend_logs_metadata'->>'refusal_flag' = 'true' OR (sl.metadata->'spend_logs_metadata'->>'refusal_flag' IS NULL AND sl.metadata->'spend_logs_metadata'->>'refusal_text' = 'refusal')) ORDER BY sl.\"endTime\" DESC LIMIT 200"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Desglose por modelo y agente (sin validar)",
+      "description": "A: por modelo (model_group). B: por agente (user_api_key_alias), igual que el agregado de Control Nexus. SIN VALIDAR (DGX-324 abierto; anthropic_messages sin sello).",
+      "type": "table",
+      "datasource": { "type": "postgres", "uid": "litellm-pg" },
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 16 },
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "datasource": { "type": "postgres", "uid": "litellm-pg" },
+          "rawSql": "SELECT COALESCE(sl.model_group, sl.model, 'unknown') AS modelo, count(*) FILTER (WHERE sl.metadata->'spend_logs_metadata'->>'refusal_flag' IS NOT NULL OR sl.metadata->'spend_logs_metadata'->>'refusal_text' IS NOT NULL) AS selladas, count(*) FILTER (WHERE sl.metadata->'spend_logs_metadata'->>'refusal_flag' = 'true' OR (sl.metadata->'spend_logs_metadata'->>'refusal_flag' IS NULL AND sl.metadata->'spend_logs_metadata'->>'refusal_text' = 'refusal')) AS negadas, count(*) FILTER (WHERE sl.metadata->'spend_logs_metadata'->>'refusal_flag' = 'true' OR (sl.metadata->'spend_logs_metadata'->>'refusal_flag' IS NULL AND sl.metadata->'spend_logs_metadata'->>'refusal_text' = 'refusal'))::float8 / NULLIF(count(*) FILTER (WHERE sl.metadata->'spend_logs_metadata'->>'refusal_flag' IS NOT NULL OR sl.metadata->'spend_logs_metadata'->>'refusal_text' IS NOT NULL), 0) AS tasa FROM \"LiteLLM_SpendLogs\" sl WHERE sl.\"endTime\" > $__timeFrom() AND sl.\"endTime\" <= $__timeTo() AND sl.api_key != 'litellm-internal-health-check' AND ('$route' = 'all' OR ('$route' = 'uncensored') = (COALESCE(sl.model_group, sl.model, '') ILIKE '%uncensored%')) GROUP BY 1 ORDER BY negadas DESC LIMIT 30"
+        },
+        {
+          "refId": "B",
+          "format": "table",
+          "datasource": { "type": "postgres", "uid": "litellm-pg" },
+          "rawSql": "SELECT COALESCE(sl.metadata->>'user_api_key_alias', 'unknown') AS agente, count(*) FILTER (WHERE sl.metadata->'spend_logs_metadata'->>'refusal_flag' IS NOT NULL OR sl.metadata->'spend_logs_metadata'->>'refusal_text' IS NOT NULL) AS selladas, count(*) FILTER (WHERE sl.metadata->'spend_logs_metadata'->>'refusal_flag' = 'true' OR (sl.metadata->'spend_logs_metadata'->>'refusal_flag' IS NULL AND sl.metadata->'spend_logs_metadata'->>'refusal_text' = 'refusal')) AS negadas, count(*) FILTER (WHERE sl.metadata->'spend_logs_metadata'->>'refusal_flag' = 'true' OR (sl.metadata->'spend_logs_metadata'->>'refusal_flag' IS NULL AND sl.metadata->'spend_logs_metadata'->>'refusal_text' = 'refusal'))::float8 / NULLIF(count(*) FILTER (WHERE sl.metadata->'spend_logs_metadata'->>'refusal_flag' IS NOT NULL OR sl.metadata->'spend_logs_metadata'->>'refusal_text' IS NOT NULL), 0) AS tasa FROM \"LiteLLM_SpendLogs\" sl WHERE sl.\"endTime\" > $__timeFrom() AND sl.\"endTime\" <= $__timeTo() AND sl.api_key != 'litellm-internal-health-check' AND ('$route' = 'all' OR ('$route' = 'uncensored') = (COALESCE(sl.model_group, sl.model, '') ILIKE '%uncensored%')) GROUP BY 1 ORDER BY negadas DESC LIMIT 30"
+        }
+      ]
+    }
+  ]
+}
