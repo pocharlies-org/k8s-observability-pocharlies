@@ -920,7 +920,10 @@ backend:
                   )
                   SELECT coalesce(string_agg(DISTINCT substr(md5(id::text), 1, 16), ','), '')
                     FROM (VALUES (1)) AS siempre(x)
-                    LEFT JOIN arbol ON '{{ incident.status }}' = 'resolved'
+                    -- `incident.status` renderiza el repr del enum
+                    -- (`IncidentStatus.RESOLVED`, medido 23-11 en el pod), no el
+                    -- valor: se normaliza antes de comparar.
+                    LEFT JOIN arbol ON lower(replace('{{ incident.status }}', 'IncidentStatus.', '')) = 'resolved'
         actions:
           - name: avisar-synapse
             if: "'{{ steps.datos-cierre.results.0.0 }}' != ''"
