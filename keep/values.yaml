@@ -882,13 +882,23 @@ backend:
       # `if` de la action lo filtra por estado, así que mientras el incidente
       # siga firing no sale ningún POST. Sin columna nueva: el cierre del
       # dashboard es idempotente (sin sesión viva es no-op).
-      # shortcut: un incidente fusionado DESPUÉS del RCA cambia de id y su
-      # sesión no se cierra sola; si aparece una huérfana, se archiva a mano.
+      #
+      # Fusión (medido en Keep 0.52.1): `merge_incidents_to_id` deja el
+      # incidente absorbido con status `merged` y `merged_into_incident_id`, le
+      # quita las alertas y NO emite evento, así que su sesión solo se puede
+      # cerrar cuando se resuelve el superviviente. La clave de la sesión es
+      # `keep-<substr(md5(id),1,16)>` (el token del claim), que se calcula en la
+      # propia BBDD de Keep: el step recorre el árbol de incidentes absorbidos
+      # (recursivo, porque un absorbido pudo absorber a otros) y devuelve todas
+      # las claves de una vez. Cerrar una clave sin sesión viva es no-op.
+      # shortcut: fusionar en un incidente YA resuelto no dispara nada y su
+      # sesión queda huérfana, se archiva a mano.
       - id: alertas-cierre
         name: Alertas — cierre de la sesión de arreglo
         description: >-
           Cuando el incidente de Keep se resuelve, avisa a Synapse del cierre
-          para que se archive la sesión de Paseo que abrió su RCA.
+          para que se archive la sesión (o sesiones, si absorbió otras) de
+          Paseo que abrió su RCA.
         triggers:
           - type: incident
             events: [updated]
@@ -900,15 +910,17 @@ backend:
           - name: datos-cierre
             provider:
               type: postgres
-              config: "{{ providers.aurora_db }}"
+              config: "{{ providers.keep_db }}"
               with:
                 query: >-
-                  SELECT coalesce(d.fingerprint, '')
+                  WITH RECURSIVE arbol AS (
+                    SELECT id FROM incident WHERE id = NULLIF('{{ incident.id }}', '')::uuid
+                    UNION
+                    SELECT i.id FROM incident i JOIN arbol a ON i.merged_into_incident_id = a.id
+                  )
+                  SELECT coalesce(string_agg(DISTINCT substr(md5(id::text), 1, 16), ','), '')
                     FROM (VALUES (1)) AS siempre(x)
-                    LEFT JOIN keep_bridge.aurora_dispatches d
-                      ON '{{ incident.status }}' = 'resolved'
-                     AND d.keep_incident_id = NULLIF('{{ incident.id }}', '')::uuid
-                   LIMIT 1
+                    LEFT JOIN arbol ON '{{ incident.status }}' = 'resolved'
         actions:
           - name: avisar-synapse
             if: "'{{ steps.datos-cierre.results.0.0 }}' != ''"
@@ -919,7 +931,7 @@ backend:
                 body:
                   incidente: "{{ incident.id }}"
                   tipo: cierre
-                  fingerprint: "{{ steps.datos-cierre.results.0.0 }}"
+                  fingerprints: "{{ steps.datos-cierre.results.0.0 }}"
 
       # Guardián de invariante: hace que una severidad fuera del vocabulario
       # canónico sea CONSULTABLE en vez de invisible. Enriquece y punto — no
