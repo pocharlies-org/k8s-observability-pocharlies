@@ -70,6 +70,12 @@ class CierreTest(unittest.TestCase):
         self.assertIn("substr(md5(id::text), 1, 16)", self.query)
         self.assertIn("string_agg(DISTINCT", self.query)
 
+    def test_estado_normalizado_porque_el_enum_renderiza_su_repr(self):
+        # Medido en el pod (23-11): `{{ incident.status }}` llega como
+        # `IncidentStatus.RESOLVED`, no `resolved`; sin normalizar, el ON nunca
+        # casa y el cierre no sale.
+        self.assertIn("lower(replace('{{ incident.status }}', 'IncidentStatus.', '')) = 'resolved'", self.query)
+
 
 if __name__ == "__main__":
     unittest.main()
