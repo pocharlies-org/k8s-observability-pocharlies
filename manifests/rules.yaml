@@ -534,6 +534,15 @@ spec:
         # emergency-Telegram leg that used to bypass Keep for this was retired
         # with the rest of the Telegram alerts — INFRA-912, 2026-10-17.)
         - alert: SynapseCoreAbsent
+          # INFRA-1529 (SYNC-20319, 22-11): las 4 veces que abrió incidente
+          # (SYNC-20096/20137/20255/20319) el engine/dispatcher estaban sanos;
+          # lo que faltaba eran muestras, no el servicio — un atasco del camino
+          # vmagent→vmsingle deja la serie `up` >5 min sin sample nuevo y
+          # absent() no distingue «caído» de «monitoring ciego». El sensor es
+          # el propio camino, así que ninguna guarda dentro de la regla puede
+          # verlo: quien lo ve es VmagentRemoteWriteFailing (scrape-path), que
+          # al arder inhibe a las que lleven pipeline_blind (inhibit_rules en
+          # alertmanager-config.yaml).
           expr: |
             absent(up{job="synapse-engine"})
             or absent(up{job="synapse-dispatcher"})
@@ -543,9 +552,10 @@ spec:
             severity: critical
             area: availability
             component: synapse
+            pipeline_blind: "true"
           annotations:
             summary: "Synapse core singleton down (engine/dispatcher)"
-            description: "synapse-engine and/or synapse-dispatcher is absent from scrape or reporting up==0 for >3m (job label on this alert names the affected side; absent() legs carry only the matched job). The control plane is degraded: engine=workflow scheduling, dispatcher=outbox drain onto RabbitMQ. Check `kubectl -n synapse get pods -l 'app in (synapse-engine,synapse-dispatcher)'` and the pod logs/events."
+            description: "synapse-engine and/or synapse-dispatcher is absent from scrape or reporting up==0 for >3m (job label on this alert names the affected side; absent() legs carry only the matched job). The control plane is degraded: engine=workflow scheduling, dispatcher=outbox drain onto RabbitMQ. First rule out a scrape-path gap (VmagentRemoteWriteFailing / ScrapePathGap). Check `kubectl -n synapse get pods -l 'app.kubernetes.io/name in (synapse-engine,synapse-dispatcher)'` and the pod logs/events."
         # Dispatcher alive but the outbox is NOT draining: zero publishes over
         # 15m WHILE there is live (non-exhausted) backlog waiting. The backlog
         # guard is deliberate — an idle-but-healthy dispatcher legitimately

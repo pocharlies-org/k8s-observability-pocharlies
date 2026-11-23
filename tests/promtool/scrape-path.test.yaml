@@ -18,15 +18,15 @@ tests:
         exp_alerts: []
 
   - interval: 1m
-    name: backlog real — pending sostenido en 150 MB dispara tras 10 min
+    name: backlog real — pending sostenido en 150 MB dispara tras 5 min (INFRA-1529)
     input_series:
       - series: 'vmagent_remotewrite_pending_data_bytes{pod="vmagent-0"}'
         values: '150000000x40'
     alert_rule_test:
-      - eval_time: 9m
+      - eval_time: 4m
         alertname: VmagentRemoteWriteFailing
         exp_alerts: []
-      - eval_time: 11m
+      - eval_time: 6m
         alertname: VmagentRemoteWriteFailing
         exp_alerts:
           - exp_labels:
@@ -37,10 +37,51 @@ tests:
               summary: "vmagent no consigue escribir en vmsingle: errores de remote-write o backlog sostenido"
               description: >-
                 vmagent acumula errores de remote-write o una cola pendiente
-                grande (> 100 MB) durante 10 min: el camino se está atascando
-                ANTES de quedarse vacío del todo (ScrapePathGap). Comprueba
-                vmsingle (memoria/OOM) y los logs de vmagent en Loki
-                (namespace="monitoring", app="vmagent").
+                (> 20 MB) durante 5 min: el camino se está atascando ANTES de
+                quedarse vacío del todo (ScrapePathGap). Mientras arda, las
+                alertas absent() de servicios están inhibidas (pipeline_blind):
+                no se puede distinguir «servicio caído» de «monitoring ciego».
+                Comprueba vmsingle (memoria/OOM, consultas lentas) y los logs de
+                vmagent en Loki (namespace="monitoring", app="vmagent").
+
+  - interval: 1m
+    name: "INFRA-1529 (SYNC-20319) — rampa 0.7→147 MB en ~15 min, dispara a los ~7 min antes de la falsa absent()"
+    input_series:
+      - series: 'vmagent_remotewrite_pending_data_bytes{pod="vmagent-0"}'
+        values: '700000 10000000 25000000 40000000 60000000 80000000 100000000 120000000 140000000x30'
+    alert_rule_test:
+      # Con el umbral viejo (100 MB / for: 10m) este caso NO llegó a arder y las
+      # absent() (SynapseCoreAbsent x2) abrieron SYNC-20319 contra servicios sanos.
+      - eval_time: 6m
+        alertname: VmagentRemoteWriteFailing
+        exp_alerts: []
+      - eval_time: 8m
+        alertname: VmagentRemoteWriteFailing
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              area: monitoring
+              pod: vmagent-0
+            exp_annotations:
+              summary: "vmagent no consigue escribir en vmsingle: errores de remote-write o backlog sostenido"
+              description: >-
+                vmagent acumula errores de remote-write o una cola pendiente
+                (> 20 MB) durante 5 min: el camino se está atascando ANTES de
+                quedarse vacío del todo (ScrapePathGap). Mientras arda, las
+                alertas absent() de servicios están inhibidas (pipeline_blind):
+                no se puede distinguir «servicio caído» de «monitoring ciego».
+                Comprueba vmsingle (memoria/OOM, consultas lentas) y los logs de
+                vmagent en Loki (namespace="monitoring", app="vmagent").
+
+  - interval: 1m
+    name: INFRA-1529 — pico de 25 MB que se auto-cura en 3 min no dispara (filosofía SC-5199)
+    input_series:
+      - series: 'vmagent_remotewrite_pending_data_bytes{pod="vmagent-0"}'
+        values: '500000 25000000 25000000 25000000 500000x30'
+    alert_rule_test:
+      - eval_time: 40m
+        alertname: VmagentRemoteWriteFailing
+        exp_alerts: []
 
   - interval: 1m
     name: errores de remote-write sostenidos dispara aunque pending sea bajo
@@ -61,10 +102,12 @@ tests:
               summary: "vmagent no consigue escribir en vmsingle: errores de remote-write o backlog sostenido"
               description: >-
                 vmagent acumula errores de remote-write o una cola pendiente
-                grande (> 100 MB) durante 10 min: el camino se está atascando
-                ANTES de quedarse vacío del todo (ScrapePathGap). Comprueba
-                vmsingle (memoria/OOM) y los logs de vmagent en Loki
-                (namespace="monitoring", app="vmagent").
+                (> 20 MB) durante 5 min: el camino se está atascando ANTES de
+                quedarse vacío del todo (ScrapePathGap). Mientras arda, las
+                alertas absent() de servicios están inhibidas (pipeline_blind):
+                no se puede distinguir «servicio caído» de «monitoring ciego».
+                Comprueba vmsingle (memoria/OOM, consultas lentas) y los logs de
+                vmagent en Loki (namespace="monitoring", app="vmagent").
 
   - interval: 1m
     name: hueco total del camino — up desaparece del todo y ScrapePathGap dispara a los 15 min (SC-5199)

@@ -100,6 +100,22 @@ spec:
       # ---------------------------------------------------------------------
       - receiver: keep
 
+  # INFRA-1529 (SYNC-20319, 22-11): durante un atasco del camino vmagent→vmsingle
+  # las reglas absent() sobre `up` arden contra servicios sanos (el motor no
+  # distingue «caído» de «sin muestras»: todo su dato llega por ese camino).
+  # Mientras VmagentRemoteWriteFailing arda, las alertas marcadas
+  # pipeline_blind="true" se inhiben y no abren incidente; el incidente real es
+  # el del camino (correlación camino-de-scrape). Sin `equal`: la fuente es
+  # global — un atasco del camino ciega a todas, no sólo a las de su serie.
+  # Comprobar tras el despliegue que el operador no añade un matcher de
+  # namespace a los matchers (los targets no llevan label namespace):
+  #   kubectl -n monitoring get secret -l app.kubernetes.io/name=vmalertmanager -o yaml
+  inhibit_rules:
+    - source_matchers:
+        - alertname = "VmagentRemoteWriteFailing"
+      target_matchers:
+        - pipeline_blind = "true"
+
   receivers:
     - name: blackhole
 
