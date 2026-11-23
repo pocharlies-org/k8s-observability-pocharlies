@@ -2494,6 +2494,22 @@ spec:
           annotations:
             summary: "Host is running out of memory"
             description: "Memory is filling up at {{ $labels.pod }}, has been above 90% for the last 15 minutes, is currently at {{ printf \"%.2f\" $value }}%. Sparks (nvidia-dgx/gx10-ec3d/dgx3) are excluded by design while the llm-tp profile is resident — check the gpu-arbiter CM before assuming drift."
+        - alert: NodeMemoryCritical
+          # 23-11: NodeMemoryHighUtilization (warning) estuvo disparada 25 min en
+          # atlantic antes de que el nodo se colgara por thrashing (MemAvailable
+          # 5-7 %, ~2000 fallos mayores/s, kubelet NotReady 10:13-10:21) y nadie
+          # actuó. Escalón crítico a >95 % sostenido 5 min, mismos nodos excluidos.
+          expr: |
+            ((100 - ((node_memory_MemAvailable_bytes{job="node-exporter"} / node_memory_MemTotal_bytes{job="node-exporter"}) * 100)) > 95)
+            * on(pod) group_left(node)
+            kube_pod_info{namespace="monitoring", pod=~"vm-prometheus-node-exporter-.*", node!~"nvidia-dgx|gx10-ec3d|dgx3"}
+          for: 5m
+          labels:
+            severity: critical
+            area: capacity
+          annotations:
+            summary: "Host memory critically low"
+            description: "Memory is filling up at {{ $labels.node }}: above 95% for 5 minutes (currently {{ printf \"%.2f\" $value }}%). The node is close to thrashing; on 2026-11-23 atlantic hung at this level (kubelet NotReady 10:13-10:21). Free memory now (scale down builds/runners) instead of waiting for the kubelet."
         - alert: NodeMemoryMajorPagesFaults
           # Copia de la regla homónima del chart (desactivada en
           # victoria-metrics/values.yaml, SC-5400) con los Sparks excluidos,
