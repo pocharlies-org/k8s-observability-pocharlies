@@ -33,11 +33,11 @@ config:
         follow_redirects: false
         fail_if_not_ssl: true
         preferred_ip_protocol: ip4
-    # Liveness probe for the Synapse gateway via its alertmanager webhook
-    # path. A GET to /webhooks/alertmanager returns 405 (Method Not
-    # Allowed) when the gateway is up — that is the success signal here.
-    # This is the exact path Alertmanager delivers to, so the probe tracks
-    # the real delivery route, not a side channel.
+    # Edge check for the Synapse business webhooks (INFRA-1536). A GET to
+    # the POST-only /webhooks/stripe answers 405 when the gateway is up —
+    # that is the success signal. The probe targets sauvage's tailnet IP
+    # (see manifests/probes.yaml), so Host and SNI must carry the real
+    # hostname for traefik-edge to route and for the cert to validate.
     http_synapse_edge:
       prober: http
       timeout: 5s
@@ -47,6 +47,10 @@ config:
         valid_status_codes: [200, 204, 405]
         fail_if_not_ssl: true
         preferred_ip_protocol: ip4
+        headers:
+          Host: synapse.e-dani.com
+        tls_config:
+          server_name: synapse.e-dani.com
     # Service-level reachability for the shared datastores. Pod metrics lied
     # during the 2026-07-20 node freeze (kubelet dead => stale ready=1); a TCP
     # connect through the Service VIP is the signal consumers actually see.
