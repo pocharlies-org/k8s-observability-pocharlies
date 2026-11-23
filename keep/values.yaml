@@ -876,6 +876,46 @@ backend:
                   incidente: "{{ incident.id }}"
                   estado: "{{ incident.status }}"
 
+      # DGX-1789: al resolverse un incidente, la sesión de Paseo que abrió su
+      # RCA (DGX-1751) se archiva. El evento es el mismo `updated` de arriba: la
+      # resolución sale como `updated` (resolve_incident_if_require), y el
+      # `if` de la action lo filtra por estado, así que mientras el incidente
+      # siga firing no sale ningún POST. Sin columna nueva: el cierre del
+      # dashboard es idempotente (sin sesión viva es no-op).
+      # shortcut: un incidente fusionado DESPUÉS del RCA cambia de id y su
+      # sesión no se cierra sola; si aparece una huérfana, se archiva a mano.
+      - id: alertas-cierre
+        name: Alertas — cierre de la sesión de arreglo
+        description: >-
+          Cuando el incidente de Keep se resuelve, avisa a Synapse del cierre
+          para que se archive la sesión de Paseo que abrió su RCA.
+        triggers:
+          - type: incident
+            events: [updated]
+        actions:
+          - name: datos-cierre
+            provider:
+              type: postgres
+              config: "{{ providers.aurora_db }}"
+              with:
+                query: >-
+                  SELECT coalesce(d.fingerprint, '')
+                    FROM (VALUES (1)) AS siempre(x)
+                    LEFT JOIN keep_bridge.aurora_dispatches d
+                      ON '{{ incident.status }}' = 'resolved'
+                     AND d.keep_incident_id = NULLIF('{{ incident.id }}', '')::uuid
+                   LIMIT 1
+          - name: avisar-synapse
+            if: "'{{ steps.datos-cierre.results.0.0 }}' != ''"
+            provider:
+              type: webhook
+              config: "{{ providers.synapse_keep }}"
+              with:
+                body:
+                  incidente: "{{ incident.id }}"
+                  tipo: cierre
+                  fingerprint: "{{ steps.datos-cierre.results.0.0 }}"
+
       # Guardián de invariante: hace que una severidad fuera del vocabulario
       # canónico sea CONSULTABLE en vez de invisible. Enriquece y punto — no
       # notifica, porque con el reenvío cada minuto un aviso por alerta sería

@@ -89,6 +89,14 @@ igual). Necesita Postgres: sin `AURORA_TEST_PG_DSN` se salta en local y **falla 
 
 ## 8. Decisiones y trampas
 
+- `2026-11-23` · DGX-1789: **la sesión de arreglo se cierra con su incidente**. El workflow `alertas-cierre` escucha
+  `type: incident` / `events: [updated]` (la resolución de Keep 0.52.1 sale como `updated`, no trae evento propio) y,
+  solo cuando `incident.status = resolved`, publica por la conexión `synapse_keep` `{tipo: cierre, fingerprint}`; el
+  fingerprint es el de `keep_bridge.aurora_dispatches` (= `substr(md5(keep_incident_id),1,16)`, el mismo con el que el
+  RCA abrió la sesión y la clave `keep-<fingerprint>` del lanzador). El step devuelve SIEMPRE una fila (`LEFT JOIN`
+  sobre `(VALUES (1))`) porque el `if` no existe en los steps y con 0 filas `results.0.0` renderiza vacío; sin columna
+  nueva, el cierre del dashboard es idempotente. Un incidente fusionado después del RCA cambia de id y su sesión no se
+  cierra sola (se archiva a mano). Pin: `tests/test_dgx1789_keep_cierre_contract.py`.
 - `2026-11-19` · SC-6015 (desde el problema SC-5976, keep-causa node-degraded:80563cc44e): `NodeSystemSaturation` y
   `NodeCPUHighUsage` del chart desactivadas y reemplazadas por `pocharlies-node-saturation` (mismo patrón SC-5736/INFRA-690):
   el join `* on(pod) group_left(node)` propaga `node` (dos saturaciones en nodos distintos ya no comparten keep-causa —
