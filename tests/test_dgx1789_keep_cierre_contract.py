@@ -14,16 +14,18 @@ Pins:
 
 import re
 import unittest
-from pathlib import Path
 
 import yaml
 
-ROOT = Path(__file__).resolve().parents[1]
+try:  # pytest desde la raíz del repo, o unittest desde tests/
+    from tests.keep_values import VALUES, find_workflows
+except ImportError:
+    from keep_values import VALUES, find_workflows
 
 
 def workflow(wid):
-    values = yaml.safe_load((ROOT / "keep" / "values.yaml").read_text())
-    return next(w for w in values["backend"]["provision"]["workflows"] if w["id"] == wid)
+    values = yaml.safe_load(VALUES.read_text())
+    return next(w for w in find_workflows(values) if w["id"] == wid)
 
 
 class CierreTest(unittest.TestCase):
