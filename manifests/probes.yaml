@@ -136,9 +136,9 @@ spec:
         - shared-rabbitmq.databases.svc.cluster.local:5672
         - shared-valkey-master.databases.svc.cluster.local:6379
 ---
-# Synapse lives OUTSIDE the cluster (systemd on sauvage); Alertmanager's
-# only delivery route to Telegram is the webhook to this endpoint. Probe
-# it directly so we can alert (critical) when the delivery path is down.
+# Edge check for the business webhooks (shopify, stripe, telegram, gmail,
+# whatsapp): they enter by Cloudflare → traefik-edge (sauvage) → deploy/
+# synapse-gateway. The probe measures that path, not the LAN one (INFRA-1536).
 apiVersion: operator.victoriametrics.com/v1beta1
 kind: VMProbe
 metadata:
@@ -159,11 +159,15 @@ spec:
         component: synapse
       targets:
         # POST-only route, so a GET answers 405 — which is what the module
-      # accepts. It replaces /webhooks/alertmanager: that route is being
-      # retired with the alerting plane, and this host is the edge for the
-      # business webhooks (shopify, stripe, telegram, gmail, whatsapp), so
-      # dropping the probe would have left them with no edge check at all.
-      - https://synapse.e-dani.com/webhooks/stripe
+      # accepts. The target is pinned to sauvage's tailnet IP because the
+      # hostname alone resolves (split DNS) to 192.168.50.240 = traefik-lan,
+      # node-pinned to ubuntu: on 23-11 the x86 saturated under blender
+      # renders (load 40-60), the LAN path crossed the module's 5 s timeout
+      # and SynapseDown fired critical claiming lost webhooks while the real
+      # edge answered in 0.07 s (measured: edge 0.07 s, Cloudflare 0.12 s,
+      # traefik-lan 1.69 s+). The module carries Host + SNI for the name.
+      # shortcut: if sauvage's tailnet IP changes, update the target here.
+      - https://100.109.183.9/webhooks/stripe
 ---
 # Sonda TCP casa→control-plane (SC-5606). Mide el path REAL casa→OVH: el TCP a
 # 6443 sale del nodo de casa ubuntu (blackbox-exporter-casa, hostNetwork) por su
