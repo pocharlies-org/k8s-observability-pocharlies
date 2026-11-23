@@ -892,7 +892,11 @@ backend:
         triggers:
           - type: incident
             events: [updated]
-        actions:
+        steps:
+          # La lectura va en un step (como link-datos): sus `results` los lee el
+          # `if` de la action. Los steps no admiten `if`, así que devuelve
+          # SIEMPRE una fila (LEFT JOIN sobre `(VALUES (1))`) y el filtro por
+          # estado va en el ON: sin fila, `results.0.0` renderiza vacío.
           - name: datos-cierre
             provider:
               type: postgres
@@ -905,6 +909,7 @@ backend:
                       ON '{{ incident.status }}' = 'resolved'
                      AND d.keep_incident_id = NULLIF('{{ incident.id }}', '')::uuid
                    LIMIT 1
+        actions:
           - name: avisar-synapse
             if: "'{{ steps.datos-cierre.results.0.0 }}' != ''"
             provider:

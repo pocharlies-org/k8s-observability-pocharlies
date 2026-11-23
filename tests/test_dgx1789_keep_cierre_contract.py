@@ -31,7 +31,8 @@ def workflow(wid):
 class CierreTest(unittest.TestCase):
     def setUp(self):
         self.wf = workflow("alertas-cierre")
-        self.datos, self.avisar = self.wf["actions"]
+        (self.datos,) = self.wf["steps"]
+        (self.avisar,) = self.wf["actions"]
 
     def test_trigger_incidente_actualizado(self):
         self.assertEqual(self.wf["triggers"], [{"type": "incident", "events": ["updated"]}])
