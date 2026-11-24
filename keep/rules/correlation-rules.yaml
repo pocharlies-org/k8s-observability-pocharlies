@@ -367,6 +367,42 @@ rules:
     incidentNameTemplate: "Nodos degradados"
     groupDescription: Presión de recursos y disponibilidad de kubelet.
 
+  # INFRA-1562 (24-11): Gx10ThermalHaltImminent (dgx-infra
+  # k8s/monitoring/gx10-thermal/vmrule.yaml, INFRA-1332) llegaba a Keep como alerta
+  # y CALLABA: sin regla propia y severity=warning, critical-safety-net (solo
+  # critical/page) no la cogía. Medido 24-11 por API: 3 alertas desde el 12-11 (un
+  # firing de dgx1 incluido), 0 incidentes. El halt de dgx2 de las 18:52Z no avisó
+  # a nadie por dos vías a la vez: la regla nunca llegó a firing en dgx2 (for: 5m
+  # vs sensor oscilante; ajustado a 2m en el mismo INFRA-1562) y, incluso cuando
+  # firea (dgx1), sin esta regla no abre incidente ni Telegram. Agrupada por
+  # `node`: un incidente por Spark, nombre estable sin números (keep-causa de
+  # ops-watch deriva de él). ACOPLE: si vmrule cambia el alertname, cambiar aquí.
+  - ruleName: spark-thermal-halt
+    celQuery: 'name == "Gx10ThermalHaltImminent"'
+    sqlQuery:
+      sql: "((name = :name_1))"
+      params:
+        name_1: Gx10ThermalHaltImminent
+    timeframeInSeconds: 1800
+    timeUnit: minutes
+    groupingCriteria: [node]
+    createOn: any
+    resolveOn: all_resolved
+    incidentPrefix: THERM
+    incidentNameTemplate: "Spark {{ node }}: hard-halt térmico inminente"
+    groupDescription: >-
+      Zona térmica acpitz del SoC GB10 por encima de 93 °C: el hard-halt llega a
+      95-97 °C y el aviso solo da minutos (~2-5, medido en el halt de dgx2 del
+      24-11), no la hora larga que prometía INFRA-1332. PASOS: 1) comprobar el cap
+      de reloj activo (`systemctl is-active dgx<N>-gpu-clock-cap`, SM <=2200 MHz,
+      decisión de Dani 24-11; si falta, `enable --now`; el valor no se toca);
+      2) no meter carga nueva en ese Spark ni pedir ventana (skill
+      sparks-perfil-computo); 3) vigilar la cresta real cada 5 s (col. 10 de
+      /var/log/dgx<N>-temps.csv) y dar tregua bajo 85 °C; 4) nunca `kubectl
+      scale`, nunca parchear gpu-arbiter-state, nunca tocar el reloj fuera del
+      cap. El halt de la inferencia residente no se aparca: no hay API de
+      aparcado desde DGX-1317 (perfil único llm-tp). Causa: SC-6515, INFRA-1322.
+
   - ruleName: monitoring-degraded
     celQuery: >-
       name in ["TargetDown", "BlackboxProbeDown", "ScrapePoolHasNoTargets",
