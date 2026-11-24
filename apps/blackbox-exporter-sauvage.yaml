@@ -1,0 +1,32 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: blackbox-exporter-sauvage
+  namespace: argocd
+  labels:
+    e-dani.com/tier: infra
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  project: default
+  sources:
+    - repoURL: https://prometheus-community.github.io/helm-charts
+      chart: prometheus-blackbox-exporter
+      targetRevision: 11.10.0
+      helm:
+        releaseName: blackbox-exporter-sauvage
+        valueFiles:
+          - $values/blackbox/sauvage-values.yaml
+    - repoURL: https://github.com/pocharlies-org/k8s-observability-pocharlies
+      targetRevision: main
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: monitoring
+  syncPolicy:
+    automated:
+      selfHeal: true
+      prune: false
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

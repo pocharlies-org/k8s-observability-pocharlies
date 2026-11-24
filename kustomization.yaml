@@ -6,6 +6,7 @@ resources:
   - apps/loki.yaml
   - apps/blackbox-exporter.yaml
   - apps/blackbox-exporter-casa.yaml
+  - apps/blackbox-exporter-sauvage.yaml
   - apps/alloy.yaml
   - apps/keep.yaml
   - apps/aurora.yaml
