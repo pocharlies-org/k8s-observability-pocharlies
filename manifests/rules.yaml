@@ -141,11 +141,14 @@ spec:
         # dgx-infra services/dashboard/app.py); this rule subtracts exactly
         # those series. Fail-closed by construction: metric absent (dashboard
         # down, scrape gap) subtracts nothing and the alert still fires.
+        # SC-6457: the scrape stamps namespace="control-nexus" (the backend's);
+        # the held deployment's own namespace arrives as exported_namespace, so
+        # the unless moves it onto namespace before matching.
         - alert: LlmResidentScaledToZero
           expr: |
             (kube_deployment_spec_replicas{namespace="llm",deployment=~"omnivoice-audio|omnivoice-tts-nvfp4|stt-turbo|bge-m3-embedding|bge-reranker-cpu"} == 0)
             unless on(namespace, deployment)
-              max by (namespace, deployment) (gpu_arbiter_resident_held == 1)
+              label_replace(max by (exported_namespace, deployment) (gpu_arbiter_resident_held == 1), "namespace", "$1", "exported_namespace", "(.*)")
           for: 15m
           labels:
             severity: critical

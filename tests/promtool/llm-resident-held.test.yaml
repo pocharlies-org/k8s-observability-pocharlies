@@ -1,0 +1,65 @@
+# Casos de LlmResidentScaledToZero (SC-6457): la supresión por gpu_arbiter_resident_held
+# debe casar aunque la métrica salga del backend con namespace="control-nexus" y
+# exported_namespace="llm" (series reales del reinicio TP=2 del 23-11 22:00 UTC).
+# `rules` la genera tests/test_sc6457_llm_resident_held_promtool.py desde la VMRule
+# pocharlies-service-visibility. time() en promtool cuenta desde 0.
+rule_files:
+  - llm-resident-held.rules.yaml
+evaluation_interval: 1m
+tests:
+  - interval: 1m
+    name: par de voz a 0 sostenido por el arbiter (backend con su namespace) -> no salta
+    input_series:
+      - series: 'kube_deployment_spec_replicas{namespace="llm",deployment="stt-turbo"}'
+        values: '0x30'
+      - series: 'kube_deployment_spec_replicas{namespace="llm",deployment="omnivoice-tts-nvfp4"}'
+        values: '0x30'
+      - series: 'gpu_arbiter_resident_held{namespace="control-nexus",exported_namespace="llm",deployment="stt-turbo",reason="tp2_restart"}'
+        values: '1x30'
+      - series: 'gpu_arbiter_resident_held{namespace="control-nexus",exported_namespace="llm",deployment="omnivoice-tts-nvfp4",reason="tp2_restart"}'
+        values: '1x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: LlmResidentScaledToZero
+        exp_alerts: []
+
+  - interval: 1m
+    name: fail-closed — par a 0 sin la métrica (backend caído) -> salta a los 15m
+    input_series:
+      - series: 'kube_deployment_spec_replicas{namespace="llm",deployment="stt-turbo"}'
+        values: '0x30'
+      - series: 'kube_deployment_spec_replicas{namespace="llm",deployment="omnivoice-tts-nvfp4"}'
+        values: '0x30'
+    alert_rule_test:
+      - eval_time: 14m
+        alertname: LlmResidentScaledToZero
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: LlmResidentScaledToZero
+        exp_alerts:
+          - exp_labels: {severity: critical, area: kubernetes, workload_class: llm-resident, namespace: llm, deployment: stt-turbo}
+            exp_annotations:
+              summary: "Resident LLM service scaled to zero"
+              description: "llm/stt-turbo has been declared with 0 replicas for 15 minutes, which is never correct for this service. Check git on the branch the ai Application is pinned to, the KEDA ScaledObject (activationThreshold vs the range its query can actually produce) and whether the ArgoCD pin was rolled back to an older revision."
+          - exp_labels: {severity: critical, area: kubernetes, workload_class: llm-resident, namespace: llm, deployment: omnivoice-tts-nvfp4}
+            exp_annotations:
+              summary: "Resident LLM service scaled to zero"
+              description: "llm/omnivoice-tts-nvfp4 has been declared with 0 replicas for 15 minutes, which is never correct for this service. Check git on the branch the ai Application is pinned to, the KEDA ScaledObject (activationThreshold vs the range its query can actually produce) and whether the ArgoCD pin was rolled back to an older revision."
+
+  - interval: 1m
+    name: mixto — stt-turbo sostenido no salta, bge-m3-embedding a 0 sin sostener sí
+    input_series:
+      - series: 'kube_deployment_spec_replicas{namespace="llm",deployment="stt-turbo"}'
+        values: '0x30'
+      - series: 'kube_deployment_spec_replicas{namespace="llm",deployment="bge-m3-embedding"}'
+        values: '0x30'
+      - series: 'gpu_arbiter_resident_held{namespace="control-nexus",exported_namespace="llm",deployment="stt-turbo",reason="tp2_restart"}'
+        values: '1x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: LlmResidentScaledToZero
+        exp_alerts:
+          - exp_labels: {severity: critical, area: kubernetes, workload_class: llm-resident, namespace: llm, deployment: bge-m3-embedding}
+            exp_annotations:
+              summary: "Resident LLM service scaled to zero"
+              description: "llm/bge-m3-embedding has been declared with 0 replicas for 15 minutes, which is never correct for this service. Check git on the branch the ai Application is pinned to, the KEDA ScaledObject (activationThreshold vs the range its query can actually produce) and whether the ArgoCD pin was rolled back to an older revision."
