@@ -199,6 +199,35 @@ spec:
         - 100.71.117.127:6443
         - 100.75.189.75:6443
 ---
+# Sonda TCP sauvage→postgres-shared-rw (INFRA-1556, INFRA-1004). Mide el path REAL
+# sauvage→ks5: DNS del servicio → ClusterIP → DNAT al primario → VXLAN al nodo del
+# primario, el camino que quedó intermitente el 27-10 tras el switchover a ks5-cp-2.
+# Sale del blackbox-exporter-sauvage (CNI, nodeSelector sauvage), no del de ks5, que
+# no ve esa ruta. Sustituye al CronJob postgres-rw-connectivity-probe (*/1, nc -z).
+# jobName NO empieza por "k8s-" a propósito: no casa con BlackboxProbeDown
+# (job=~"k8s-.*"); la señal la da exclusivamente SharedDatastoreUnreachableFromSauvage.
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMProbe
+metadata:
+  name: postgres-rw-sauvage
+  namespace: monitoring
+spec:
+  jobName: postgres-rw-sauvage
+  interval: 30s
+  scrapeTimeout: 10s
+  module: tcp_connect
+  vmProberSpec:
+    url: blackbox-exporter-sauvage.monitoring.svc.cluster.local:9115
+    path: /probe
+  targets:
+    staticConfig:
+      labels:
+        scope: cluster
+        component: shared-datastores
+        probe_from: sauvage
+      targets:
+        - postgres-shared-rw.databases.svc.cluster.local:5432
+---
 # Referencia OVH→control-plane (SC-5606). Mismo target, sonda desde el blackbox
 # de OVH. Sirve para distinguir PARTICIÓN (OVH ve el API vivo, casa no) de
 # caída total (ninguno lo ve). La alerta HomeControlPlaneTCPFailing exige que
