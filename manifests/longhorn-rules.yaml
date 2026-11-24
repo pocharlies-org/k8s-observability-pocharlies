@@ -9,9 +9,20 @@
 # La métrica es un indicador por estado: `longhorn_volume_state` tiene una serie por
 # (volume, state) y vale 1 sólo en el estado actual — medido en vivo (480 series,
 # job longhorn-backend, expuesta por longhorn-manager :9500). `== 1` sobre
-# attaching|detaching es exactamente «este volumen lleva X en tránsito». Con `for: 5m`
+# attaching|detaching es exactamente «este volumen lleva X en tránsito». Con `for: 15m`
 # el attach normal (segundos) no dispara; un volumen borrado pierde la serie y la
 # alerta se resuelve sola.
+#
+# Por qué `for: 15m` y no `5m` (INFRA-1553, medido el 24-11). El 24-11 el nodo `ubuntu`
+# sufrió un OOM global a las 05:29 (el kernel mató `longhorn-manager`, PID 12379), quedó
+# `Ready=0` de 05:48 a 06:00 y **seis** volúmenes RWO quedaron `attaching` a la vez
+# 8 min (05:53:30→06:01:30): con el nodo ORIGEN caído su `VolumeAttachment` no se libera
+# y ningún attach nuevo avanza, pase lo que pase en el destino. Con `for: 5m` eso fueron
+# 6 incidentes `critical` y 6 Requests (SC-6475, SC-6478, SC-6484, INFRA-1546, …) por un
+# solo evento, mientras la alerta que nombraba la causa (`KubeNodeNotReady`, `for: 15m`)
+# no llegó a disparar en 12 min de nodo caído: el síntoma avisaba antes y más fuerte que
+# la causa. Un atasco accionable no dura minutos — SC-5058 fueron 3,5 h y SC-2840 55 min
+# —, así que 15 min deja fuera la cascada del nodo y conserva lo que hay que arreglar.
 #
 # Lleva lo que pide la petición: `volume` (el nombre del Volume CR), `pvc` y
 # `pvc_namespace` (el PVC y su namespace) y `node` (el nodo destino del attach),
@@ -37,7 +48,7 @@ spec:
         - alert: LonghornVolumeAttachStuck
           expr: |
             longhorn_volume_state{state=~"attaching|detaching"} == 1
-          for: 5m
+          for: 15m
           labels:
             severity: critical
             area: storage
@@ -45,14 +56,15 @@ spec:
           annotations:
             summary: >-
               Volumen Longhorn {{ $labels.volume }} (PVC {{ $labels.pvc_namespace }}/{{ $labels.pvc }})
-              lleva más de 5 min en {{ $labels.state }} hacia el nodo {{ $labels.node }}
+              lleva más de 15 min en {{ $labels.state }} hacia el nodo {{ $labels.node }}
             description: >-
-              Un Volume CR de Longhorn lleva más de 5 minutos con status.state en
+              Un Volume CR de Longhorn lleva más de 15 minutos con status.state en
               {{ $labels.state }}: el attach/detach no avanza y los pods que lo esperan
-              se quedan en ContainerCreating/Terminating (el degradado de workload es el
-              síntoma, esta alerta es la causa). Comprobar:
+              se quedan en ContainerCreating/Terminating. Comprobar:
               `kubectl -n longhorn-system get volume {{ $labels.volume }} -o jsonpath='{.status.currentState} {.status.robustness}'`,
               `kubectl get volumeattachment | grep {{ $labels.volume }}` y los logs del
-              csi-attacher y de longhorn-manager en el nodo {{ $labels.node }}. Si el
-              VolumeAttachment no se libera, mirar si el nodo destino está Ready.
+              csi-attacher y de longhorn-manager en el nodo {{ $labels.node }}. Antes de
+              tocar Longhorn, mirar el nodo ORIGEN del attach (el que lo tenía montado),
+              no el destino: si no está Ready esto es la cascada de un nodo caído y se
+              resuelve solo — `kubectl get node -o wide` y su journal.
               Causa raíz documentada: SC-5058 (harbor-redis en ks5-cp-1, 3,5 h).
