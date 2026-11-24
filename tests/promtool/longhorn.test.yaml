@@ -3,7 +3,7 @@
 # `longhorn_volume_state` es un indicador por (volume, state): vale 1 sólo en el estado
 # actual — los casos reproducen esa forma tal y como la emite longhorn-manager.
 #
-# El `for` es de 15 min (INFRA-1553): hay un caso que dura ~10 min y NO es un atasco —
+# El `for` es de 15 min (INFRA-1553): hay un caso que dura 8 min y NO es un atasco —
 # la cascada de un nodo caído. Está reproducido abajo tal y como se midió el 24-11.
 rule_files:
   - longhorn.rules.yaml
@@ -92,17 +92,17 @@ tests:
   # avanza mientras el nodo origen no libera su VolumeAttachment). Con for: 5m fueron 6
   # critical y 6 Requests por un solo evento. Aquí ese mismo tramo NO debe disparar.
   - interval: 1m
-    name: cascada de un nodo caído (attaching 12 min y se resuelve) no dispara
+    name: cascada de un nodo caído (attaching 8 min y se resuelve solo) no dispara
     input_series:
       - series: 'longhorn_volume_state{state="attaching",volume="pvc-eee",pvc="agentjake-chrome-casa-profile",pvc_namespace="agentjake-chrome",node="ks5-cp-1",job="longhorn-backend"}'
-        values: '1x14'
+        values: '1x9 0x5'
       - series: 'longhorn_volume_state{state="attached",volume="pvc-eee",pvc="agentjake-chrome-casa-profile",pvc_namespace="agentjake-chrome",node="ks5-cp-1",job="longhorn-backend"}'
-        values: '0x14'
+        values: '0x9 1x5'
     alert_rule_test:
-      - eval_time: 12m
+      - eval_time: 8m
         alertname: LonghornVolumeAttachStuck
         exp_alerts: []
-      - eval_time: 14m
+      - eval_time: 12m
         alertname: LonghornVolumeAttachStuck
         exp_alerts: []
 
