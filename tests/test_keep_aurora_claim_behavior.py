@@ -47,12 +47,13 @@ def claim_sql() -> str:
     return step("aurora-investigate", "claim-dispatch")["provider"]["with"]["query"]
 
 
-def render(sql: str, incident_id: str, alert_fp, severity="critical") -> str:
+def render(sql: str, incident_id: str, alert_fp, severity="critical", alerts_count="1") -> str:
     sql = re.sub(r"\{\{#fn\.default\}\}|\{\{/fn\.default\}\}", "", sql)
     ctx = {
         "incident.id": incident_id,
         "incident.alerts.0.fingerprint": alert_fp or "",
         "incident.severity": severity,
+        "incident.alerts_count": alerts_count,
     }
     sql = re.sub(r"\{\{ (incident\.[\w.]+) \}\}", lambda m: ctx[m.group(1)], sql)
     assert "{{" not in sql, "unrendered template left in claim SQL"
@@ -100,8 +101,8 @@ class ClaimBehaviourTests(unittest.TestCase):
                 break
         return rows
 
-    def claim(self, incident_id, alert_fp, severity="critical"):
-        rows = self.run_script(render(claim_sql(), incident_id, alert_fp, severity))
+    def claim(self, incident_id, alert_fp, severity="critical", alerts_count="1"):
+        rows = self.run_script(render(claim_sql(), incident_id, alert_fp, severity, alerts_count))
         return rows[0][0], rows[0][1]
 
     def dispatches(self):
@@ -148,6 +149,19 @@ class ClaimBehaviourTests(unittest.TestCase):
         self.assertIsNone(self.dispatches()[0][2])
         # no fingerprint => no cooldown: a second one is dispatched too
         self.assertNotEqual(self.claim(str(uuid.uuid4()), None)[0], "")
+
+    def test_incident_without_alerts_is_not_dispatched(self):
+        # DGX-1811 (24-11): los fixtures de la prueba DGX-1789 fueron incidentes
+        # critical creados por API con alerts_count 0 y sin regla: colaron por la
+        # lane, Aurora investigó un fantasma y el report-back lanzó una sesión.
+        # Sin alertas no hay nada que investigar: no es candidato y no deja fila.
+        self.assertEqual(self.claim(str(uuid.uuid4()), None, alerts_count="0"), ("", ""))
+        # un render vacío del campo cuenta como 0
+        self.assertEqual(self.claim(str(uuid.uuid4()), None, alerts_count=""), ("", ""))
+        self.assertEqual(self.dispatches(), [])
+        # y con alertas el despacho sigue siendo normal
+        self.assertNotEqual(self.claim(str(uuid.uuid4()), None, alerts_count="3")[0], "")
+        self.assertEqual(len(self.dispatches()), 1)
 
     def test_migration_expand_then_contract_keeps_coverage(self):
         self.run_script(OLD_DDL)
