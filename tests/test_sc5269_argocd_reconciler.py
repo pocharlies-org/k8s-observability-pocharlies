@@ -78,7 +78,6 @@ def _fake_call(incidents, alerts, fresh_status="resolved",
                fail_incidents=False, fail_alerts=False):
     """call() simulado que enruta por URL y registra los resolved emitidos."""
     emitted = []
-    status_posts = []
 
     def call(url, method="GET", payload=None, headers=None, ctx=None):
         if "/incidents?cel=" in url:
@@ -92,23 +91,20 @@ def _fake_call(incidents, alerts, fresh_status="resolved",
         if "/alerts/event" in url:
             emitted.append(payload)
             return None
-        if url.endswith("/status"):
-            status_posts.append(payload)
-            return None
         if "/incidents/" in url:  # GET del incident fresco tras el replay
             return {"status": fresh_status}
         raise AssertionError(f"URL inesperada: {url}")
 
-    return call, emitted, status_posts
+    return call, emitted
 
 
 def _run(incidents, alerts, app_obj, **kw):
-    call, emitted, status_posts = _fake_call(incidents, alerts, **kw)
+    call, emitted = _fake_call(incidents, alerts, **kw)
     with mock.patch.object(G, "call", call), \
          mock.patch.object(G, "live_app", lambda name: app_obj), \
          mock.patch.object(G.time, "sleep", lambda *a: None):
         G.reconcile_once()
-    return emitted, status_posts
+    return emitted
 
 
 class TestManifiesto(unittest.TestCase):
@@ -182,7 +178,7 @@ class TestComportamiento(unittest.TestCase):
         inc = _inc("i1")
         al = _alert("ArgoCDAppDegraded", "redroid", "i1")
         app = {"status": {"health": {"status": "Healthy"}}}
-        emitted, _ = _run([inc], [al], app)
+        emitted = _run([inc], [al], app)
         self.assertEqual(len(emitted), 1)
         self.assertEqual(emitted[0]["status"], "resolved")
         self.assertEqual(emitted[0]["fingerprint"],
@@ -192,7 +188,7 @@ class TestComportamiento(unittest.TestCase):
         inc = _inc("i1")
         al = _alert("ArgoCDAppDegraded", "redroid", "i1")
         app = {"status": {"health": {"status": "Degraded"}}}
-        emitted, _ = _run([inc], [al], app)
+        emitted = _run([inc], [al], app)
         self.assertEqual(emitted, [])
 
     def test_sync_failed_se_resuelve_por_su_condicion_no_and(self):
@@ -202,7 +198,7 @@ class TestComportamiento(unittest.TestCase):
         al = _alert("ArgoCDSyncFailed", "redroid", "i1")
         app = {"status": {"health": {"status": "Degraded"},
                           "operationState": {"phase": "Succeeded"}}}
-        emitted, _ = _run([inc], [al], app)
+        emitted = _run([inc], [al], app)
         self.assertEqual(len(emitted), 1)
         self.assertEqual(emitted[0]["fingerprint"],
                          hashlib.sha256(b"argocd/redroid/sync-failed").hexdigest()[:16])
@@ -213,31 +209,31 @@ class TestComportamiento(unittest.TestCase):
         inc = _inc("i1", last_seen=recent)
         al = _alert("ArgoCDAppDegraded", "redroid", "i1")
         app = {"status": {"health": {"status": "Healthy"}}}
-        emitted, _ = _run([inc], [al], app)
+        emitted = _run([inc], [al], app)
         self.assertEqual(emitted, [])  # visto hace <GRACE: fuera, lo coge el resync
 
     def test_app_borrada_resolved(self):
         inc = _inc("i1")
         al = _alert("ArgoCDAppDegraded", "redroid", "i1")
-        emitted, _ = _run([inc], [al], {})  # live_app 404 -> {} -> sana
+        emitted = _run([inc], [al], {})  # live_app 404 -> {} -> sana
         self.assertEqual(len(emitted), 1)
 
     def test_keep_incidents_caido_no_resuelve_no_crashea(self):
         al = _alert("ArgoCDAppDegraded", "redroid", "i1")
         app = {"status": {"health": {"status": "Healthy"}}}
-        emitted, _ = _run([_inc("i1")], [al], app, fail_incidents=True)
+        emitted = _run([_inc("i1")], [al], app, fail_incidents=True)
         self.assertEqual(emitted, [])  # devuelve sin resolver, sin excepción
 
     def test_alerts_fetch_falla_no_resuelve(self):
         al = _alert("ArgoCDAppDegraded", "redroid", "i1")
         app = {"status": {"health": {"status": "Healthy"}}}
-        emitted, _ = _run([_inc("i1")], [al], app, fail_alerts=True)
+        emitted = _run([_inc("i1")], [al], app, fail_alerts=True)
         self.assertEqual(emitted, [])
 
     def test_estado_vivo_no_confirmable_no_toca(self):
         inc = _inc("i1")
         al = _alert("ArgoCDAppDegraded", "redroid", "i1")
-        emitted, _ = _run([inc], [al], None)  # live_app None -> no confirmable
+        emitted = _run([inc], [al], None)  # live_app None -> no confirmable
         self.assertEqual(emitted, [])
 
 
