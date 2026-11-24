@@ -10,12 +10,22 @@
 # por AM (llegan por webhook directo), así que su replay con fingerprint recalculado
 # no empareja con la alerta original y no la resuelve.
 #
+# INFRA-1547 (SC-5617, eventos nunca polling): el CronJob */10 pasa a un
+# Deployment-informer de applications.argoproj.io. El push on-sync-resolved de
+# argocd-notifications-cm YA cubre el caso feliz; este informer cubre el push
+# perdido reaccionando al cambio de health/sync de la Application (watch), sin
+# barrer por reloj. Bucle level-triggered: cada evento del watch (o el resync
+# periódico nativo del informer) dispara UNA pasada completa de reconciliación.
+# El CronJob */10 muere en este PR; NO queda CronJob (veredicto INFRA-1547: el
+# informer con resync nativo da la garantía sin un reloj aparte). El resync
+# (RESYNC_SECONDS, 15 min por defecto) es la red del informer para los incidents
+# diferidos por GRACE o cuyo evento de recuperación se perdió en un reinicio.
+#
 # QUÉ HACE. Para cada incident abierto (`firing` o `acknowledged` — el claim de
 # Aurora pasa los incidents a acknowledged al crearse) cuyas alertas tengan source
-# `argocd`, lee
-# la Application viva por la API del clúster (el status lo mantiene el propio
-# application-controller) y, si la app está bien, emite el resolved por el MISMO
-# canal que usa ArgoCD (`POST /alerts/event`, formato de la plantilla
+# `argocd`, lee la Application viva por la API del clúster (el status lo mantiene el
+# propio application-controller) y, si la app está bien, emite el resolved por el
+# MISMO canal que usa ArgoCD (`POST /alerts/event`, formato de la plantilla
 # keep-*-resolved, mismo fingerprint sha256("argocd/<app>/<tipo>")[:16]). Las
 # condiciones espejan las de los triggers resolved de SC-5249:
 #   ArgoCDAppDegraded -> status.health.status == Healthy
@@ -34,18 +44,20 @@
 # llamada deja una transacción huérfana que no vuelve al pool; el propio job,
 # con ~70 llamadas por pasada, mataba el pool de los workers (3+5) y desde ahí
 # todo 500 — 71 incidents sin resolver 5 días mientras el CronJob decía
-# "Complete". Si el fetch de alerts falla, el job sale con exit != 0 (ruidoso):
-# sin alerts no hay decisión, y el silencio fue justo el daño de SC-5867.
+# "Complete". Si el fetch de alerts falla, la pasada NO resuelve nada y lo grita
+# en el log (ruidoso): sin alerts no hay decisión, y el silencio fue justo el daño
+# de SC-5867. El resync del informer reintenta; no se sale el proceso (un crash
+# del pod no resolvería nada y perdería el watch).
 #
 # NUNCA resuelve nada si no puede confirmar el estado vivo: ante cualquier fallo
-# contra la API del clúster para esa app (o para listar incidents), sale sin tocar
-# nada — la ausencia de datos no es prueba de salud. Idempotente: resolved sobre
-# una alerta ya resolved es un no-op.
+# contra la API del clúster para esa app (o para listar incidents), la pasada no
+# toca nada — la ausencia de datos no es prueba de salud. Idempotente: resolved
+# sobre una alerta ya resolved es un no-op.
 #
-# RITMO: cada 10 min con PAUSE=2 s entre llamadas (lección SC-1600: la ráfaga de
-# eventos satura el worker de Keep y genera justo los zombies que se quieren
-# evitar). El steady-state son cero llamadas de escritura: solo la página de
-# incidents firing.
+# RITMO: reactivo al watch; PAUSE=2 s entre llamadas de escritura (lección
+# SC-1600: la ráfaga de eventos satura el worker de Keep y genera justo los
+# zombies que se quieren evitar). El steady-state son cero llamadas de escritura:
+# solo la página de incidents firing cuando un evento o el resync disparan pasada.
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -56,7 +68,8 @@ metadata:
     app.kubernetes.io/name: keep
     app.kubernetes.io/component: maintenance
 ---
-# Solo lectura de Applications en argocd: el status es lo que manda.
+# Lectura de Applications en argocd: get para el estado vivo de una app, list+watch
+# para el informer (INFRA-1547). El status es lo que manda; sin escritura.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -68,7 +81,7 @@ metadata:
 rules:
   - apiGroups: ["argoproj.io"]
     resources: ["applications"]
-    verbs: ["get"]
+    verbs: ["get", "list", "watch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -97,12 +110,19 @@ metadata:
     app.kubernetes.io/component: maintenance
 data:
   reconcile.py: |
-    """SC-5269: resuelve en Keep los incidents ArgoCD cuya app está sana de verdad."""
+    """SC-5269 / INFRA-1547: resuelve en Keep los incidents ArgoCD cuya app está sana.
+
+    Informer level-triggered: el watch de applications.argoproj.io (o el resync
+    periódico nativo) dispara reconcile_once(), que porta fielmente la resolución
+    del antiguo CronJob */10. Sin CronJob: el push de notifications cubre el caso
+    feliz y este informer cubre el push perdido sin sondeo (veredicto INFRA-1547).
+    """
     import hashlib
     import json
     import os
     import ssl
     import sys
+    import threading
     import time
     import urllib.parse
     import urllib.request
@@ -112,17 +132,26 @@ data:
     ARGOCD_URL = os.environ.get("ARGOCD_URL", "https://argocd.e-dani.com").rstrip("/")
     GRACE_SECONDS = int(os.environ.get("GRACE_SECONDS", "900"))
     PAUSE = float(os.environ.get("PAUSE_SECONDS", "2"))
+    RESYNC = float(os.environ.get("RESYNC_SECONDS", "900"))
     ARGOCD_NS = os.environ.get("ARGOCD_NAMESPACE", "argocd")
+    changed = threading.Event()
 
     SA_DIR = "/var/run/secrets/kubernetes.io/serviceaccount"
-    try:
-        with open(f"{SA_DIR}/token") as f:
-            K8S_TOKEN = f.read().strip()
-        K8S_CTX = ssl.create_default_context(cafile=f"{SA_DIR}/ca.crt")
-    except OSError as e:
-        print(f"sin token de servicio ({e}); no puedo confirmar el estado vivo, salgo", file=sys.stderr)
-        sys.exit(1)
     K8S = os.environ.get("KUBERNETES_API", "https://kubernetes.default.svc")
+    K8S_TOKEN = None
+    K8S_CTX = None
+
+    def load_sa():
+        """Token del SA para confirmar el estado vivo. Sale si falta: sin él no se
+        puede confirmar nada (y no se resuelve). En main(), no al importar."""
+        global K8S_TOKEN, K8S_CTX
+        try:
+            with open(f"{SA_DIR}/token") as f:
+                K8S_TOKEN = f.read().strip()
+            K8S_CTX = ssl.create_default_context(cafile=f"{SA_DIR}/ca.crt")
+        except OSError as e:
+            print(f"sin token de servicio ({e}); no puedo confirmar el estado vivo, salgo", file=sys.stderr)
+            sys.exit(1)
 
     def call(url, method="GET", payload=None, headers=None, ctx=None):
         req = urllib.request.Request(
@@ -136,21 +165,6 @@ data:
             return json.loads(body) if body else None
 
     keep_h = {"x-api-key": KEY}
-
-    # 1. Incidents abiertos (firing o acknowledged). El parámetro `status` no
-    # filtra en Keep 0.52.1; el CEL sí lo hace server-side (mismo hallazgo que el
-    # stale-reaper). Van también los `acknowledged` porque el claim de Aurora
-    # (assignee system) pasa los incidents a acknowledged en cuanto se crean: un
-    # filtro de solo `firing` no vería NUNCA el caso que hay que resolver
-    # (medido en la validación de SC-5269: los 99 abiertos eran acknowledged).
-    # `deleted` queda fuera (no es un estado abierto).
-    try:
-        cel = urllib.parse.quote('status == "firing" || status == "acknowledged"')
-        firing = call(f"{KEEP}/incidents?cel={cel}&limit=500", headers=keep_h).get("items", [])
-    except Exception as e:
-        print(f"KEEP no accesible ({e}); no resuelvo nada", file=sys.stderr)
-        sys.exit(1)
-    print(f"Keep: {len(firing)} incidents firing")
 
     def live_app(name):
         """Application viva desde la API del clúster; None si no se puede confirmar."""
@@ -241,85 +255,140 @@ data:
                 return by_inc
             offset += 1000
 
-    # SC-5867: sin este fetch no hay decisión posible. El job termina RUIDOSO
-    # (exit != 0) si falla — antes el fallo por incident se tragaba con un
-    # "sin alerts" y el CronJob quedaba Complete sin resolver nada 5 días.
-    alerts_by_inc = {}
-    if firing:
+    def reconcile_once():
+        """Una pasada completa: la lógica del antiguo CronJob, sin salir el proceso.
+
+        Ante fallo de Keep (incidents o alerts) NO resuelve nada y lo grita: el
+        resync del informer reintenta. SC-5867: sin alerts no hay decisión posible.
+        """
+        # Incidents abiertos (firing o acknowledged). El parámetro `status` no
+        # filtra en Keep 0.52.1; el CEL sí lo hace server-side. Van también los
+        # `acknowledged` porque el claim de Aurora (assignee system) los pasa a
+        # acknowledged en cuanto se crean: un filtro de solo `firing` no vería
+        # NUNCA el caso que hay que resolver (SC-5269: los 99 abiertos eran
+        # acknowledged). `deleted` queda fuera (no es un estado abierto).
         try:
-            alerts_by_inc = argocd_alerts_by_incident()
+            cel = urllib.parse.quote('status == "firing" || status == "acknowledged"')
+            firing = call(f"{KEEP}/incidents?cel={cel}&limit=500", headers=keep_h).get("items", [])
         except Exception as e:
-            print(f"KEEP: fetch de alerts falló ({e}); no puedo decidir, salgo con error", file=sys.stderr)
-            sys.exit(1)
+            print(f"KEEP no accesible ({e}); no resuelvo nada", file=sys.stderr)
+            return
+        print(f"Keep: {len(firing)} incidents firing", flush=True)
 
-    now = time.time()
-    replayed = resolved = 0
-    for inc in firing:
-        items = alerts_by_inc.get(str(inc["id"]), [])
-        # Mismo criterio que el filtro de incidents: el claim de Aurora pasa a
-        # acknowledged también las ALERTAS al crearse (medido en SC-5288: el
-        # ArgoCDSyncFailed de sc5269-test quedó acknowledged y el filtro de solo
-        # `firing` no lo resolvió nunca). `resolved` queda fuera: ya está resuelta.
-        mine = [a for a in items
-                if a.get("status") in ("firing", "acknowledged")
-                and "argocd" in (a.get("source") or [])
-                and a.get("name") in KINDS]
-        if not mine:
-            continue
-        # Un incident visto hace poco puede estar a medio actualizar (evento en
-        # vuelo de ArgoCD): fuera, igual que el stale-reaper.
-        last_seen = (inc.get("last_seen_time") or "")[:19]
-        try:
-            if now - time.mktime(time.strptime(last_seen, "%Y-%m-%dT%H:%M:%S")) < GRACE_SECONDS:
-                continue
-        except ValueError:
-            pass
-
-        touched = False
-        for a in mine:
-            app = (a.get("labels") or {}).get("app") or ""
-            if not app:
-                print(f"  {inc['id'][:8]}: alerta sin label app; no sé qué consultar", file=sys.stderr)
-                continue
-            kind = KINDS[a["name"]]
-            app_obj = live_app(app)
-            if app_obj is None:
-                continue  # estado vivo no confirmable
-            if not healthy_for(kind, app_obj):
-                continue  # sigue mal: la alerta es legítima
+        alerts_by_inc = {}
+        if firing:
             try:
-                call(f"{KEEP}/alerts/event", method="POST",
-                     payload=resolved_body(a, app_obj, kind), headers=keep_h)
-                replayed += 1
-                touched = True
-                print(f"  {app}/{kind}: app sana -> resolved emitido")
+                alerts_by_inc = argocd_alerts_by_incident()
             except Exception as e:
-                print(f"  {app}/{kind}: resolved falló ({e})", file=sys.stderr)
+                print(f"KEEP: fetch de alerts falló ({e}); no puedo decidir, no resuelvo", file=sys.stderr)
+                return
+
+        now = time.time()
+        replayed = resolved = 0
+        for inc in firing:
+            items = alerts_by_inc.get(str(inc["id"]), [])
+            # Mismo criterio que el filtro de incidents: el claim de Aurora pasa a
+            # acknowledged también las ALERTAS al crearse (SC-5288). `resolved`
+            # queda fuera: ya está resuelta.
+            mine = [a for a in items
+                    if a.get("status") in ("firing", "acknowledged")
+                    and "argocd" in (a.get("source") or [])
+                    and a.get("name") in KINDS]
+            if not mine:
+                continue
+            # Un incident visto hace poco puede estar a medio actualizar (evento en
+            # vuelo de ArgoCD): fuera, igual que el stale-reaper. El resync lo coge
+            # cuando expire GRACE.
+            last_seen = (inc.get("last_seen_time") or "")[:19]
+            try:
+                if now - time.mktime(time.strptime(last_seen, "%Y-%m-%dT%H:%M:%S")) < GRACE_SECONDS:
+                    continue
+            except ValueError:
+                pass
+
+            touched = False
+            for a in mine:
+                app = (a.get("labels") or {}).get("app") or ""
+                if not app:
+                    print(f"  {inc['id'][:8]}: alerta sin label app; no sé qué consultar", file=sys.stderr)
+                    continue
+                kind = KINDS[a["name"]]
+                app_obj = live_app(app)
+                if app_obj is None:
+                    continue  # estado vivo no confirmable
+                if not healthy_for(kind, app_obj):
+                    continue  # sigue mal: la alerta es legítima
+                try:
+                    call(f"{KEEP}/alerts/event", method="POST",
+                         payload=resolved_body(a, app_obj, kind), headers=keep_h)
+                    replayed += 1
+                    touched = True
+                    print(f"  {app}/{kind}: app sana -> resolved emitido", flush=True)
+                except Exception as e:
+                    print(f"  {app}/{kind}: resolved falló ({e})", file=sys.stderr)
+                time.sleep(PAUSE)
+
+            if not touched:
+                continue
+            # El motor resuelve solo al resolverse la última alerta; si no, se
+            # comprueba y se resuelve por API (mismo camino que la UI).
+            time.sleep(2)
+            try:
+                fresh = call(f"{KEEP}/incidents/{inc['id']}", headers=keep_h)
+                if fresh.get("status") != "firing":
+                    resolved += 1
+                else:
+                    s2 = argocd_alerts_by_incident().get(str(inc["id"]), [])
+                    if not [a for a in s2 if a.get("status") == "firing"]:
+                        call(f"{KEEP}/incidents/{inc['id']}/status", method="POST",
+                             payload={"status": "resolved"}, headers=keep_h)
+                        resolved += 1
+            except Exception as e:
+                print(f"  {inc['id'][:8]}: estado tras replay no confirmable ({e})", file=sys.stderr)
             time.sleep(PAUSE)
 
-        if not touched:
-            continue
-        # El motor resuelve solo al resolverse la última alerta; si no, se
-        # comprueba y se resuelve por API (mismo camino que la UI).
-        time.sleep(2)
-        try:
-            fresh = call(f"{KEEP}/incidents/{inc['id']}", headers=keep_h)
-            if fresh.get("status") != "firing":
-                resolved += 1
-            else:
-                s2 = argocd_alerts_by_incident().get(str(inc["id"]), [])
-                if not [a for a in s2 if a.get("status") == "firing"]:
-                    call(f"{KEEP}/incidents/{inc['id']}/status", method="POST",
-                         payload={"status": "resolved"}, headers=keep_h)
-                    resolved += 1
-        except Exception as e:
-            print(f"  {inc['id'][:8]}: estado tras replay no confirmable ({e})", file=sys.stderr)
-        time.sleep(PAUSE)
+        print(f"resolved emitidos: {replayed} | incidents resueltos: {resolved}", flush=True)
 
-    print(f"resolved emitidos: {replayed} | incidents resueltos: {resolved}")
+    def watch_thread():
+        # Solo alimenta el disparo: cualquier evento del watch de Applications marca
+        # cambio. El estado real se lee fresco en reconcile_once (live_app + Keep);
+        # el watch es el evento, no la foto. Sin resourceVersion: al relanzar vuelve
+        # a listar el estado inicial (ADDED), que también dispara pasada.
+        url = (f"{K8S}/apis/argoproj.io/v1alpha1/namespaces/{ARGOCD_NS}"
+               f"/applications?watch=true")
+        while True:
+            try:
+                req = urllib.request.Request(url, headers={"Authorization": f"Bearer {K8S_TOKEN}"})
+                with urllib.request.urlopen(req, timeout=300, context=K8S_CTX) as r:
+                    for line in r:
+                        if line.strip():
+                            changed.set()
+            except Exception as e:
+                print(f"watch de Applications cayó ({e}); relanzo", file=sys.stderr)
+            changed.set()      # el stream terminó: reconciliar y relanzar
+            time.sleep(1)      # backoff de relanzamiento del stream, no sondeo de estado
+
+    def main():
+        load_sa()
+        if "--once" in sys.argv:
+            reconcile_once()
+            return
+        threading.Thread(target=watch_thread, daemon=True).start()
+        print("keepsvc argocd-reconciler informer: watching applications.argoproj.io", flush=True)
+        while True:
+            changed.clear()
+            try:
+                reconcile_once()
+            except Exception as e:
+                print(f"pasada de reconciliación falló ({e}); reintento en el próximo evento/resync", file=sys.stderr)
+            # Sueño por eventos con resync nativo como red (veredicto INFRA-1547).
+            changed.wait(RESYNC)
+
+    if __name__ == "__main__":
+        main()
 ---
-apiVersion: batch/v1
-kind: CronJob
+apiVersion: apps/v1
+kind: Deployment
 metadata:
   name: keepsvc-argocd-reconciler
   namespace: monitoring
@@ -327,59 +396,60 @@ metadata:
     app.kubernetes.io/name: keep
     app.kubernetes.io/component: maintenance
 spec:
-  # Cada 10 min: bastante más rápido que el peor caso de recuperación sin sync
-  # (que antes no se resolvía NUNCA) y lo bastante lento para que la pasada sea
-  # invisible para el worker de eventos de Keep.
-  schedule: "*/10 * * * *"
-  timeZone: Europe/Madrid
-  concurrencyPolicy: Forbid
-  successfulJobsHistoryLimit: 1
-  failedJobsHistoryLimit: 3
-  startingDeadlineSeconds: 300
-  jobTemplate:
+  replicas: 1
+  # Un solo informer; Recreate evita dos pasadas resolviendo en paralelo (SC-1600).
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: keep
+      app.kubernetes.io/component: argocd-reconciler
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: keep
+        app.kubernetes.io/component: argocd-reconciler
     spec:
-      backoffLimit: 2
-      ttlSecondsAfterFinished: 86400
-      template:
-        spec:
-          restartPolicy: Never
-          serviceAccountName: keepsvc-argocd-reconciler
-          automountServiceAccountToken: true
+      serviceAccountName: keepsvc-argocd-reconciler
+      automountServiceAccountToken: true
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+      containers:
+        - name: reconciler
+          image: python:3.12-slim
+          command: ["python3", "/scripts/reconcile.py"]
           securityContext:
-            runAsNonRoot: true
-            runAsUser: 1000
-          containers:
-            - name: reconciler
-              image: python:3.12-slim
-              command: ["python3", "/scripts/reconcile.py"]
-              securityContext:
-                allowPrivilegeEscalation: false
-                readOnlyRootFilesystem: true
-                capabilities:
-                  drop: ["ALL"]
-              env:
-                - name: KEEP_API_URL
-                  value: http://keep-backend.monitoring.svc.cluster.local:8080
-                - name: KEEP_API_KEY
-                  valueFrom:
-                    secretKeyRef:
-                      name: keepsvc-provisioning
-                      key: API_KEY_PROVISIONER
-                - name: ARGOCD_URL
-                  value: https://argocd.e-dani.com
-                - name: PAUSE_SECONDS
-                  value: "2"
-              resources:
-                requests:
-                  cpu: 10m
-                  memory: 64Mi
-                limits:
-                  cpu: 200m
-                  memory: 128Mi
-              volumeMounts:
-                - name: scripts
-                  mountPath: /scripts
-          volumes:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          env:
+            - name: KEEP_API_URL
+              value: http://keep-backend.monitoring.svc.cluster.local:8080
+            - name: KEEP_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: keepsvc-provisioning
+                  key: API_KEY_PROVISIONER
+            - name: ARGOCD_URL
+              value: https://argocd.e-dani.com
+            - name: PAUSE_SECONDS
+              value: "2"
+            - name: RESYNC_SECONDS
+              value: "900"
+          resources:
+            requests:
+              cpu: 10m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          volumeMounts:
             - name: scripts
-              configMap:
-                name: keepsvc-argocd-reconciler
+              mountPath: /scripts
+      volumes:
+        - name: scripts
+          configMap:
+            name: keepsvc-argocd-reconciler
