@@ -131,3 +131,40 @@ tests:
             exp_annotations:
               summary: "Mensajes dlq críticos de negocio de skirmshop en la red de seguridad"
               description: "El dlq-monitor drenó mensajes nuevos (dlq) de un consumidor declarado negocio-critico en los últimos 10m — dead-letter o routing key sin binding. Detalle en la tarjeta del ops-explainer y en synapse.dlq_archive; el RCA lo produce Aurora."
+  - interval: 30s
+    # SC-6470: el criterio. Dos dead-letters de workflows DISTINTOS del mismo
+    # tenant → DOS alertas SynapseWorkflowFailed con `workflow` distinto, no una
+    # serie colapsada. ops-watch firma la keep-causa por el label `workflow` de
+    # la alerta (FIRMA_RECURSO_LABELS); con la rama antigua `sum by (tenant, kind)`
+    # ambas compartían firma y el supervisor abría un [PROBLEMA] falso
+    # (SC-6233+SC-6462 → SC-6463). Aquí se ve que ya distinguen.
+    name: "dos dead-letters de workflows distintos del mismo tenant - dos alertas, workflow distinto"
+    input_series:
+      - series: 'vm_promscrape_active_scrapers{job="vmagent-vm-victoria-metrics-k8s-stack",type="azure_sd_configs"}'
+        values: '1x80'
+      - series: 'synapse_dlq_messages_total{job="synapse-adapter-ops-explainer-dlq-monitor",instance="10.42.4.210:9112",tenant="skirmshop",kind="dlq",workflow="synapse.dlq.messaging"}'
+        values: '0x31 2x49'
+      - series: 'synapse_dlq_messages_total{job="synapse-adapter-ops-explainer-dlq-monitor",instance="10.42.4.210:9112",tenant="skirmshop",kind="dlq",workflow="synapse.dlq.gmail"}'
+        values: '0x31 4x49'
+    alert_rule_test:
+      - eval_time: 18m
+        alertname: SynapseWorkflowFailed
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              area: synapse
+              tenant: skirmshop
+              kind: dlq
+              workflow: synapse.dlq.messaging
+            exp_annotations:
+              summary: "Mensajes dlq de skirmshop entrando en la red de seguridad"
+              description: "El dlq-monitor drenó mensajes nuevos (dlq) en los últimos 10m — dead-letter o routing key sin binding. El detalle está en la tarjeta del ops-explainer y en synapse.dlq_archive."
+          - exp_labels:
+              severity: warning
+              area: synapse
+              tenant: skirmshop
+              kind: dlq
+              workflow: synapse.dlq.gmail
+            exp_annotations:
+              summary: "Mensajes dlq de skirmshop entrando en la red de seguridad"
+              description: "El dlq-monitor drenó mensajes nuevos (dlq) en los últimos 10m — dead-letter o routing key sin binding. El detalle está en la tarjeta del ops-explainer y en synapse.dlq_archive."

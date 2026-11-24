@@ -2029,9 +2029,16 @@ spec:
           # SC-5925: rama de impacto plataforma/auxiliar/sin-clasificar (o sin
           # etiqueta, series de antes del despliegue). El impacto lo resuelve el
           # dlq-monitor de la sección `impacto` de registry.yaml de synapse.
+          # SC-6470: se agrupa también por `workflow` (la métrica lo trae desde
+          # esta PR). Sin él, dos dead-letters de workflows distintos del mismo
+          # tenant compartían una sola serie y la misma keep-causa, y el
+          # supervisor abría un [PROBLEMA] falso por «misma causa dos veces»
+          # (SC-6233+SC-6462 → SC-6463; el arreglo de SC-5152 no llegó a esta
+          # regla). Con `workflow` una recurrencia real (mismo workflow, mismo
+          # motivo) sigue casando y dos causas distintas ya no.
           expr: |
             (
-              sum by (tenant, kind) (
+              sum by (workflow, tenant, kind) (
                 increase(synapse_dlq_messages_total{impacto!="negocio-critico"}[10m])
               ) > 0
             )
@@ -2048,7 +2055,7 @@ spec:
           # muerto es negocio-critico en el registro de contratos de synapse.
           expr: |
             (
-              sum by (tenant, kind) (
+              sum by (workflow, tenant, kind) (
                 increase(synapse_dlq_messages_total{impacto="negocio-critico"}[10m])
               ) > 0
             )
