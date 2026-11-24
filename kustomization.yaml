@@ -108,7 +108,7 @@ resources:
   - manifests/op-ratelimit-check.yaml
   - manifests/backup-health-check.yaml
   - manifests/atlassian-mcp-rules.yaml
-  # INFRA-1265 (causa de SC-5058): volumen Longhorn atascado en attaching/detaching >5 min.
+  # INFRA-1265 (causa de SC-5058): volumen Longhorn atascado en attaching/detaching >15 min.
   # Se habilita directa: la serie longhorn_volume_state ya se scrapea (job longhorn-backend),
   # así que no hay riesgo de falsa crítica por serie ausente.
   - manifests/longhorn-rules.yaml
