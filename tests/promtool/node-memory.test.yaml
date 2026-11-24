@@ -81,3 +81,29 @@ tests:
       - eval_time: 40m
         alertname: NodeMemoryMajorPagesFaults
         exp_alerts: []
+  - interval: 1m
+    name: NodeMemoryCritical — atlantic al 97 % -> salta pasados los 5 min; ubuntu al 92 % -> no
+    input_series:
+      - series: 'node_memory_MemAvailable_bytes{job="node-exporter",instance="10.42.10.228:9100",pod="vm-prometheus-node-exporter-zzzzz"}'
+        values: '30000000000x20'
+      - series: 'node_memory_MemTotal_bytes{job="node-exporter",instance="10.42.10.228:9100",pod="vm-prometheus-node-exporter-zzzzz"}'
+        values: '1000000000000x20'
+      - series: 'kube_pod_info{namespace="monitoring",pod="vm-prometheus-node-exporter-zzzzz",node="atlantic"}'
+        values: '1x20'
+      - series: 'node_memory_MemAvailable_bytes{job="node-exporter",instance="10.42.0.147:9100",pod="vm-prometheus-node-exporter-yyyyy"}'
+        values: '80000000000x20'
+      - series: 'node_memory_MemTotal_bytes{job="node-exporter",instance="10.42.0.147:9100",pod="vm-prometheus-node-exporter-yyyyy"}'
+        values: '1000000000000x20'
+      - series: 'kube_pod_info{namespace="monitoring",pod="vm-prometheus-node-exporter-yyyyy",node="ubuntu"}'
+        values: '1x20'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: NodeMemoryCritical
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: NodeMemoryCritical
+        exp_alerts:
+          - exp_labels: {severity: critical, area: capacity, job: node-exporter, instance: "10.42.10.228:9100", pod: vm-prometheus-node-exporter-zzzzz, node: atlantic}
+            exp_annotations:
+              summary: "Host memory critically low"
+              description: "Memory is filling up at atlantic: above 95% for 5 minutes (currently 97.00%). The node is close to thrashing; on 2026-11-23 atlantic hung at this level (kubelet NotReady 10:13-10:21). Free memory now (scale down builds/runners) instead of waiting for the kubelet."
