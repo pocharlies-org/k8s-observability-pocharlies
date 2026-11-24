@@ -592,6 +592,14 @@ backend:
                     -- 77 % de los despachos eran warning (CI en rojo, unidades del
                     -- x86, update-watch) a unas 15-25 llamadas LLM por RCA.
                     WHERE '{{ incident.severity }}' = 'critical'
+                      -- DGX-1811 (24-11): un incidente SIN alertas no es un incidente.
+                      -- Los fixtures de la prueba DGX-1789 (creados por API, severity
+                      -- critical, alerts_count 0, sin regla) pasaron por aquí: Aurora
+                      -- investigó un fantasma y su report-back lanzó una sesión de
+                      -- arreglo. Como lo de severidad, candidato que no es: no deja
+                      -- fila, y si después llegan alertas reales sigue investigable.
+                      -- Un render vacío del campo cuenta como 0 (no se despacha).
+                      AND COALESCE(NULLIF('{{ incident.alerts_count }}', '')::int, 0) > 0
                   ), claimed AS (
                     INSERT INTO keep_bridge.aurora_dispatches (
                       keep_incident_id,

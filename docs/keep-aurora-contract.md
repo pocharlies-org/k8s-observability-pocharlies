@@ -1,7 +1,9 @@
 # Contrato Keep ↔ Aurora
 
-> Estado: **v1.4** (INFRA-882, 2026-10-16): la lane vuelve a ser **solo
-> critical** (§6, decisión de Dani). Hereda de v1.3 (INFRA-406 / INFRA-394,
+> Estado: **v1.5** (DGX-1811, 2026-11-24): la lane exige además **al menos una
+> alerta** (§6): un incidente con `alerts_count: 0` (fixtures creados por API) no
+> se despacha. Hereda de v1.4 (INFRA-882, 2026-10-16) la lane **solo
+> critical** (decisión de Dani). Hereda de v1.3 (INFRA-406 / INFRA-394,
 > 2026-10-02) el despacho **una vez por incidente de Keep** (clave
 > `keep_incident_id`, rearme = Keep, cooldown de 6 h por huella). Hereda de v1.2 (INFRA-217,
 > 2026-09-23) la cobertura del RCA por la función SECURITY DEFINER
@@ -322,13 +324,14 @@ series no cambian de nombre.
   `incident_thoughts` y `execution_steps`; la tabla `rca_findings` existe en el
   esquema de Aurora pero está **sin usar** (no la leas ni la escribas).
 
-## 6. La lane de despacho: solo `critical`
+## 6. La lane de despacho: solo `critical`, solo con alertas
 
-El dispatch a Aurora (`aurora-investigate`) está doblemente acotado a severidad
-`critical` (v1.4, INFRA-882, 16-10-2026). Entre el 29-09 y el 16-10 entraba
-también `warning`: en 7 días el 77 % de los despachos eran warning (CI en rojo,
-unidades del x86, update-watch), a 15-25 llamadas LLM por RCA, y saturaban el
-residente. Defensas independientes, pinadas por `tests/`:
+El dispatch a Aurora (`aurora-investigate`) está acotado a severidad `critical`
+(v1.4, INFRA-882, 16-10-2026) y a incidente con al menos una alerta (v1.5,
+DGX-1811, 24-11-2026). Entre el 29-09 y el 16-10 entraba también `warning`: en
+7 días el 77 % de los despachos eran warning (CI en rojo, unidades del x86,
+update-watch), a 15-25 llamadas LLM por RCA, y saturaban el residente. Defensas
+independientes, pinadas por `tests/`:
 
 1. SQL: `WHERE '{{ incident.severity }}' = 'critical'` **antes** del claim,
    para que lo que no es critical no deje ni marca en `aurora_dispatches` (si
@@ -336,6 +339,15 @@ residente. Defensas independientes, pinadas por `tests/`:
 2. Action: `if: "'{{ incident.severity }}' == 'critical' and '{{
    steps.claim-dispatch.results.0.0 }}' != ''"` — el resultado vacío del claim
    significa «otra ejecución ya lo reclamó» o «suprimido por el cooldown».
+3. SQL: `AND COALESCE(NULLIF('{{ incident.alerts_count }}', '')::int, 0) > 0`
+   también **antes** del claim. Un incidente sin alertas no tiene causa que
+   investigar: los fixtures de la prueba DGX-1789 (creados por API, critical,
+   `alerts_count: 0`, sin regla) pasaban por la severidad sola, Aurora
+   investigaba un fantasma y su report-back lanzaba una sesión de arreglo.
+   Igual que con la severidad: descartado antes del claim no deja fila y sigue
+   investigable si después acumula alertas. Un fixture de prueba debe declararse
+   con la etiqueta `test: <KEY>` en sus alertas (convención SC-4171/SC-4644),
+   no con la palabra «prueba» en el nombre.
 
 Aurora guarda `critical` para todo lo que recibe (su `_extract_severity` no
 conoce `warning` y cae al fallback por estado `alerting`); con esta lane el

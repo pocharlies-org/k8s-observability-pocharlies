@@ -7,7 +7,9 @@ Two workflows are pinned here, both as Helm values rather than Python:
   ``fingerprint`` = token ``substr(md5(incident),1,16)``, 6 h cooldown per
   ``alert_fingerprint``; behaviour is exercised in
   ``test_keep_aurora_claim_behavior.py``): the SQL claim
-  must reject non-critical incidents before writing the claim, the webhook
+  must reject non-critical incidents and incidents without alerts (DGX-1811,
+  24-11-2026: test fixtures with ``alerts_count: 0`` reached Aurora and its
+  report-back launched fix sessions) before writing the claim, the webhook
   action must also require critical severity, and the payload must carry
   ``generatorURL`` (Aurora stores it as ``alert_metadata.alertUrl`` and renders
   it as "View Alert"; the ``keep_url`` annotation is discarded by tasks.py).
@@ -137,6 +139,14 @@ class KeepAuroraDispatchContractTests(unittest.TestCase):
     def test_dispatch_lane_is_critical_only(self):
         self.assertNotIn("'warning'", self.block)
         self.assertIn("WHERE '{{ incident.severity }}' = 'critical'", self.block)
+
+    def test_empty_incident_neither_claims_nor_dispatches(self):
+        # DGX-1811 (24-11): un incidente sin alertas no tiene causa que
+        # investigar; era candidato solo por severidad y Aurora lo investigaba.
+        self.assertIn(
+            "AND COALESCE(NULLIF('{{ incident.alerts_count }}', '')::int, 0) > 0",
+            self.block,
+        )
 
     def test_report_back_workflow_is_not_part_of_dispatch_contract(self):
         self.assertNotIn("aurora-report-back", self.block)
