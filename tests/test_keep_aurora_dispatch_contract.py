@@ -138,6 +138,20 @@ class KeepAuroraDispatchContractTests(unittest.TestCase):
         self.assertNotIn("'warning'", self.block)
         self.assertIn("WHERE '{{ incident.severity }}' = 'critical'", self.block)
 
+    def test_zero_alert_incident_is_not_a_candidate(self):
+        # (INFRA-1543) A manual incident with 0 alerts has nothing to
+        # investigate: Aurora's RCA can only answer "no evidence" and wakes a
+        # diagnostic session (the DGX-1789 test fixtures A–F came in through
+        # here). The guard sits BEFORE the claim — same "no durable mark"
+        # rationale as the severity filter — and is fail-closed: a template
+        # that renders no number dispatches nothing.
+        self.assertRegex(
+            self.block,
+            r"WHERE '\{\{ incident\.severity \}\}' = 'critical'[\s\S]*?"
+            r"AND '\{\{ incident\.alerts_count \}\}' ~ '\^\[0-9\]\+\$'\s+"
+            r"AND '\{\{ incident\.alerts_count \}\}'::int > 0",
+        )
+
     def test_report_back_workflow_is_not_part_of_dispatch_contract(self):
         self.assertNotIn("aurora-report-back", self.block)
 

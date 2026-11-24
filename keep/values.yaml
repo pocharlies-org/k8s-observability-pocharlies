@@ -515,7 +515,7 @@ backend:
         # huella de alerta acota el coste si una alerta flapea.
         disabled: false
         description: >-
-          Manda los incidentes critical nuevos a Aurora, que lanza agentes
+          Manda los incidentes critical nuevos con alertas a Aurora, que lanza agentes
           read-only sobre el clúster y produce un RCA, una vez por incidente de
           Keep (y como mucho una vez cada 6 h por huella de alerta).
         triggers:
@@ -592,6 +592,16 @@ backend:
                     -- 77 % de los despachos eran warning (CI en rojo, unidades del
                     -- x86, update-watch) a unas 15-25 llamadas LLM por RCA.
                     WHERE '{{ incident.severity }}' = 'critical'
+                    -- (INFRA-1543, 24-11) Un incidente critical con 0 alertas no es
+                    -- una avería: es manual (creado desde la UI/API sin alertas) y el
+                    -- RCA de Aurora solo puede responder «no hay evidencia» — y despierta
+                    -- una sesión de diagnóstico. Los fixtures de prueba de DGX-1789
+                    -- (A–F) entraron por aquí: la supresión de pruebas de ops-watch
+                    -- (`_marcador_prueba`, SC-4171) mira las etiquetas de las ALERTAS,
+                    -- y con 0 alertas no hay etiquetas que mirar. Fail-closed: si la
+                    -- plantilla no pinta un número, no se despacha.
+                    AND '{{ incident.alerts_count }}' ~ '^[0-9]+$'
+                    AND '{{ incident.alerts_count }}'::int > 0
                   ), claimed AS (
                     INSERT INTO keep_bridge.aurora_dispatches (
                       keep_incident_id,

@@ -1,7 +1,9 @@
 # Contrato Keep ↔ Aurora
 
-> Estado: **v1.4** (INFRA-882, 2026-10-16): la lane vuelve a ser **solo
-> critical** (§6, decisión de Dani). Hereda de v1.3 (INFRA-406 / INFRA-394,
+> Estado: **v1.5** (INFRA-1543, 2026-11-24): la lane exige además **alertas**
+> (§6.3): un incidente con `alerts_count = 0` no se despacha. Hereda de v1.4
+> (INFRA-882, 2026-10-16) que la lane sea **solo critical** (§6, decisión de
+> Dani). Hereda de v1.3 (INFRA-406 / INFRA-394,
 > 2026-10-02) el despacho **una vez por incidente de Keep** (clave
 > `keep_incident_id`, rearme = Keep, cooldown de 6 h por huella). Hereda de v1.2 (INFRA-217,
 > 2026-09-23) la cobertura del RCA por la función SECURITY DEFINER
@@ -336,6 +338,14 @@ residente. Defensas independientes, pinadas por `tests/`:
 2. Action: `if: "'{{ incident.severity }}' == 'critical' and '{{
    steps.claim-dispatch.results.0.0 }}' != ''"` — el resultado vacío del claim
    significa «otra ejecución ya lo reclamó» o «suprimido por el cooldown».
+3. SQL (v1.5, INFRA-1543): `AND '{{ incident.alerts_count }}' ~ '^[0-9]+$' AND
+   '{{ incident.alerts_count }}'::int > 0` también **antes** del claim. Un
+   incidente con 0 alertas es manual (UI/API) y no tiene nada que investigar:
+   el RCA de Aurora solo puede responder «no hay evidencia» y despierta una
+   sesión de diagnóstico (los fixtures de DGX-1789 A–F entraban por aquí; la
+   supresión de pruebas de ops-watch mira etiquetas de las alertas y con 0
+   alertas no caza nada). Fail-closed: si la plantilla no pinta un número, no
+   se despacha.
 
 Aurora guarda `critical` para todo lo que recibe (su `_extract_severity` no
 conoce `warning` y cae al fallback por estado `alerting`); con esta lane el

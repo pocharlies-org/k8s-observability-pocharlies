@@ -47,12 +47,13 @@ def claim_sql() -> str:
     return step("aurora-investigate", "claim-dispatch")["provider"]["with"]["query"]
 
 
-def render(sql: str, incident_id: str, alert_fp, severity="critical") -> str:
+def render(sql: str, incident_id: str, alert_fp, severity="critical", alerts_count="1") -> str:
     sql = re.sub(r"\{\{#fn\.default\}\}|\{\{/fn\.default\}\}", "", sql)
     ctx = {
         "incident.id": incident_id,
         "incident.alerts.0.fingerprint": alert_fp or "",
         "incident.severity": severity,
+        "incident.alerts_count": alerts_count,
     }
     sql = re.sub(r"\{\{ (incident\.[\w.]+) \}\}", lambda m: ctx[m.group(1)], sql)
     assert "{{" not in sql, "unrendered template left in claim SQL"
@@ -100,8 +101,10 @@ class ClaimBehaviourTests(unittest.TestCase):
                 break
         return rows
 
-    def claim(self, incident_id, alert_fp, severity="critical"):
-        rows = self.run_script(render(claim_sql(), incident_id, alert_fp, severity))
+    def claim(self, incident_id, alert_fp, severity="critical", alerts_count="1"):
+        rows = self.run_script(
+            render(claim_sql(), incident_id, alert_fp, severity, alerts_count)
+        )
         return rows[0][0], rows[0][1]
 
     def dispatches(self):
@@ -142,6 +145,15 @@ class ClaimBehaviourTests(unittest.TestCase):
         self.assertEqual(self.claim(str(uuid.uuid4()), "aa02", "warning")[0], "")
         self.assertEqual(self.claim(str(uuid.uuid4()), "aa03", "info")[0], "")
         self.assertEqual(len(self.dispatches()), 1)
+
+    def test_zero_alert_incident_is_not_claimed(self):
+        # (INFRA-1543) A manual incident with 0 alerts (the DGX-1789 test
+        # fixtures A–F) has nothing for Aurora to investigate: no claim row,
+        # no dispatch. Fail-closed: a template rendering no number dispatches
+        # nothing either.
+        self.assertEqual(self.claim(str(uuid.uuid4()), "bb01", alerts_count="0"), ("", ""))
+        self.assertEqual(self.claim(str(uuid.uuid4()), "bb02", alerts_count=""), ("", ""))
+        self.assertEqual(len(self.dispatches()), 0)
 
     def test_incident_without_alert_fingerprint_is_dispatched(self):
         self.assertNotEqual(self.claim(str(uuid.uuid4()), None)[0], "")
