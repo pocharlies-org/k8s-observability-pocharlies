@@ -79,9 +79,12 @@ class SparkThermalHaltCorrelationTests(unittest.TestCase):
         except ImportError:
             self.skipTest("celpy not installed")
         env = celpy.Environment()
+        # `labels.severity` lo lee critical-safety-net (linea ~216 del yaml): la
+        # activacion debe traer la severidad TAMBIEN en labels, como la real de
+        # Alertmanager (el contrato base la pasa via los labels del VMRule).
         act = {"name": celpy.celtypes.StringType(ALERT),
                "severity": celpy.celtypes.StringType("warning"),
-               "labels": celpy.json_to_cel({}),
+               "labels": celpy.json_to_cel({"severity": "warning"}),
                "annotations": celpy.json_to_cel({}),
                "source": celpy.json_to_cel(["prometheus"])}
         hit = [r["ruleName"] for r in self.rules
