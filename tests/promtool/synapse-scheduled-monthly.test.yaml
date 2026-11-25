@@ -9,7 +9,7 @@ tests:
   - interval: 1m
     name: arrancó y no hay serie de éxito (reinicio del engine) -> dispara
     input_series:
-      - series: 'synapse_engine_scheduled_workflow_last_start_timestamp_seconds{tenant="skirmshop", workflow="skirmshop.gestoria.accounting.processor_fees"}'
+      - series: 'synapse_engine_scheduled_workflow_last_start_timestamp_seconds{namespace="synapse", tenant="skirmshop", workflow="skirmshop.gestoria.accounting.processor_fees"}'
         values: '60x300'
     alert_rule_test:
       - eval_time: 4h
@@ -22,9 +22,9 @@ tests:
   - interval: 1m
     name: arrancó y el éxito es anterior al arranque -> dispara pasadas 3 h + for
     input_series:
-      - series: 'synapse_engine_scheduled_workflow_last_start_timestamp_seconds{tenant="skirmshop", workflow="skirmshop.gestoria.accounting.processor_fees"}'
+      - series: 'synapse_engine_scheduled_workflow_last_start_timestamp_seconds{namespace="synapse", tenant="skirmshop", workflow="skirmshop.gestoria.accounting.processor_fees"}'
         values: '7200x400'
-      - series: 'synapse_engine_scheduled_workflow_last_success_timestamp_seconds{tenant="skirmshop", workflow="skirmshop.gestoria.accounting.processor_fees"}'
+      - series: 'synapse_engine_scheduled_workflow_last_success_timestamp_seconds{namespace="synapse", tenant="skirmshop", workflow="skirmshop.gestoria.accounting.processor_fees"}'
         values: '60x400'
     alert_rule_test:
       - eval_time: 4h
@@ -40,9 +40,9 @@ tests:
   - interval: 1m
     name: el run terminó bien (éxito >= arranque) -> no dispara aunque pase el mes
     input_series:
-      - series: 'synapse_engine_scheduled_workflow_last_start_timestamp_seconds{tenant="skirmshop", workflow="skirmshop.gestoria.accounting.processor_fees"}'
+      - series: 'synapse_engine_scheduled_workflow_last_start_timestamp_seconds{namespace="synapse", tenant="skirmshop", workflow="skirmshop.gestoria.accounting.processor_fees"}'
         values: '60x400'
-      - series: 'synapse_engine_scheduled_workflow_last_success_timestamp_seconds{tenant="skirmshop", workflow="skirmshop.gestoria.accounting.processor_fees"}'
+      - series: 'synapse_engine_scheduled_workflow_last_success_timestamp_seconds{namespace="synapse", tenant="skirmshop", workflow="skirmshop.gestoria.accounting.processor_fees"}'
         values: '120x400'
       - series: 'kube_pod_container_state_started{namespace="synapse", pod="synapse-engine-0", container="engine"}'
         values: '1x400'
@@ -56,7 +56,7 @@ tests:
   - interval: 1m
     name: otro workflow que solo arrancó -> la regla mensual no lo mira
     input_series:
-      - series: 'synapse_engine_scheduled_workflow_last_start_timestamp_seconds{tenant="skirmshop", workflow="skirmshop.gestoria.monitoring.dlq_sweep"}'
+      - series: 'synapse_engine_scheduled_workflow_last_start_timestamp_seconds{namespace="synapse", tenant="skirmshop", workflow="skirmshop.gestoria.monitoring.dlq_sweep"}'
         values: '60x300'
     alert_rule_test:
       - eval_time: 4h

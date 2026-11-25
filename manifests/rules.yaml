@@ -521,6 +521,14 @@ spec:
 #   job="synapse-engine"      (svc synapse-engine, 1 replica, :9103)
 #   job="synapse-dispatcher"  (svc synapse-dispatcher, 1 replica, :9102)
 # Both are singletons: no HPA, no dedup needed on synapse_* series.
+#
+# INSTALLATION (2026-11-25): production is the only Synapse whose engine,
+# dispatcher and outbox are scraped here; every synapse_* series carries
+# namespace="synapse" (verified in VM). The services rules below pin that
+# namespace so the Public-base install (`synapse2`, its own engine and
+# dispatcher with the SAME job names) can be scraped later without its series
+# masking production: absent() would otherwise see synapse2's engine as
+# production's, and a sum() would let synapse2's publishes hide a stuck one.
 apiVersion: operator.victoriametrics.com/v1beta1
 kind: VMRule
 metadata:
@@ -547,9 +555,9 @@ spec:
           # al arder inhibe a las que lleven pipeline_blind (inhibit_rules en
           # alertmanager-config.yaml).
           expr: |
-            absent(up{job="synapse-engine"})
-            or absent(up{job="synapse-dispatcher"})
-            or (up{job=~"synapse-engine|synapse-dispatcher"} == 0)
+            absent(up{job="synapse-engine",namespace="synapse"})
+            or absent(up{job="synapse-dispatcher",namespace="synapse"})
+            or (up{job=~"synapse-engine|synapse-dispatcher",namespace="synapse"} == 0)
           for: 3m
           labels:
             severity: critical
@@ -569,9 +577,9 @@ spec:
         # is empty and the whole expr is empty — fail-safe, no false page.
         - alert: SynapseDispatcherNotPublishing
           expr: |
-            sum(rate(synapse_dispatcher_published_total[15m])) == 0
+            sum(rate(synapse_dispatcher_published_total{namespace="synapse"}[15m])) == 0
             and
-            sum(synapse_outbox_unpublished_rows{exhausted="false"}) > 0
+            sum(synapse_outbox_unpublished_rows{namespace="synapse",exhausted="false"}) > 0
           for: 10m
           labels:
             severity: critical
@@ -610,7 +618,7 @@ spec:
             (
               time()
               - max by (tenant, workflow) (
-                  synapse_engine_scheduled_workflow_last_success_timestamp_seconds{workflow!~"skirmshop\\.gestoria\\.(banking\\..*|accounting\\.(retention|processor_fees))|skirmshop\\.shopify\\.merchant-policy-weekly"} > 0
+                  synapse_engine_scheduled_workflow_last_success_timestamp_seconds{namespace="synapse",workflow!~"skirmshop\\.gestoria\\.(banking\\..*|accounting\\.(retention|processor_fees))|skirmshop\\.shopify\\.merchant-policy-weekly"} > 0
                 )
             ) > 10800
             and on ()
@@ -638,7 +646,7 @@ spec:
             (
               time()
               - max by (tenant, workflow) (
-                  synapse_engine_scheduled_workflow_last_success_timestamp_seconds{workflow=~"skirmshop\\.gestoria\\.(banking\\..*|accounting\\.retention)"} > 0
+                  synapse_engine_scheduled_workflow_last_success_timestamp_seconds{namespace="synapse",workflow=~"skirmshop\\.gestoria\\.(banking\\..*|accounting\\.retention)"} > 0
                 )
             ) > 129600
             and on ()
@@ -669,7 +677,7 @@ spec:
             (
               time()
               - max by (tenant, workflow) (
-                  synapse_engine_scheduled_workflow_last_success_timestamp_seconds{workflow=~"skirmshop\\.shopify\\.merchant-policy-weekly"} > 0
+                  synapse_engine_scheduled_workflow_last_success_timestamp_seconds{namespace="synapse",workflow=~"skirmshop\\.shopify\\.merchant-policy-weekly"} > 0
                 )
             ) > 691200
             and on ()
@@ -704,13 +712,13 @@ spec:
         - alert: SynapseScheduledWorkflowRunStalledMonthly
           expr: |
             (
-              time() - max by (tenant, workflow) (synapse_engine_scheduled_workflow_last_start_timestamp_seconds{workflow=~"skirmshop\\.gestoria\\.accounting\\.processor_fees"} > 0)
+              time() - max by (tenant, workflow) (synapse_engine_scheduled_workflow_last_start_timestamp_seconds{namespace="synapse",workflow=~"skirmshop\\.gestoria\\.accounting\\.processor_fees"} > 0)
             ) > 10800
             unless on (tenant, workflow)
             (
-              max by (tenant, workflow) (synapse_engine_scheduled_workflow_last_success_timestamp_seconds{workflow=~"skirmshop\\.gestoria\\.accounting\\.processor_fees"})
+              max by (tenant, workflow) (synapse_engine_scheduled_workflow_last_success_timestamp_seconds{namespace="synapse",workflow=~"skirmshop\\.gestoria\\.accounting\\.processor_fees"})
               >= on (tenant, workflow)
-              max by (tenant, workflow) (synapse_engine_scheduled_workflow_last_start_timestamp_seconds{workflow=~"skirmshop\\.gestoria\\.accounting\\.processor_fees"})
+              max by (tenant, workflow) (synapse_engine_scheduled_workflow_last_start_timestamp_seconds{namespace="synapse",workflow=~"skirmshop\\.gestoria\\.accounting\\.processor_fees"})
             )
           for: 15m
           labels:
@@ -730,7 +738,7 @@ spec:
         # drains the graveyard to 0 in parallel and the alert then clears. If it
         # is still firing days later, the graveyard was never triaged.
         - alert: SynapseOutboxExhausted
-          expr: sum by (tenant) (synapse_outbox_unpublished_rows{exhausted="true"}) > 0
+          expr: sum by (tenant) (synapse_outbox_unpublished_rows{namespace="synapse",exhausted="true"}) > 0
           for: 15m
           labels:
             severity: warning
@@ -747,7 +755,7 @@ spec:
         # signal. Absent on dispatcher restart (in-process gauge) -> no false
         # page. for: 15m so a normal drain latency does not trip it.
         - alert: SynapseOutboxOldestStale
-          expr: max by (tenant) (synapse_outbox_oldest_unpublished_age_seconds) > 900
+          expr: max by (tenant) (synapse_outbox_oldest_unpublished_age_seconds{namespace="synapse"}) > 900
           for: 15m
           labels:
             severity: warning
@@ -766,10 +774,14 @@ spec:
         # 2026-07-22 baseline of 282 sediment messages (~68 headroom): only a
         # bulk NEW dead-lettering event trips it, so the standing graveyard does
         # not nag. repeat 24h on its dedicated route (alertmanager-config.yaml).
+        # The sum is BY NAMESPACE (2026-11-25): per-queue rules cover both
+        # installs and the alert must say which one — production's broker
+        # (databases) and, once scraped, synapse2's (`synapse-rmq`). The
+        # threshold stays per installation.
         - alert: SynapseDLQBacklog
           expr: |
-            sum(
-              max by (queue) (
+            sum by (namespace) (
+              max by (namespace, queue) (
                 rabbitmq_detailed_queue_messages_ready{vhost="/synapse", queue=~"dlq\\..+"}
               )
             ) > 350
@@ -779,7 +791,7 @@ spec:
             area: messaging
             component: synapse
           annotations:
-            summary: "Synapse DLQ total backlog high ({{ $value }} messages)"
+            summary: "Synapse DLQ ({{ $labels.namespace }}) total backlog high ({{ $value }} messages)"
             description: "Total ready messages across all /synapse dlq.* queues exceeded 350 (deduped across the two rabbitmq scrape jobs; baseline sediment ~282). A handler is dead-lettering in bulk. Use RabbitmqDlqGrowth to find the growing queue, then inspect that adapter's logs and the DLQ payloads."
         # --- warning: core adapters ---------------------------------------
         # The four control-critical adapters that must always have a target up.
@@ -1028,13 +1040,21 @@ spec:
         # Per-queue alerts EXCLUDE buffers without a consumer by design:
         # dlq.*, archive.* and the catch-all parent queues. These are sinks,
         # not work queues; a backlog or zero-consumer there is expected.
+        #
+        # INSTALLATION (2026-11-25): broker-wide rules (memory, scrape, cluster)
+        # pin namespace="databases" — production's shared-rabbitmq. Per-queue
+        # rules cover BOTH installs on purpose (production and, once scraped,
+        # synapse2's `synapse-rmq`, whose series will carry
+        # namespace="synapse2") and every aggregation/join keeps `namespace` in
+        # its grouping, so each alert names its installation and one install's
+        # consumers cannot mask the other's (same queue names in both brokers).
 
         # --- critical: broker-wide ---------------------------------------
         - alert: RabbitmqMemoryAlarmActive
           # RabbitMQ has tripped its own memory high-watermark alarm and is
           # blocking publishers cluster-wide. This is the terminal state of
           # the original incident.
-          expr: rabbitmq_alarms_memory_used_watermark == 1
+          expr: rabbitmq_alarms_memory_used_watermark{namespace="databases"} == 1
           for: 0m
           labels:
             severity: critical
@@ -1048,8 +1068,8 @@ spec:
           # (1.8 GB). Pages before the hard alarm so there is time to react.
           expr: |
             (
-              rabbitmq_process_resident_memory_bytes
-                / rabbitmq_resident_memory_limit_bytes
+              rabbitmq_process_resident_memory_bytes{namespace="databases"}
+                / rabbitmq_resident_memory_limit_bytes{namespace="databases"}
             ) > 0.80
           for: 10m
           labels:
@@ -1070,7 +1090,7 @@ spec:
                 queue!~"dlq\\..+|archive\\..+|adapter\\.[^.]+"
               } > 100
             )
-            and on (vhost, queue)
+            and on (namespace, vhost, queue)
             (
               rabbitmq_detailed_queue_consumers{
                 vhost="/synapse",
@@ -1083,7 +1103,7 @@ spec:
             area: messaging
             component: shared-rabbitmq
           annotations:
-            summary: "RabbitMQ queue {{ $labels.queue }} has stuck unacked messages"
+            summary: "RabbitMQ queue {{ $labels.namespace }}/{{ $labels.queue }} has stuck unacked messages"
             description: "Queue {{ $labels.queue }} (vhost {{ $labels.vhost }}) has >100 unacked messages with consumers present for 15m. A consumer is holding deliveries without acking — head-of-line block. Inspect the consumer (systemd --user on sauvage)."
         - alert: RabbitmqHeadMessageStale
           # The oldest message in the queue has been sitting unconsumed for
@@ -1104,7 +1124,7 @@ spec:
             area: messaging
             component: shared-rabbitmq
           annotations:
-            summary: "RabbitMQ queue {{ $labels.queue }} head message is stale"
+            summary: "RabbitMQ queue {{ $labels.namespace }}/{{ $labels.queue }} head message is stale"
             description: "The oldest message in {{ $labels.queue }} (vhost {{ $labels.vhost }}) has been unconsumed for over 30 minutes. Consumer is stalled or absent — messages are aging at the head of the line."
         - alert: RabbitmqScrapeMissing
           # The broker scrape itself is gone. Without this the whole rule set
@@ -1113,7 +1133,7 @@ spec:
           # (rollout, drill) this absent() fires with RabbitMQ healthy; that gap
           # is ScrapePathGap's (scrape-path-rules.yaml), not a broker outage.
           expr: |
-            absent(rabbitmq_identity_info{rabbitmq_node=~".*shared-rabbitmq.*"})
+            absent(rabbitmq_identity_info{namespace="databases",rabbitmq_node=~".*shared-rabbitmq.*"})
               and on() (count(vm_promscrape_active_scrapers) > 0)
           for: 5m
           labels:
@@ -1139,7 +1159,7 @@ spec:
             area: messaging
             component: shared-rabbitmq
           annotations:
-            summary: "RabbitMQ queue {{ $labels.queue }} backlog is high"
+            summary: "RabbitMQ queue {{ $labels.namespace }}/{{ $labels.queue }} backlog is high"
             description: "Queue {{ $labels.queue }} (vhost {{ $labels.vhost }}) has >10000 ready messages for 15m. Consumers are not keeping up — check throughput and scaling before it pressures broker memory."
         - alert: RabbitmqDlqGrowth
           # Dead-letters ACCUMULATING (growth over 6h, sustained 30m) — a
@@ -1157,7 +1177,7 @@ spec:
             area: messaging
             component: shared-rabbitmq
           annotations:
-            summary: "RabbitMQ DLQ {{ $labels.queue }} is growing"
+            summary: "RabbitMQ DLQ {{ $labels.namespace }}/{{ $labels.queue }} is growing"
             description: "Dead-letter queue {{ $labels.queue }} (vhost {{ $labels.vhost }}) grew in the last 6h and kept growing for 30m. New messages are dead-lettering — inspect the DLQ payloads and the owning adapter's logs."
         - alert: SynapseUnroutableMessages
           # A publish whose routing key matched NO binding. `events` and
@@ -1194,7 +1214,7 @@ spec:
             area: messaging
             component: shared-rabbitmq
           annotations:
-            summary: "Synapse contract break: unroutable messages"
+            summary: "Synapse ({{ $labels.namespace }}) has unroutable messages (contract break)"
             description: "Queue synapse.unroutable holds messages: a publisher used a routing key with no binding — inspect the payload headers (`source`, `connection_name`) and the routing key, and reconcile them against libs/synapse-contracts/registry.yaml. Runbook: skill synapse-contracts."
         - alert: SynapseTopologyDrift
           # The other direction of the same contract break (SKIRM-351/C4): a
@@ -1301,7 +1321,7 @@ spec:
           # haber consumidor, esta exclusión debe retirarse.
           expr: |
             (
-              max by (vhost, queue) (
+              max by (namespace, vhost, queue) (
                 rabbitmq_detailed_queue_consumers{
                   vhost="/synapse",
                   queue!~"dlq\\..+|archive\\..+|adapter\\.[^.]+|adapter\\.messaging\\.(whatsapp_contact_sync|summarize_attachments|upload_topic_attachments|send_topic_photo|save_attachments|audit_correos_weights)|adapter\\.expenses(\\..+)?|synapse\\.unroutable|adapter\\.ops_explainer\\.failures"
@@ -1309,9 +1329,9 @@ spec:
                 }
               ) == 0
             )
-            and on (vhost, queue)
+            and on (namespace, vhost, queue)
             (
-              max by (vhost, queue) (
+              max by (namespace, vhost, queue) (
                 rabbitmq_detailed_queue_messages_ready{
                   vhost="/synapse",
                   queue!~"dlq\\..+|archive\\..+|adapter\\.[^.]+|adapter\\.messaging\\.(whatsapp_contact_sync|summarize_attachments|upload_topic_attachments|send_topic_photo|save_attachments|audit_correos_weights)|adapter\\.expenses(\\..+)?|synapse\\.unroutable|adapter\\.ops_explainer\\.failures"
@@ -1325,7 +1345,7 @@ spec:
             area: messaging
             component: shared-rabbitmq
           annotations:
-            summary: "RabbitMQ queue {{ $labels.queue }} has messages but no consumer"
+            summary: "RabbitMQ queue {{ $labels.namespace }}/{{ $labels.queue }} has messages but no consumer"
             description: "Queue {{ $labels.queue }} (vhost {{ $labels.vhost }}) has ready messages with zero consumers for 10m. The handler is dead or disconnected — messages will sit until a consumer reattaches."
 
         - alert: RabbitmqContactSyncBacklogAfterWindow
@@ -1338,7 +1358,7 @@ spec:
           # sobre las 02:10Z y no empieza a crecer hasta ~10:00Z.
           expr: |
             (
-              max by (vhost, queue) (
+              max by (namespace, vhost, queue) (
                 rabbitmq_detailed_queue_messages_ready{
                   vhost="/synapse",
                   queue="adapter.messaging.whatsapp_contact_sync"
@@ -1352,7 +1372,7 @@ spec:
             area: messaging
             component: shared-rabbitmq
           annotations:
-            summary: "whatsapp_contact_sync backlog survived its cron window"
+            summary: "whatsapp_contact_sync ({{ $labels.namespace }}) backlog survived its cron window"
             description: "Queue adapter.messaging.whatsapp_contact_sync still has ready messages after the 03:30-07:30 Europe/Madrid cron window. Check `kubectl -n synapse get scaledobject keda-synapse-adapter-messaging-contact-sync` and the pod logs from the window; the consumer is KEDA-cronned, its absence outside the window is by design."
 
         - alert: RabbitmqExpensesBacklogAfterWindow
@@ -1368,7 +1388,7 @@ spec:
           # el pod murió al arrancar o el adaptador no consume.
           expr: |
             (
-              max by (vhost, queue) (
+              max by (namespace, vhost, queue) (
                 rabbitmq_detailed_queue_messages_ready{
                   vhost="/synapse",
                   queue=~"adapter\\.expenses\\..+"
@@ -1382,7 +1402,7 @@ spec:
             area: messaging
             component: shared-rabbitmq
           annotations:
-            summary: "expenses adapter backlog survived its cron window ({{ $labels.queue }})"
+            summary: "expenses adapter backlog survived its cron window ({{ $labels.namespace }}/{{ $labels.queue }})"
             description: "Queue {{ $labels.queue }} still has ready messages after the 03:30-07:30 Europe/Madrid cron window of the expenses adapter. Check `kubectl -n synapse get scaledobject keda-synapse-adapter-expenses` and the pod logs from the window; the consumer is KEDA-cronned, its absence outside the window is by design."
 
         - alert: RabbitmqMessagingMediaBacklogAfterWindow
@@ -1403,7 +1423,7 @@ spec:
           # 05-11.
           expr: |
             (
-              max by (vhost, queue) (
+              max by (namespace, vhost, queue) (
                 rabbitmq_detailed_queue_messages_ready{
                   vhost="/synapse",
                   queue=~"adapter\\.messaging\\.(summarize_attachments|upload_topic_attachments|send_topic_photo|save_attachments|audit_correos_weights)"
@@ -1417,7 +1437,7 @@ spec:
             area: messaging
             component: shared-rabbitmq
           annotations:
-            summary: "messaging-media adapter backlog survived its cron window ({{ $labels.queue }})"
+            summary: "messaging-media adapter backlog survived its cron window ({{ $labels.namespace }}/{{ $labels.queue }})"
             description: "Queue {{ $labels.queue }} still has ready messages after the 03:30-07:30 Europe/Madrid cron window of the messaging-media adapter. Check `kubectl -n synapse get scaledobject keda-synapse-adapter-messaging-media` and the pod logs from the window; the consumer is KEDA-cronned, its absence outside the window is by design."
 
         # --- critical: cluster membership / partition ----------------------
@@ -1993,7 +2013,7 @@ spec:
           # el workflow declara en su YAML, no del tipo de alerta.
           expr: |
             (
-              sum by (workflow, tenant) (
+              sum by (namespace, workflow, tenant) (
                 increase(synapse_engine_workflow_instance_duration_seconds_count{status="failed",impacto!="negocio-critico"}[30m])
               ) >= 2
             )
@@ -2016,7 +2036,7 @@ spec:
           # guarda de scrape que la rama warning (SC-2938).
           expr: |
             (
-              sum by (workflow, tenant) (
+              sum by (namespace, workflow, tenant) (
                 increase(synapse_engine_workflow_instance_duration_seconds_count{status="failed",impacto="negocio-critico"}[30m])
               ) > 0
             )
@@ -2055,7 +2075,7 @@ spec:
           # motivo) sigue casando y dos causas distintas ya no.
           expr: |
             (
-              sum by (workflow, tenant, kind) (
+              sum by (namespace, workflow, tenant, kind) (
                 increase(synapse_dlq_messages_total{impacto!="negocio-critico"}[10m])
               ) > 0
             )
@@ -2072,7 +2092,7 @@ spec:
           # muerto es negocio-critico en el registro de contratos de synapse.
           expr: |
             (
-              sum by (workflow, tenant, kind) (
+              sum by (namespace, workflow, tenant, kind) (
                 increase(synapse_dlq_messages_total{impacto="negocio-critico"}[10m])
               ) > 0
             )
@@ -2635,15 +2655,15 @@ spec:
           # otra historia — no montarla aqui.
           expr: |
             (
-              max by (vhost) (
+              max by (namespace, vhost) (
                 increase(rabbitmq_detailed_channel_messages_delivered_ack_total{
                   vhost="/synapse", queue="adapter.invoicing.incoming.ingest"
                 }[6h])
               ) > 0
             )
-            unless on (vhost)
+            unless on (namespace, vhost)
             (
-              max by (vhost) (
+              max by (namespace, vhost) (
                 increase(rabbitmq_detailed_channel_messages_delivered_ack_total{
                   vhost="/synapse", queue="adapter.invoicing.ocr.extract"
                 }[6h])
@@ -2687,10 +2707,10 @@ spec:
           # disparador legitimo via unless.
           expr: |
             absent(rabbitmq_detailed_queue_consumers{
-              vhost="/synapse", queue="adapter.invoicing.incoming.ingest"
+              namespace="databases", vhost="/synapse", queue="adapter.invoicing.incoming.ingest"
             })
             or absent(rabbitmq_detailed_queue_consumers{
-              vhost="/synapse", queue="adapter.invoicing.ocr.extract"
+              namespace="databases", vhost="/synapse", queue="adapter.invoicing.ocr.extract"
             })
           for: 30m
           labels:

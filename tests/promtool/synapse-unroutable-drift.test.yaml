@@ -20,7 +20,7 @@ tests:
   - interval: 30s
     name: "sink unroutable con mensajes - SynapseUnroutableMessages dispara en warning (regresión: pata intacta)"
     input_series:
-      - series: 'rabbitmq_detailed_queue_messages_ready{vhost="/synapse",queue="synapse.unroutable"}'
+      - series: 'rabbitmq_detailed_queue_messages_ready{namespace="databases",vhost="/synapse",queue="synapse.unroutable"}'
         values: '0 1 1 1'
     alert_rule_test:
       - eval_time: 1m
@@ -33,10 +33,11 @@ tests:
               severity: warning
               area: messaging
               component: shared-rabbitmq
+              namespace: databases
               vhost: /synapse
               queue: synapse.unroutable
             exp_annotations:
-              summary: "Synapse contract break: unroutable messages"
+              summary: "Synapse (databases) has unroutable messages (contract break)"
               description: "Queue synapse.unroutable holds messages: a publisher used a routing key with no binding — inspect the payload headers (`source`, `connection_name`) and the routing key, and reconcile them against libs/synapse-contracts/registry.yaml. Runbook: skill synapse-contracts."
 
   - interval: 30s
@@ -63,7 +64,7 @@ tests:
   - interval: 30s
     name: "unroutables y deriva a la vez - cada alerta por su lado"
     input_series:
-      - series: 'rabbitmq_detailed_queue_messages_ready{vhost="/synapse",queue="synapse.unroutable"}'
+      - series: 'rabbitmq_detailed_queue_messages_ready{namespace="databases",vhost="/synapse",queue="synapse.unroutable"}'
         values: '0 1 1 1'
       - series: 'synapse_topology_drift{tenant="synapsedrifttest"}'
         values: '0 1 1 1'
@@ -75,10 +76,11 @@ tests:
               severity: warning
               area: messaging
               component: shared-rabbitmq
+              namespace: databases
               vhost: /synapse
               queue: synapse.unroutable
             exp_annotations:
-              summary: "Synapse contract break: unroutable messages"
+              summary: "Synapse (databases) has unroutable messages (contract break)"
               description: "Queue synapse.unroutable holds messages: a publisher used a routing key with no binding — inspect the payload headers (`source`, `connection_name`) and the routing key, and reconcile them against libs/synapse-contracts/registry.yaml. Runbook: skill synapse-contracts."
       - eval_time: 2m
         alertname: SynapseTopologyDrift
@@ -95,7 +97,7 @@ tests:
   - interval: 30s
     name: "sin unroutables y sin deriva - las dos alertas callan"
     input_series:
-      - series: 'rabbitmq_detailed_queue_messages_ready{vhost="/synapse",queue="synapse.unroutable"}'
+      - series: 'rabbitmq_detailed_queue_messages_ready{namespace="databases",vhost="/synapse",queue="synapse.unroutable"}'
         values: '0 0 0 0'
       - series: 'synapse_topology_drift{tenant="synapsedrifttest"}'
         values: '0 0 0 0'

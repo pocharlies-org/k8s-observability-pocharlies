@@ -21,6 +21,7 @@ tests:
               severity: critical
               area: messaging
               component: shared-rabbitmq
+              namespace: databases
             exp_annotations:
               summary: "RabbitMQ broker metrics are missing"
               description: "No rabbitmq_identity_info series for shared-rabbitmq for 5m. The broker scrape (manifests/rabbitmq-scrape.yaml) is failing or the broker is down. All other RabbitMQ alerts are blind until this is fixed."
@@ -38,7 +39,7 @@ tests:
     input_series:
       - series: 'vm_promscrape_active_scrapers{job="vmagent-vm-victoria-metrics-k8s-stack",type="azure_sd_configs"}'
         values: '1x20'
-      - series: 'rabbitmq_identity_info{job="shared-rabbitmq",rabbitmq_node="rabbit@shared-rabbitmq-0.shared-rabbitmq-headless.databases.svc.cluster.local"}'
+      - series: 'rabbitmq_identity_info{namespace="databases",job="shared-rabbitmq",rabbitmq_node="rabbit@shared-rabbitmq-0.shared-rabbitmq-headless.databases.svc.cluster.local"}'
         values: '1x20'
     alert_rule_test:
       - eval_time: 10m
