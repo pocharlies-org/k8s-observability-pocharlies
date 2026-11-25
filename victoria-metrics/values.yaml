@@ -198,7 +198,22 @@ vmsingle:
       storageClassName: longhorn
       resources:
         requests:
-          storage: 100Gi
+          # 2026-11-25 (SC-6637): 100Gi -> 150Gi. DiskRunsOutOfSpace critico (Keep
+          # CRIT-20980): el PVC estaba al 81 % (79,2 Gi usados de 98,1) y la regla es
+          # vm_data_size/(vm_data_size+free) > 0,8. El desglose medido: data/small +
+          # data/big = 3,2 Gi (lo que corresponde a 48 h de retencion) frente a
+          # data/indexdb = 75,1 Gi en 66 partes, algunas de 22 dias atras que la
+          # rotacion de retencion no elimino. El indexdb crece con el total de series
+          # registradas (/api/v1/status/tsdb: 5.001.233 series, 421.853.426 pares
+          # etiqueta-valor; los mayores son container_tasks_state,
+          # container_memory_failures_total, apiserver_request_duration_seconds_bucket,
+          # container_blkio_device_usage_total y prober_probe_duration_seconds_bucket),
+          # no con los datos retenidos: bajar la retencion no lo arregla y subir caches
+          # tampoco, porque no son caches sino indice. Es la segunda vez que este PVC
+          # se llena (primera: 50Gi -> 100Gi, rama sc-disk-vm); la cardinalidad va en
+          # el ticket de problema correspondiente. Margen del disco Longhorn medido en
+          # el nodo del replica (ks5-cp-3): 357 Gi disponibles de 942.
+          storage: 150Gi
     # SC-6096 (mitigacion SC-6094): sale de ks5-cp-3. El plano de control va a llevar
     # taint control-plane:NoSchedule y aqui solo debe quedar lo que no pueda vivir en
     # otro sitio; la PVC es longhorn (RWO) -> el volumen se re-adjunta en atlantic sin
