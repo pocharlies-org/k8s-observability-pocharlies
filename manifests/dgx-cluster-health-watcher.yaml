@@ -61,7 +61,7 @@ data:
     # The Sparks the watcher checks, one row each: key:user@ip:label:vllm
     # (vllm=1: serves vLLM on hostPort 8200; dgx3 has no `llm` load, INFRA-690).
     # A new Spark is a new row; the per-host checks below loop over this table.
-    HOSTS="dgx:dibanez@192.168.50.140:DGX1:1
+    HOSTS="dgx:dibanerz@192.168.50.140:DGX1:1
     dgx2:dibanez@192.168.50.141:DGX2:1
     dgx3:dibanez@192.168.50.143:DGX3:0"
     target_of() { awk -F: -v k="$1" '$1==k {print $2}' <<< "$HOSTS"; }
