@@ -242,6 +242,38 @@ data:
     done
 
     add_line ""
+    add_line "Log freshness (journal + temps CSV, Ready nodes)"
+    # dgx3 2026-11-23: journald stopped committing its files for 4h while the node
+    # stayed Ready (rsyslog and the temps CSV kept writing, SMART clean). The cold
+    # freeze of 2026-11-24 had no journal because of that gap. If a node is Ready
+    # but its journal or its forensic CSV has gone quiet, the evidence chain is
+    # blind — say so while it can still be read (INFRA-1570).
+    for row in $HOSTS; do
+      IFS=: read -r host target LBL vllm <<< "$row"
+      case "$host" in dgx) node=nvidia-dgx;; dgx2) node=gx10-ec3d;; *) node="$host";; esac
+      ready=$(kubectl get node "$node" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
+      if [ "$ready" != "True" ]; then add_line "  ⚪ $LBL: not Ready (other alerts own it)"; continue; fi
+      jmax=$(ssh_to "$target" "find /var/log/journal -name '*.journal' -newermt '-2 hours' 2>/dev/null | head -1")
+      if [ "$jmax" = "[ssh-error]" ] || [ -z "$jmax" ]; then
+        add_line "  🔴 $LBL: no journal write in >2h while Ready (evidence blind)"; RED=$((RED+1))
+      else
+        add_line "  ✅ $LBL: journal writing"
+      fi
+      csvbase="$host"; [ "$host" = "dgx" ] && csvbase="dgx1"
+      csvage=$(ssh_to "$target" "stat -c %Y /var/log/${csvbase}-temps.csv 2>/dev/null")
+      if [ -z "$csvage" ] || [ "$csvage" = "[ssh-error]" ]; then
+        add_line "  🟡 $LBL: temps CSV not readable"; YELLOW=$((YELLOW+1))
+      else
+        age=$(( $(date +%s) - csvage ))
+        if [ "$age" -gt 1800 ]; then
+          add_line "  🔴 $LBL: temps CSV silent $((age/60)) min while Ready"; RED=$((RED+1))
+        else
+          add_line "  ✅ $LBL: temps CSV $((age/60)) min old"
+        fi
+      fi
+    done
+
+    add_line ""
     ARGO_READY=$(kubectl -n argocd get pod -l app.kubernetes.io/name=argocd-application-controller -o json 2>/dev/null | jq '[.items[].status.containerStatuses[]? | select(.ready==true)] | length')
     ARGO_TOTAL=$(kubectl -n argocd get pod -l app.kubernetes.io/name=argocd-application-controller -o json 2>/dev/null | jq '[.items[].status.containerStatuses[]?] | length')
     if [ -n "$ARGO_TOTAL" ] && [ "$ARGO_TOTAL" != "0" ] && [ "$ARGO_READY" = "$ARGO_TOTAL" ]; then
