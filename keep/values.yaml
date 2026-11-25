@@ -864,8 +864,8 @@ backend:
       # `updated` por cada alerta que suma al incidente
       # (incidents_bl.__postprocess_alerts_change) y Alertmanager reenvía cada
       # minuto, y la resolución sale también como `updated`
-      # (resolve_incident_if_require). La clausura la ve la 2.ª ronda del
-      # supervisor (a los 900 s) o la red de company-cron (3600 s).
+      # (resolve_incident_if_require). La clausura la avisa
+      # `ops-watch-ronda-resuelto` (abajo, SC-6598).
       - id: ops-watch-ronda
         name: Ronda de ops-watch por incidente
         description: >-
@@ -876,6 +876,40 @@ backend:
             events: [created]
         actions:
           - name: avisar-synapse
+            provider:
+              type: webhook
+              config: "{{ providers.synapse_keep }}"
+              with:
+                body:
+                  incidente: "{{ incident.id }}"
+                  estado: "{{ incident.status }}"
+
+      # SC-6598 (SC-5806 ola 0 B4, C-2 de Dani 25-11: sin redes por reloj): la
+      # resolución del incidente también despierta la ronda, para que ops-watch
+      # cierre su Request sin esperar a la red horaria de company-cron, que sale
+      # con este cambio. Keep emite la resolución como `updated`
+      # (resolve_incident_if_require), así que se escucha `updated`, pero el
+      # `if` deja pasar SOLO el estado resuelto: Keep emite también `updated`
+      # por cada alerta que suma al incidente y Alertmanager reenvía cada
+      # minuto, y sin filtro sería una ronda por minuto (por eso
+      # `ops-watch-ronda` sigue en `[created]`). `incident.status` renderiza el
+      # repr del enum (`IncidentStatus.RESOLVED`, medido 23-11 en alertas-cierre
+      # y 25-11 con el IOHandler + asteval del pod: RESOLVED → True,
+      # ACKNOWLEDGED → False); se acepta también el valor por si cambia. Mismo
+      # cuerpo y conexión que `ops-watch-ronda`: sin `tipo`, el adaptador lo
+      # lleva a POST /keep/incidente (la ronda relee Keep en vivo).
+      - id: ops-watch-ronda-resuelto
+        name: Ronda de ops-watch por incidente resuelto
+        description: >-
+          Avisa al supervisor de la compañía, por el gateway de Synapse, de cada
+          incidente resuelto, para que ops-watch cierre su Request sin esperar
+          al reloj.
+        triggers:
+          - type: incident
+            events: [updated]
+        actions:
+          - name: avisar-synapse
+            if: "'{{ incident.status }}' in ['IncidentStatus.RESOLVED', 'resolved']"
             provider:
               type: webhook
               config: "{{ providers.synapse_keep }}"
