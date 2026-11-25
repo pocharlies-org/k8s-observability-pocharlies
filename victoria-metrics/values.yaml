@@ -187,7 +187,19 @@ vmsingle:
         # (keep-causa critical-safety-net:43d45ddd35). No era fuga: 0 reinicios y
         # 0 OOM en 17 dias. Con 24Gi el pico queda en ~0.58 del limite. Nodo con
         # margen: ks5-cp-3 tenia 22 GiB MemAvailable (medido 16-11).
-        memory: 24Gi
+        # 2026-11-25 (SC-6652): 24Gi -> 32Gi. OOMKilled 25-11 23:27 UTC con el
+        # working set otra vez en el limite: 30 min tras el reinicio, anon RSS
+        # 23.0 GiB sobre vm_available_memory_bytes 25.8 GiB = ratio 0.95 (medido
+        # en /metrics del propio vmsingle). El hueco de ingesta (vmagent acumulo
+        # ~350 MB de cola) enrancio absent(image_studio_worker_loop_last_tick...)
+        # y Keep abrio IMG-21009 «Image Studio degradado» con los workers sanos:
+        # mismo patron documentado que CRIT-17464/CRIT-16462 (SC-2907). El par
+        # calibrado pocharlies.vmsingle-memory mide anon/available del proceso,
+        # asi que se autoajusta al limite nuevo (runbook infra-alert-ops: nada
+        # que recalcular en la expr). Nodo actual atlantic: 79/128 GiB usados
+        # (61%), margen de sobra para 32Gi. Causa de fondo = cardinalidad
+        # creciente (indexdb 75 GiB, SC-6637): va al problema SC-5644, no aqui.
+        memory: 32Gi
     extraArgs:
       maxLabelsPerTimeseries: "200"
     # Keep metrics for 48 hours. This is intentionally expressed in hours so
