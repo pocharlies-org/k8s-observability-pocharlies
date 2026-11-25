@@ -1,0 +1,112 @@
+# Cada regla de Synapse/RabbitMQ nombra su instalación (namespace). Los casos
+# demuestran que una serie de `synapse2` (mismos nombres de job y de cola, su
+# namespace) NO tapa la ausencia ni la parada de la de producción.
+# `rules` la genera tests/test_synapse_installation_promtool.py desde las VMRule
+# pocharlies-synapse-core y pocharlies-rabbitmq de manifests/rules.yaml.
+rule_files:
+  - synapse-installation.rules.yaml
+evaluation_interval: 1m
+tests:
+  - interval: 1m
+    name: engine de producción ausente del scrape + engine de synapse2 vivo -> dispara por producción
+    input_series:
+      - series: 'up{job="synapse-engine",namespace="synapse2"}'
+        values: '1x12'
+      - series: 'up{job="synapse-dispatcher",namespace="synapse2"}'
+        values: '1x12'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: SynapseCoreAbsent
+        exp_alerts:
+          - exp_labels: {severity: critical, area: availability, component: synapse, pipeline_blind: "true", job: synapse-engine, namespace: synapse}
+            exp_annotations:
+              summary: "Synapse core singleton down (engine/dispatcher)"
+              description: "synapse-engine and/or synapse-dispatcher is absent from scrape or reporting up==0 for >3m (job label on this alert names the affected side; absent() legs carry only the matched job and namespace). The control plane is degraded: engine=workflow scheduling, dispatcher=outbox drain onto RabbitMQ. First rule out a scrape-path gap (VmagentRemoteWriteFailing / ScrapePathGap). Check `kubectl -n synapse get pods -l 'app.kubernetes.io/name in (synapse-engine,synapse-dispatcher)'` and the pod logs/events."
+          - exp_labels: {severity: critical, area: availability, component: synapse, pipeline_blind: "true", job: synapse-dispatcher, namespace: synapse}
+            exp_annotations:
+              summary: "Synapse core singleton down (engine/dispatcher)"
+              description: "synapse-engine and/or synapse-dispatcher is absent from scrape or reporting up==0 for >3m (job label on this alert names the affected side; absent() legs carry only the matched job and namespace). The control plane is degraded: engine=workflow scheduling, dispatcher=outbox drain onto RabbitMQ. First rule out a scrape-path gap (VmagentRemoteWriteFailing / ScrapePathGap). Check `kubectl -n synapse get pods -l 'app.kubernetes.io/name in (synapse-engine,synapse-dispatcher)'` and the pod logs/events."
+
+  - interval: 1m
+    name: producción sana y synapse2 sin rascar -> no dispara
+    input_series:
+      - series: 'up{job="synapse-engine",namespace="synapse"}'
+        values: '1x12'
+      - series: 'up{job="synapse-dispatcher",namespace="synapse"}'
+        values: '1x12'
+      - series: 'up{job="synapse-engine",namespace="synapse2"}'
+        values: '0x12'
+      - series: 'up{job="synapse-dispatcher",namespace="synapse2"}'
+        values: '0x12'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: SynapseCoreAbsent
+        exp_alerts: []
+
+  - interval: 1m
+    name: dispatcher de producción parado + el de synapse2 publicando -> dispara por producción
+    input_series:
+      - series: 'synapse_dispatcher_published_total{namespace="synapse"}'
+        values: '5x20'
+      - series: 'synapse_outbox_unpublished_rows{namespace="synapse",exhausted="false"}'
+        values: '3x20'
+      - series: 'synapse_dispatcher_published_total{namespace="synapse2"}'
+        values: '10+10x20'
+      - series: 'synapse_outbox_unpublished_rows{namespace="synapse2",exhausted="false"}'
+        values: '3x20'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: SynapseDispatcherNotPublishing
+        exp_alerts:
+          - exp_labels: {severity: critical, area: messaging, component: synapse}
+            exp_annotations:
+              summary: "Synapse dispatcher not draining outbox despite backlog"
+              description: "synapse-dispatcher published 0 events in 15m while the transactional outbox holds unexhausted (still-retryable) rows. Events are being written but never reach RabbitMQ. Check the dispatcher pod (publisher channel / broker connection) and RabbitmqMemoryAlarmActive (a publish-block would also stall this)."
+
+  - interval: 1m
+    name: cola sin consumidor en los dos brokers -> una alerta por instalación, con su namespace
+    input_series:
+      - series: 'rabbitmq_detailed_queue_consumers{namespace="databases",job="shared-rabbitmq",vhost="/synapse",queue="engine.demo.events"}'
+        values: '0x14'
+      - series: 'rabbitmq_detailed_queue_consumers{namespace="databases",job="shared-rabbitmq-headless",vhost="/synapse",queue="engine.demo.events"}'
+        values: '0x14'
+      - series: 'rabbitmq_detailed_queue_messages_ready{namespace="databases",job="shared-rabbitmq",vhost="/synapse",queue="engine.demo.events"}'
+        values: '5x14'
+      - series: 'rabbitmq_detailed_queue_messages_ready{namespace="databases",job="shared-rabbitmq-headless",vhost="/synapse",queue="engine.demo.events"}'
+        values: '5x14'
+      - series: 'rabbitmq_detailed_queue_consumers{namespace="synapse2",job="synapse-rmq-metricas",vhost="/synapse",queue="engine.demo.events"}'
+        values: '0x14'
+      - series: 'rabbitmq_detailed_queue_messages_ready{namespace="synapse2",job="synapse-rmq-metricas",vhost="/synapse",queue="engine.demo.events"}'
+        values: '5x14'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: RabbitmqFunctionalQueueNoConsumer
+        exp_alerts:
+          - exp_labels: {severity: warning, area: messaging, component: shared-rabbitmq, namespace: databases, vhost: /synapse, queue: engine.demo.events}
+            exp_annotations:
+              summary: "RabbitMQ queue databases/engine.demo.events has messages but no consumer"
+              description: "Queue engine.demo.events (vhost /synapse) has ready messages with zero consumers for 10m. The handler is dead or disconnected — messages will sit until a consumer reattaches."
+          - exp_labels: {severity: warning, area: messaging, component: shared-rabbitmq, namespace: synapse2, vhost: /synapse, queue: engine.demo.events}
+            exp_annotations:
+              summary: "RabbitMQ queue synapse2/engine.demo.events has messages but no consumer"
+              description: "Queue engine.demo.events (vhost /synapse) has ready messages with zero consumers for 10m. The handler is dead or disconnected — messages will sit until a consumer reattaches."
+
+  - interval: 1m
+    name: consumidor vivo en synapse2 y muerto en producción -> solo producción alerta (no la tapa)
+    input_series:
+      - series: 'rabbitmq_detailed_queue_consumers{namespace="databases",job="shared-rabbitmq",vhost="/synapse",queue="engine.demo.events"}'
+        values: '0x14'
+      - series: 'rabbitmq_detailed_queue_messages_ready{namespace="databases",job="shared-rabbitmq",vhost="/synapse",queue="engine.demo.events"}'
+        values: '5x14'
+      - series: 'rabbitmq_detailed_queue_consumers{namespace="synapse2",job="synapse-rmq-metricas",vhost="/synapse",queue="engine.demo.events"}'
+        values: '1x14'
+      - series: 'rabbitmq_detailed_queue_messages_ready{namespace="synapse2",job="synapse-rmq-metricas",vhost="/synapse",queue="engine.demo.events"}'
+        values: '5x14'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: RabbitmqFunctionalQueueNoConsumer
+        exp_alerts:
+          - exp_labels: {severity: warning, area: messaging, component: shared-rabbitmq, namespace: databases, vhost: /synapse, queue: engine.demo.events}
+            exp_annotations:
+              summary: "RabbitMQ queue databases/engine.demo.events has messages but no consumer"
+              description: "Queue engine.demo.events (vhost /synapse) has ready messages with zero consumers for 10m. The handler is dead or disconnected — messages will sit until a consumer reattaches."
