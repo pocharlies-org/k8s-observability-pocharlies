@@ -1028,6 +1028,11 @@ backend:
     #                         aurora-link, aurora-report-back)
     # No duplicar ejecuciones sigue garantizado por el lock de unicidad sobre
     # workflow_execution en `get_workflows_that_should_run`.
+    # Desde INFRA-1572 (REDIS=true, abajo) la rama no-REDIS de arriba ya no es
+    # el camino de este pod: el evento va a ARQ y quien drena sus workflows de
+    # evento en memoria es keepsvc-worker (keep/worker.yaml). Se mantiene
+    # SCHEDULER=true porque es el default de Keep (api.py) y porque fija la
+    # repartición documentada; quitarlo no cambiaría el arranque.
     - name: SCHEDULER
       value: "true"
     - name: WORKFLOWS_INTERVAL_ENABLED
