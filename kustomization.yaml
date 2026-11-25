@@ -38,6 +38,11 @@ resources:
   # API (la raíz del keep-hub-degraded de SC-1600). Requiere el SCHEDULER=false
   # de keep/values.yaml; juntos dejan un solo ejecutor de workflows periódicos.
   - keep/scheduler.yaml
+  # INFRA-1572: ingesta asíncrona (INFRA-1336 P2). Redis de la cola ARQ (AOF) y
+  # el consumidor único FIFO que procesa los eventos encolados por keep-backend
+  # (REDIS=true): el POST de Alertmanager responde 202 sin procesar (C1, C4).
+  - keep/redis.yaml
+  - keep/worker.yaml
   - manifests/alertmanager-config.yaml
   - manifests/probes.yaml
   - manifests/rules.yaml

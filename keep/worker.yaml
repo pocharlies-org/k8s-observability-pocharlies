@@ -1,0 +1,214 @@
+# INFRA-1572 — El consumidor ARQ de Keep, en un deployment dedicado.
+#
+# POR QUÉ EXISTE. Sin Redis, el POST /alerts/event/prometheus se procesaba en un
+# ThreadPoolExecutor (KEEP_EVENT_WORKERS=5) DENTRO del worker gunicorn que sirve
+# el webhook: una ráfaga saturaba el executor y el pool de Postgres del propio
+# worker, Alertmanager abandonaba el POST y perdía lotes (keep-hub-degraded
+# e1144f20eb, SC-5390; ráfagas >30 s medidas en vmalertmanager el 12/11). Con
+# REDIS=true en keep-backend (keep/values.yaml), `receive_event` responde 202
+# tras validar+parsear y encola `process_event_in_worker` a KEEP_ARQ_QUEUE_BASIC;
+# este pod es quien la saca de la cola y la procesa. Criterios C1 (p99 <2 s) y
+# C4 (resoluciones con el procesamiento saturado) de INFRA-1336.
+#
+# CONSUMIDOR ÚNICO, y es el requisito no negociable: el ORDEN firing→resolved.
+# ARQ upstream no tiene particionado por clave (no se inventa): con dos
+# consumidores, un `resolved` puede salir antes que su `firing`. Aquí el orden es
+# FIFO serial por construcción: replicas=1 + strategy Recreate (nunca dos pods a
+# la vez) + gunicorn --workers 1 + KEEP_EVENT_WORKERS=1 (el pool interno de 1
+# hilo serializa en orden de llegada). keep-backend no consume: su `command` en
+# keep/values.yaml es API-only (con REDIS=true el entrypoint de la imagen
+# arrancaría 2 workers ARQ más dentro del pod de la API).
+#
+# QUÉ EJECUTA ESTE PROCESO. `run_arq_worker` (keep/api/arq_worker_gunicorn.py)
+# arranca el WorkflowManager y luego el consumidor de KEEP_ARQ_QUEUE_BASIC con el
+# pool `basic_processing` (process_event, topology, incident; sin las tareas de
+# IA). El WorkflowManager drena los workflows DISPARADOS POR EVENTO —el dispatch
+# de workflows por evento NO va a Redis upstream (la rama REDIS de
+# workflowmanager.py está comentada, TODO), así que caen en la cola en memoria de
+# ESTE proceso, que es quien procesa el evento. Los workflows de INTERVALO
+# (aurora-link, aurora-report-back) siguen siendo cosa de keepsvc-scheduler:
+# WORKFLOWS_INTERVAL_ENABLED=false aquí (y en keep-backend) para que siga habiendo
+# UN solo ejecutor de intervalos → contrato Aurora v1.3/v1.4 intacto, sin .vN+1.
+#
+# Ventana residual aceptada (documentada por el architect): un job que falla se
+# reintenta con backoff (arq.Retry, timeout fijo 30 s) y un evento posterior del
+# mismo grupo podría adelantarle; hoy, sin ARQ, un process_event que falla
+# simplemente muere (peor). La ráfaga de C1 verifica que no aparece `timed out`
+# en el log; si apareciera, se reabre la conversación de fork — no parchear a mano.
+#
+# Patrón calcado de keep/scheduler.yaml (misma imagen fijada a mano al appVersion
+# del chart 0.1.96 = keep-api:0.52.1, Recreate, envFrom keepsvc-provisioning,
+# ConfigMap /workflows, placement fuera de sauvage). Al subir keep a un chart
+# nuevo, subir también el tag de aquí al appVersion de ese chart (lo fija el test
+# tests/test_keep_async_ingest.py).
+#
+# No recibe tráfico: el Service keep-backend selecciona `keep-component: backend`
+# y este pod lleva `keep-component: worker`. El HTTP que sirve en :8080 (el stub
+# create_app() de gunicorn) no lo llama nadie; es el precio de reutilizar el
+# arranque nativo de la imagen, igual que en el scheduler.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: keepsvc-worker
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: keep
+    app.kubernetes.io/instance: keep
+    app.kubernetes.io/component: worker
+    keep-component: worker
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: keep
+      app.kubernetes.io/instance: keep
+      keep-component: worker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: keep
+        app.kubernetes.io/instance: keep
+        app.kubernetes.io/component: worker
+        keep-component: worker
+    spec:
+      serviceAccountName: keep
+      # Mismo sitio que keep-backend y keepsvc-scheduler (SC-3980): fuera de
+      # sauvage y con preferencia por ks5-nvme, cerca de su Postgres (CNPG en
+      # ks5-cp-2/3) y de su Redis (keepsvc-redis, mismo namespace).
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: NotIn
+                    values:
+                      - sauvage
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              preference:
+                matchExpressions:
+                  - key: node-pool
+                    operator: In
+                    values:
+                      - ks5-nvme
+      containers:
+        - name: worker
+          # = appVersion del chart keep 0.1.96; mantener en pareja (arriba).
+          image: us-central1-docker.pkg.dev/keephq/keep/keep-api:0.52.1
+          imagePullPolicy: IfNotPresent
+          # El modo ARQ-worker del entrypoint de la imagen (keep/entrypoint.sh,
+          # rama REDIS=true), fijado a mano a 1 worker y sin el dual-mode de la
+          # API. Clase real en 0.52.1: keep.api.arq_worker_gunicorn.ARQGunicornWorker
+          # (run_arq_worker: WorkflowManager + consumidor de KEEP_ARQ_QUEUE_BASIC);
+          # el app es el stub create_app() que usa upstream. --timeout 120 = el
+          # ARQ_WORKER_TIMEOUT default del entrypoint (el timeout del JOB es 30 s
+          # fijo en arq_worker.py; el de gunicorn es el latido del worker).
+          command:
+            - /venv/bin/python
+            - /venv/bin/gunicorn
+            - --bind
+            - 0.0.0.0:8080
+            - --workers
+            - "1"
+            - --timeout
+            - "120"
+            - -k
+            - keep.api.arq_worker_gunicorn.ARQGunicornWorker
+            - -c
+            - /venv/lib/python3.13/site-packages/keep/api/config.py
+            - --preload
+            - keep.api.arq_worker_gunicorn:create_app()
+          env:
+            # El worker consume de Redis: necesita el mismo REDIS_HOST que el
+            # backend (keep/values.yaml). KEEP_ARQ_TASK_POOL es el VALOR del
+            # pool, no el nombre de la constante: consts.py lo compara con
+            # "basic_processing" en minúsculas — cualquier otra cadena lanza
+            # ValueError y el worker se sale (os._exit(1) en run_arq_worker).
+            - name: REDIS
+              value: "true"
+            - name: REDIS_HOST
+              value: keepsvc-redis
+            - name: KEEP_ARQ_TASK_POOL
+              value: basic_processing
+            # El pool interno de 1 hilo: serializa FIFO en orden de llegada
+            # (orden firing→resolved; ver cabecera).
+            - name: KEEP_EVENT_WORKERS
+              value: "1"
+            # Reparto declarado, no heredado del default (como en
+            # keep/values.yaml y keep/scheduler.yaml): este proceso corre el
+            # WorkflowManager para los workflows DE EVENTO (la cola en memoria
+            # del que procesa el evento); los de INTERVALO son de
+            # keepsvc-scheduler — único ejecutor, contrato Aurora intacto.
+            - name: SCHEDULER
+              value: "true"
+            - name: WORKFLOWS_INTERVAL_ENABLED
+              value: "false"
+            # CONSUMER=false: el EventSubscriber consume el bus de eventos
+            # INTERNOS de Keep; aquí no sirve el API y publicar/consumir entre
+            # procesos no tiene caso (el mismo motivo que en scheduler.yaml).
+            - name: CONSUMER
+              value: "false"
+            - name: PORT
+              value: "8080"
+            - name: KEEP_WORKFLOWS_DIRECTORY
+              value: /workflows
+            - name: SECRET_MANAGER_TYPE
+              value: k8s
+            - name: PUSHER_DISABLED
+              value: "true"
+            - name: PROMETHEUS_MULTIPROC_DIR
+              value: /tmp/prometheus
+            # Pool 5+10 (los defaults de db_utils.py) para 1 proceso: el worker
+            # hereda el procesamiento de eventos que estaba en los 4 workers de
+            # la API; medir tras el merge (architect, INFRA-1336). pre-ping por
+            # el idle_in_transaction_session_timeout del servidor (ver el
+            # bloque de pool en keep/values.yaml).
+            - name: DATABASE_POOL_SIZE
+              value: "5"
+            - name: DATABASE_MAX_OVERFLOW
+              value: "10"
+            - name: KEEP_DB_PRE_PING_ENABLED
+              value: "true"
+            - name: K8S_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.namespace
+            - name: DATABASE_CONNECTION_STRING
+              valueFrom:
+                secretKeyRef:
+                  name: keepsvc-database
+                  key: dsn
+          # KEEP_DEFAULT_API_KEYS y KEEP_PROVIDERS: la provisión de providers
+          # que config.py hace al arrancar el worker lee de aquí, igual que la
+          # API y el scheduler.
+          envFrom:
+            - secretRef:
+                name: keepsvc-provisioning
+          volumeMounts:
+            # El MISMO ConfigMap que monta keep-backend (lo genera el chart desde
+            # provision.workflows de keep/values.yaml): config.py los provisiona
+            # al arrancar y prefiere encontrarlos ahí.
+            - name: workflows
+              mountPath: /workflows
+              readOnly: true
+            - name: state-volume
+              mountPath: /state
+          resources:
+            # Del orden del backend (este proceso hace el trabajo que hacían sus
+            # 4 workers para la ingesta) sin llegar a su techo: 1 proceso.
+            requests:
+              cpu: 100m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 2Gi
+      volumes:
+        - name: workflows
+          configMap:
+            name: keep-workflows
+        - name: state-volume
+          emptyDir: {}

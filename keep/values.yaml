@@ -970,6 +970,34 @@ backend:
                   - key: severity_drift
                     value: "{{ alert.labels.severity }}"
 
+  # INFRA-1572 — API-only, sin workers ARQ dentro del pod de la API.
+  #
+  # Con REDIS=true (abajo) el entrypoint de la imagen (keep/entrypoint.sh)
+  # arranca modo dual: API + un gunicorn propio de workers ARQ (KEEP_WORKERS
+  # default 2) en el mismo pod. Serían dos consumidores más de
+  # KEEP_ARQ_QUEUE_BASIC junto a keepsvc-worker (keep/worker.yaml) y dos
+  # consumidores reordenan la cola: el orden firing→resolved exige UNO solo
+  # (decisión del architect, INFRA-1336). Por eso se fija `command` —el chart
+  # lo admite (templates/backend.yaml: {{- if .Values.backend.command }})— con
+  # el CMD nativo de la imagen (gunicorn API, --workers 4): mismo arranque
+  # (config.py: migraciones + provisión de providers y workflows), cero
+  # consumidores ARQ aquí. Efecto asumido: tampoco corre server_jobs_bg.py
+  # (demo mode + uptime reporting, telemetría a keephq) — el mismo que ya
+  # acepta keepsvc-scheduler, que usa este mismo patrón desde SC-1711.
+  command:
+    - /venv/bin/python
+    - /venv/bin/gunicorn
+    - keep.api.api:get_app
+    - --bind
+    - 0.0.0.0:8080
+    - --workers
+    - "4"
+    - -k
+    - uvicorn.workers.UvicornWorker
+    - -c
+    - /venv/lib/python3.13/site-packages/keep/api/config.py
+    - --preload
+
   env:
     # URL pública del backend, la que el navegador usa. Con el ingress del chart
     # desactivado hay que fijarla: los helpers caerían a /backend.
@@ -1000,10 +1028,31 @@ backend:
     #                         aurora-link, aurora-report-back)
     # No duplicar ejecuciones sigue garantizado por el lock de unicidad sobre
     # workflow_execution en `get_workflows_that_should_run`.
+    # Desde INFRA-1572 (REDIS=true, abajo) la rama no-REDIS de arriba ya no es
+    # el camino de este pod: el evento va a ARQ y quien drena sus workflows de
+    # evento en memoria es keepsvc-worker (keep/worker.yaml). Se mantiene
+    # SCHEDULER=true porque es el default de Keep (api.py) y porque fija la
+    # repartición documentada; quitarlo no cambiaría el arranque.
     - name: SCHEDULER
       value: "true"
     - name: WORKFLOWS_INTERVAL_ENABLED
       value: "false"
+    # --- INFRA-1572: ingesta asíncrona (ARQ/Redis), fuera del camino de respuesta ---
+    # Con REDIS=true, `receive_event` (keep/api/routes/alerts.py) responde 202 tras
+    # validar+parsear y encola `process_event_in_worker` a KEEP_ARQ_QUEUE_BASIC
+    # (Redis keepsvc-redis, keep/redis.yaml); quien la procesa es keepsvc-worker
+    # (keep/worker.yaml), consumidor único FIFO. Sin esto, el procesamiento corría
+    # en un ThreadPoolExecutor (KEEP_EVENT_WORKERS=5) DENTRO del worker gunicorn que
+    # sirve el webhook: la ráfaga saturaba el executor y el pool de Postgres del
+    # propio worker, Alertmanager abandonaba el POST y perdía lotes (keep-hub-
+    # degraded e1144f20eb, SC-5390). El orden firing→resolved lo garantiza el
+    # consumidor único del worker; por eso el `command` de arriba deja esta API sin
+    # consumidores ARQ. Redis caído ⇒ el enqueue falla ⇒ Alertmanager reintenta
+    # (receiver 90 s, INFRA-1335): no se pierde mientras reintenta.
+    - name: REDIS
+      value: "true"
+    - name: REDIS_HOST
+      value: keepsvc-redis
     # --- SC-1600: el timeout de gunicorn mata los webhooks de Alertmanager ---
     # Medido el 02-10-2026 (HUB-7755): cada 15 min, durante la pasada del
     # stale-reaper, los 4 workers dejan de latir 30 s y gunicorn los mata con
