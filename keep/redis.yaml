@@ -1,0 +1,155 @@
+# INFRA-1572 — Redis de la cola ARQ de Keep (keepsvc-redis).
+#
+# POR QUÉ EXISTE. Con REDIS=true en keep-backend (keep/values.yaml), Keep encola
+# el procesamiento de cada evento (`process_event_in_worker`) en KEEP_ARQ_QUEUE_BASIC
+# de Redis, y keepsvc-worker (keep/worker.yaml) lo consume: el POST de
+# Alertmanager responde 202 sin procesar (criterio C1 de INFRA-1336, p99 <2 s).
+# El chart keep 0.1.96 NO trae plantilla de Redis y las Redises del clúster
+# (argocd, harbor, langfuse, aurora) son de otros servicios — no se reutilizan:
+# cada servicio es dueño de sus datos (decisión del architect, INFRA-1336).
+#
+# AOF (appendonly yes) a propósito: un evento encolado no se pierde si Redis
+# reinicia. Sin persistencia, un reinicio de Redis con la cola llena sería una
+# pérdida silenciosa de alertas — exactamente la clase de fallo que esta épica
+# persigue (keep-hub-degraded).
+#
+# Solo in-cluster: ningún IngressRoute, ningún Service externo. El acceso es por
+# DNS interno (keepsvc-redis.monitoring.svc:6379) y sin contraseña: el namespace
+# monitoring no es de usuarios. Redis caído ⇒ el enqueue del backend falla ⇒
+# Alertmanager reintenta (receiver 90 s, INFRA-1335): no se pierde mientras
+# reintenta; es la red, no esto.
+#
+# strategy: Recreate: el PVC es ReadWriteOnce (Longhorn, replicado entre nodos);
+# RollingUpdate no tendría dónde montar el segundo pod. Con Recreate el hueco de
+# unos segundos lo cubre el reintento de Alertmanager.
+#
+# Placement coherente con keep-backend y keepsvc-scheduler: fuera de sauvage
+# (SC-3980/SC-1706: su disco congeló la ingesta) y con preferencia por
+# ks5-nvme. Redis vive del PVC, no del disco local, pero la coherencia evita
+# que ingesta, cola y worker caigan en el nodo malo a la vez.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: keepsvc-redis-data
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: keep
+    app.kubernetes.io/instance: keep
+    app.kubernetes.io/component: redis
+    keep-component: redis
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      # La cola es transitoria (los jobs se consumen en segundos); el AOF de un
+      # día de ingesta mide decenas de MB. 1 Gi de techo con Redis podando por
+      # consumo: si se llena, el enqueue falla y Alertmanager reintenta (red).
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: keepsvc-redis
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: keep
+    app.kubernetes.io/instance: keep
+    app.kubernetes.io/component: redis
+    keep-component: redis
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: keep
+      app.kubernetes.io/instance: keep
+      keep-component: redis
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: keep
+        app.kubernetes.io/instance: keep
+        app.kubernetes.io/component: redis
+        keep-component: redis
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: NotIn
+                    values:
+                      - sauvage
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              preference:
+                matchExpressions:
+                  - key: node-pool
+                    operator: In
+                    values:
+                      - ks5-nvme
+      containers:
+        - name: redis
+          image: redis:7.2-alpine
+          imagePullPolicy: IfNotPresent
+          # AOF activado por bandera de arranque (no config file): es la forma
+          # canónica y deja el manifiesto autoportado. appendfsync everysec: el
+          # default de Redis, un segundo de pérdida máxima en un corte duro — y
+          # con el reintento de Alertmanager por detrás, ni eso se pierde.
+          command:
+            - redis-server
+            - --appendonly
+            - "yes"
+          ports:
+            - name: redis
+              containerPort: 6379
+          livenessProbe:
+            exec:
+              command: ["redis-cli", "-h", "127.0.0.1", "ping"]
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "-h", "127.0.0.1", "ping"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          resources:
+            requests:
+              cpu: 10m
+              memory: 64Mi
+            limits:
+              # La cola en memoria + buffers AOF. Los payloads de evento son
+              # JSON de alertas (KB); con maxmemory la cola no puede tumbar el
+              # nodo: Redis responde OOM al enqueue y Alertmanager reintenta.
+              cpu: 500m
+              memory: 512Mi
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: keepsvc-redis-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: keepsvc-redis
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: keep
+    app.kubernetes.io/instance: keep
+    app.kubernetes.io/component: redis
+    keep-component: redis
+spec:
+  selector:
+    app.kubernetes.io/name: keep
+    app.kubernetes.io/instance: keep
+    keep-component: redis
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: redis
