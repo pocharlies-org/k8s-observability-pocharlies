@@ -7,6 +7,9 @@ Pins:
 2. Llama a la conexión `synapse_keep` y su `with:` (git) no lleva cabeceras ni token: solo `{incidente, estado}`.
 3. La conexión `synapse_keep` de KEEP_PROVIDERS apunta al Service del gateway dentro del clúster y saca el token de
    `X-Synapse-Keep-Token` de 1Password por el Connect (`key: item` + `property: field`).
+4. SC-6598: `ops-watch-ronda-resuelto` escucha `events: [updated]` (la resolución sale como `updated`) y su única action
+   solo avisa con el incidente RESUELTO: sin ese `if` cada alerta que suma al incidente sería una ronda por minuto. Mismo
+   cuerpo `{incidente, estado}` (sin `tipo`, que el adaptador llevaría al dashboard) y misma conexión.
 """
 
 import json
@@ -52,6 +55,28 @@ class OpsWatchRondaTest(unittest.TestCase):
         (dato,) = [d for d in es["spec"]["data"] if d["secretKey"] == "synapse_keep_token"]
         self.assertEqual(dato["sourceRef"]["storeRef"], {"name": "onepassword-connect", "kind": "ClusterSecretStore"})
         self.assertEqual(dato["remoteRef"], {"key": "synapse-webhook-keep", "property": "token"})
+
+
+class OpsWatchRondaResueltoTest(unittest.TestCase):
+    IF = "'{{ incident.status }}' in ['IncidentStatus.RESOLVED', 'resolved']"
+
+    def test_trigger_es_incidente_actualizado(self):
+        self.assertEqual(workflow("ops-watch-ronda-resuelto")["triggers"], [{"type": "incident", "events": ["updated"]}])
+
+    def test_solo_avisa_resuelto(self):
+        (accion,) = workflow("ops-watch-ronda-resuelto")["actions"]
+        self.assertEqual(accion["if"], self.IF)
+        # Lo que hace Keep 0.52.1 (step.py): renderiza el `{{ }}` y evalúa con asteval. El enum renderiza su repr.
+        for estado, sale in (("IncidentStatus.RESOLVED", True), ("resolved", True), ("IncidentStatus.FIRING", False),
+                             ("IncidentStatus.ACKNOWLEDGED", False), ("IncidentStatus.MERGED", False), ("", False)):
+            expr = accion["if"].replace("{{ incident.status }}", estado)
+            self.assertIs(eval(expr, {"__builtins__": {}}), sale, estado)
+
+    def test_mismo_cuerpo_y_conexion_que_la_ronda(self):
+        (accion,) = workflow("ops-watch-ronda-resuelto")["actions"]
+        (ronda,) = workflow("ops-watch-ronda")["actions"]
+        self.assertEqual(accion["provider"], ronda["provider"])
+        self.assertNotIn("tipo", accion["provider"]["with"]["body"])
 
 
 if __name__ == "__main__":
