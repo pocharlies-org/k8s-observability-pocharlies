@@ -566,7 +566,7 @@ spec:
             pipeline_blind: "true"
           annotations:
             summary: "Synapse core singleton down (engine/dispatcher)"
-            description: "synapse-engine and/or synapse-dispatcher is absent from scrape or reporting up==0 for >3m (job label on this alert names the affected side; absent() legs carry only the matched job). The control plane is degraded: engine=workflow scheduling, dispatcher=outbox drain onto RabbitMQ. First rule out a scrape-path gap (VmagentRemoteWriteFailing / ScrapePathGap). Check `kubectl -n synapse get pods -l 'app.kubernetes.io/name in (synapse-engine,synapse-dispatcher)'` and the pod logs/events."
+            description: "synapse-engine and/or synapse-dispatcher is absent from scrape or reporting up==0 for >3m (job label on this alert names the affected side; absent() legs carry only the matched job and namespace). The control plane is degraded: engine=workflow scheduling, dispatcher=outbox drain onto RabbitMQ. First rule out a scrape-path gap (VmagentRemoteWriteFailing / ScrapePathGap). Check `kubectl -n synapse get pods -l 'app.kubernetes.io/name in (synapse-engine,synapse-dispatcher)'` and the pod logs/events."
         # Dispatcher alive but the outbox is NOT draining: zero publishes over
         # 15m WHILE there is live (non-exhausted) backlog waiting. The backlog
         # guard is deliberate — an idle-but-healthy dispatcher legitimately
@@ -769,7 +769,7 @@ spec:
         # (which catches per-queue GROWTH over 6h). DEDUP IS MANDATORY: every
         # DLQ series is scraped by BOTH the shared-rabbitmq and
         # shared-rabbitmq-headless jobs, so a naive sum() double-counts
-        # (564 vs the real 282). `sum(max by (queue) (...))` collapses the two
+        # (564 vs the real 282). `sum by (namespace) (max by (namespace, queue) (...))` collapses the two
         # jobs back to the true per-queue depth. Threshold 350 sits above the
         # 2026-07-22 baseline of 282 sediment messages (~68 headroom): only a
         # bulk NEW dead-lettering event trips it, so the standing graveyard does
@@ -1252,7 +1252,7 @@ spec:
           # DEDUPE (2026-08-04): every queue is scraped TWICE — the shared-rabbitmq
           # and shared-rabbitmq-headless Services both point at the same broker, so
           # each series exists once per job (measured: 406 series for 203 queues).
-          # Without `max by (vhost, queue)` this alert fired twice per dead queue,
+          # Without `max by (namespace, vhost, queue)` this alert fired twice per dead queue,
           # doubling the noise for the same incident. Same fix the
           # synapse-conversation VMRule already documents for its scoped DLQ alert.
           #
@@ -2627,7 +2627,7 @@ spec:
           # no bloqueante (medido: serie ausente >=24 h; /api/v1/query a las
           # 19:00Z devolvia el RHS como VECTOR VACIO). A and on (vhost) B con B
           # vacio es vacio para cualquier A: con facturas entrando la alerta no
-          # se ponia ni pending. Por eso el RHS es ahora `unless on (vhost)
+          # se ponia ni pending. Por eso el RHS es ahora `unless on (namespace, vhost)
           # (B > 0)`: serie en cero O AUSENTE deja el LHS intacto y la alerta
           # DISPARA tras for: 30m — degrada a fuego, no a silencio. Si alguien
           # "arregla" el exporter y la serie vuelve, la semantica NO cambia (OCR
@@ -2645,7 +2645,7 @@ spec:
           # delivered_ack_total. NO volver a delivered_total: re-entronizaria
           # una regla sorda, igual que volver a `and ... == 0` re-entronizaba
           # la mudez del join (parrafo anterior, sigue vigente: la serie de
-          # canal puede faltar y el unless lo cubre). Y max by (vhost) en vez
+          # canal puede faltar y el unless lo cubre). Y max by (namespace, vhost) en vez
           # de sum by: el scrape dual shared-rabbitmq +
           # shared-rabbitmq-headless duplica cada serie y sum inflaria el
           # valor x2.

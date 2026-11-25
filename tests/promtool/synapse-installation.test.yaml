@@ -21,11 +21,11 @@ tests:
           - exp_labels: {severity: critical, area: availability, component: synapse, pipeline_blind: "true", job: synapse-engine, namespace: synapse}
             exp_annotations:
               summary: "Synapse core singleton down (engine/dispatcher)"
-              description: "synapse-engine and/or synapse-dispatcher is absent from scrape or reporting up==0 for >3m (job label on this alert names the affected side; absent() legs carry only the matched job). The control plane is degraded: engine=workflow scheduling, dispatcher=outbox drain onto RabbitMQ. First rule out a scrape-path gap (VmagentRemoteWriteFailing / ScrapePathGap). Check `kubectl -n synapse get pods -l 'app.kubernetes.io/name in (synapse-engine,synapse-dispatcher)'` and the pod logs/events."
+              description: "synapse-engine and/or synapse-dispatcher is absent from scrape or reporting up==0 for >3m (job label on this alert names the affected side; absent() legs carry only the matched job and namespace). The control plane is degraded: engine=workflow scheduling, dispatcher=outbox drain onto RabbitMQ. First rule out a scrape-path gap (VmagentRemoteWriteFailing / ScrapePathGap). Check `kubectl -n synapse get pods -l 'app.kubernetes.io/name in (synapse-engine,synapse-dispatcher)'` and the pod logs/events."
           - exp_labels: {severity: critical, area: availability, component: synapse, pipeline_blind: "true", job: synapse-dispatcher, namespace: synapse}
             exp_annotations:
               summary: "Synapse core singleton down (engine/dispatcher)"
-              description: "synapse-engine and/or synapse-dispatcher is absent from scrape or reporting up==0 for >3m (job label on this alert names the affected side; absent() legs carry only the matched job). The control plane is degraded: engine=workflow scheduling, dispatcher=outbox drain onto RabbitMQ. First rule out a scrape-path gap (VmagentRemoteWriteFailing / ScrapePathGap). Check `kubectl -n synapse get pods -l 'app.kubernetes.io/name in (synapse-engine,synapse-dispatcher)'` and the pod logs/events."
+              description: "synapse-engine and/or synapse-dispatcher is absent from scrape or reporting up==0 for >3m (job label on this alert names the affected side; absent() legs carry only the matched job and namespace). The control plane is degraded: engine=workflow scheduling, dispatcher=outbox drain onto RabbitMQ. First rule out a scrape-path gap (VmagentRemoteWriteFailing / ScrapePathGap). Check `kubectl -n synapse get pods -l 'app.kubernetes.io/name in (synapse-engine,synapse-dispatcher)'` and the pod logs/events."
 
   - interval: 1m
     name: producción sana y synapse2 sin rascar -> no dispara
