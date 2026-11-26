@@ -91,9 +91,10 @@ igual). Necesita Postgres: sin `AURORA_TEST_PG_DSN` se salta en local y **falla 
 ## 8. Decisiones y trampas
 
 - `2026-11-23` · DGX-1789: **la sesión de arreglo se cierra con su incidente**. El workflow `alertas-cierre` escucha
-  `type: incident` / `events: [updated]` (la resolución de Keep 0.52.1 sale como `updated`, no trae evento propio) y,
-  solo cuando `incident.status = resolved` (`{{ incident.status }}` renderiza el repr del enum, `IncidentStatus.RESOLVED`,
-  y la query lo normaliza), publica por la conexión `synapse_keep` `{tipo: cierre, fingerprints}`; cada
+  `type: incident` / `events: [updated, deleted]` (la resolución de Keep 0.52.1 sale como `updated`, no trae evento
+  propio; el borrado por API/UI sale como `deleted`, INFRA-1610) y, solo cuando `incident.status` es `resolved` o
+  `deleted` (`{{ incident.status }}` renderiza el repr del enum, `IncidentStatus.RESOLVED`, y la query lo normaliza),
+  publica por la conexión `synapse_keep` `{tipo: cierre, fingerprints}`; cada
   fingerprint es el del despacho (= `substr(md5(keep_incident_id),1,16)`, el mismo con el que el RCA abrió la sesión y
   la clave `keep-<fingerprint>` del lanzador). El step devuelve SIEMPRE una fila (`LEFT JOIN` sobre `(VALUES (1))`)
   porque el `if` no existe en los steps y con 0 filas `results.0.0` renderiza vacío; sin columna nueva, el cierre del
