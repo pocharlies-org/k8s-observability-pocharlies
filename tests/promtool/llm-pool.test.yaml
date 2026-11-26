@@ -1,0 +1,125 @@
+# SC-6653: casos de LlmPoolCapabilityUnavailable (promtool test rules). `rules` la
+# genera tests/test_sc6653_llm_pool_promtool.py desde manifests/rules.yaml.
+# Lo que fijan: el absent() sigue disparando con KSM vivo y el slice fuera (el caso
+# por el que existe la regla, 2026-08-19) y NO dispara cuando kube-state-metrics
+# está caído — el gap de scrape del 25-11 22:35-22:39Z montó CRIT-21011 con los dos
+# pools sanos (ready endpoints nunca dejaron de valer 1).
+rule_files:
+  - llm-pool.rules.yaml
+evaluation_interval: 1m
+tests:
+  - interval: 1m
+    name: KSM vivo y el slice desaparecido dispara por absent (caso portante)
+    input_series:
+      - series: 'up{job="kube-state-metrics"}'
+        values: '1x12'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: LlmPoolCapabilityUnavailable
+        exp_alerts:
+          - exp_labels:
+              namespace: llm
+              severity: critical
+              area: kubernetes
+              workload_class: llm-pool
+              pool: bge-embedding
+            exp_annotations:
+              summary: "LLM pool Service has no ready endpoint"
+              description: >-
+                The bge-embedding pool Service has no ready endpoint, so everything that
+                embeds or reranks (brain, litellm, openclaw) is failing and there is no
+                CPU fallback. Note this fires on zero ENDPOINTS, not zero replicas:
+                healthy pods sitting next to a Service whose label selector (bge-pool)
+                matches none of them looks exactly like this, and the brain will answer
+                200 with zero sources rather than erroring. Check `kubectl get
+                endpointslices -n llm | grep bge` first, then the pods' bge-pool label,
+                then the KEDA ScaledObjects and whether the gpu_arbiter preempted a half.
+          - exp_labels:
+              namespace: llm
+              severity: critical
+              area: kubernetes
+              workload_class: llm-pool
+              pool: bge-reranker
+            exp_annotations:
+              summary: "LLM pool Service has no ready endpoint"
+              description: >-
+                The bge-reranker pool Service has no ready endpoint, so everything that
+                embeds or reranks (brain, litellm, openclaw) is failing and there is no
+                CPU fallback. Note this fires on zero ENDPOINTS, not zero replicas:
+                healthy pods sitting next to a Service whose label selector (bge-pool)
+                matches none of them looks exactly like this, and the brain will answer
+                200 with zero sources rather than erroring. Check `kubectl get
+                endpointslices -n llm | grep bge` first, then the pods' bge-pool label,
+                then the KEDA ScaledObjects and whether the gpu_arbiter preempted a half.
+
+  - interval: 1m
+    name: KSM caído (up=0) y slice ausente guarda silencio (SC-6653)
+    input_series:
+      - series: 'up{job="kube-state-metrics"}'
+        values: '0x12'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: LlmPoolCapabilityUnavailable
+        exp_alerts: []
+
+  - interval: 1m
+    name: KSM vivo y el slice presente con 0 endpoints ready dispara por la rama real
+    input_series:
+      - series: 'up{job="kube-state-metrics"}'
+        values: '1x12'
+      - series: 'kube_endpointslice_endpoints{namespace="llm",endpointslice="bge-m3-embedding-abcde",ready="true"}'
+        values: '0x12'
+      - series: 'kube_endpointslice_endpoints{namespace="llm",endpointslice="bge-reranker-fghij",ready="true"}'
+        values: '0x12'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: LlmPoolCapabilityUnavailable
+        exp_alerts:
+          - exp_labels:
+              namespace: llm
+              severity: critical
+              area: kubernetes
+              workload_class: llm-pool
+              pool: bge-embedding
+            exp_annotations:
+              summary: "LLM pool Service has no ready endpoint"
+              description: >-
+                The bge-embedding pool Service has no ready endpoint, so everything that
+                embeds or reranks (brain, litellm, openclaw) is failing and there is no
+                CPU fallback. Note this fires on zero ENDPOINTS, not zero replicas:
+                healthy pods sitting next to a Service whose label selector (bge-pool)
+                matches none of them looks exactly like this, and the brain will answer
+                200 with zero sources rather than erroring. Check `kubectl get
+                endpointslices -n llm | grep bge` first, then the pods' bge-pool label,
+                then the KEDA ScaledObjects and whether the gpu_arbiter preempted a half.
+          - exp_labels:
+              namespace: llm
+              severity: critical
+              area: kubernetes
+              workload_class: llm-pool
+              pool: bge-reranker
+            exp_annotations:
+              summary: "LLM pool Service has no ready endpoint"
+              description: >-
+                The bge-reranker pool Service has no ready endpoint, so everything that
+                embeds or reranks (brain, litellm, openclaw) is failing and there is no
+                CPU fallback. Note this fires on zero ENDPOINTS, not zero replicas:
+                healthy pods sitting next to a Service whose label selector (bge-pool)
+                matches none of them looks exactly like this, and the brain will answer
+                200 with zero sources rather than erroring. Check `kubectl get
+                endpointslices -n llm | grep bge` first, then the pods' bge-pool label,
+                then the KEDA ScaledObjects and whether the gpu_arbiter preempted a half.
+
+  - interval: 1m
+    name: pool sano (endpoint ready presente) no dispara
+    input_series:
+      - series: 'up{job="kube-state-metrics"}'
+        values: '1x12'
+      - series: 'kube_endpointslice_endpoints{namespace="llm",endpointslice="bge-m3-embedding-abcde",ready="true"}'
+        values: '1x12'
+      - series: 'kube_endpointslice_endpoints{namespace="llm",endpointslice="bge-reranker-fghij",ready="true"}'
+        values: '1x12'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: LlmPoolCapabilityUnavailable
+        exp_alerts: []
