@@ -1644,6 +1644,15 @@ spec:
         - alert: SiiInvoicingCronStale
           # Daily at 01:00 Europe/Madrid. 27h leaves two hours even across the
           # 25-hour autumn DST interval, including the 30-minute Job deadline.
+          #
+          # SC-6683 (SII-21053, noche del 25-11): el termino `absent` disparo con
+          # los dos CronJobs SII sanos porque lo caido era el propio backend
+          # (vmsingle OOM 23:27Z, SC-6652): sin serie fresca `absent` es cierto
+          # para cualquier metrica (tormenta SC-6682…SC-6707). Puerta `unless
+          # on()` sobre el uptime del propio vmalert, la de SC-6654/SC-6718: con
+          # vmalert llegando a VictoriaMetrics la ausencia es evidencia y el
+          # termino dispara igual; con el backend ciego no es evidencia (lo cubre
+          # AlertingRulesError).
           expr: |
             (
               time() - max by (namespace, cronjob) (
@@ -1653,9 +1662,12 @@ spec:
               ) > 27 * 3600
             )
             or
-            absent(kube_cronjob_status_last_successful_time{
-              namespace="skirmshop", cronjob="sii-invoicing"
-            })
+            (
+              absent(kube_cronjob_status_last_successful_time{
+                namespace="skirmshop", cronjob="sii-invoicing"
+              })
+              unless on() absent_over_time(vm_app_uptime_seconds{job="vmalert-vm-victoria-metrics-k8s-stack"}[10m])
+            )
           for: 15m
           labels:
             severity: critical
@@ -1664,7 +1676,7 @@ spec:
             component: shopify-sii
           annotations:
             summary: "SII daily invoicing CronJob has no recent successful run"
-            description: "CronJob skirmshop/sii-invoicing has no Kubernetes success in over 27 hours, or its status metric is absent. It should run daily at 01:00 Europe/Madrid. Check `kubectl -n skirmshop get cronjob sii-invoicing` and the newest Job/pod logs."
+            description: "CronJob skirmshop/sii-invoicing has no Kubernetes success in over 27 hours, or its status metric is absent (the absent term does not fire when vmalert's own metrics are not reaching VictoriaMetrics either: backend down, SC-6683). It should run daily at 01:00 Europe/Madrid. Check `kubectl -n skirmshop get cronjob sii-invoicing` and the newest Job/pod logs."
         - alert: SiiInvoicingTelemetryMissing
           # Only fires while Kubernetes still proves a recent successful run;
           # once that run is stale, SiiInvoicingCronStale takes over.
@@ -1768,6 +1780,15 @@ spec:
             summary: "SII monthly report completed but emitted no run telemetry"
             description: "sii-monthly-report completed less than 40h ago but VictoriaMetrics has no sii_monthly_report_last_run_timestamp sample — the push to the import endpoint failed and non-fatal Telegram/report failures would hide. Check the Job logs and the VictoriaMetrics import request."
         - alert: SiiMonthlyReportCronStale
+          # SC-6683 (incidente SII-21053, 26-11 00:05Z): el termino `absent` abrio
+          # el incidente critical con el mensual sano (ultimo exito 09-11, a 16,5
+          # dias del umbral de 32) porque lo caido era el propio backend (vmsingle
+          # OOM 23:27Z del 25-11, SC-6652): sin serie fresca `absent` es cierto
+          # para cualquier metrica. Puerta `unless on()` sobre el uptime del propio
+          # vmalert, la de SC-6654/SC-6718: con vmalert llegando a
+          # VictoriaMetrics la ausencia es evidencia y el termino dispara igual
+          # (CronJob borrado -> metrica fuera -> critica); con el backend ciego la
+          # ausencia no es evidencia (lo cubre AlertingRulesError).
           expr: |
             (
               time() - max by (namespace, cronjob) (
@@ -1777,9 +1798,12 @@ spec:
               ) > 32 * 24 * 3600
             )
             or
-            absent(kube_cronjob_status_last_successful_time{
-              namespace="skirmshop", cronjob="sii-monthly-report"
-            })
+            (
+              absent(kube_cronjob_status_last_successful_time{
+                namespace="skirmshop", cronjob="sii-monthly-report"
+              })
+              unless on() absent_over_time(vm_app_uptime_seconds{job="vmalert-vm-victoria-metrics-k8s-stack"}[10m])
+            )
           for: 30m
           labels:
             severity: critical
@@ -1788,7 +1812,7 @@ spec:
             component: shopify-sii
           annotations:
             summary: "SII monthly fiscal report has not run in over 32 days"
-            description: "CronJob skirmshop/sii-monthly-report has no Kubernetes success in over 32 days, or its status metric is absent. It should run at 01:10 Europe/Madrid on day 1. The fiscal Excel and gestoría draft may be missing; inspect the CronJob and latest Job immediately."
+            description: "CronJob skirmshop/sii-monthly-report has no Kubernetes success in over 32 days, or its status metric is absent (the absent term does not fire when vmalert's own metrics are not reaching VictoriaMetrics either: backend down, SC-6683). It should run at 01:10 Europe/Madrid on day 1. The fiscal Excel and gestoría draft may be missing; inspect the CronJob and latest Job immediately."
 ---
 # affiliate.skirmshop.es (Shopify embedded app): affiliate portal/API + the
 # go.skirmshop.es/r/* link redirects (revenue path), single pod on the edge node.
