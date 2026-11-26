@@ -7,8 +7,10 @@
 # SC-5736: el join `* on(pod) group_left(node)` propaga la label `node` a la alerta
 # (por eso `node:` en los exp_labels) y la rama predict_linear de dgx3 se fue a
 # NodeModelServerDiskPredicted (info, sin Request): los casos de dgx3 y nvidia-dgx lo cubren.
-# SC-6122: la predicción del régimen 1 mira 12 h; los dos últimos casos son la ráfaga que
-# el nodo recupera (no salta) y el llenado sostenido (salta).
+# SC-6122 e INFRA-1602: la predicción del régimen 1 mira 24 h (con [12h] disparaban las
+# ráfagas del ciclo diario — expand-snapshots de Longhorn, WAL, purgas); los tres últimos
+# casos son la ráfaga que el nodo recupera (no salta), la ráfaga del 26-11 que con [12h]
+# saltaba (no salta con [24h]) y el llenado sostenido (salta).
 rule_files:
   - node-disk.rules.yaml
 evaluation_interval: 5m
@@ -32,7 +34,7 @@ tests:
           - exp_labels: {severity: critical, area: capacity, job: node-exporter, mountpoint: "/", fstype: ext4, device: /dev/mapper/ubuntu--vg-ubuntu--lv, instance: "10.42.0.147:9100", pod: vm-prometheus-node-exporter-aaaaa, node: ubuntu}
             exp_annotations:
               summary: "Disco raíz del nodo (vm-prometheus-node-exporter-aaaaa): poco espacio libre o se llena en menos de 3 días"
-              description: "A / del nodo ubuntu (10.42.0.147:9100, /dev/mapper/ubuntu--vg-ubuntu--lv) le queda el 15.0 % libre. Salta con menos del 20 % libre, o si al ritmo de las últimas 12 h se llena en menos de 3 días (en dgx3 solo el umbral absoluto de 100 GiB libres: la predicción en un nodo servidor de modelos es churn esperado, SC-5736, y vive en NodeModelServerDiskPredicted). Por debajo del umbral de eviction (~5 %) el kubelet entra en disk-pressure y desaloja pods (el 07-10: AdGuard, el DNS de la LAN; 18/10 y 26/10: la lane vllm de dgx3). Mirar qué crece (du por directorio: /var/lib/longhorn, /home, /srv, /tmp) y liberar caché. En sauvage lo que crece es /srv/minio/data (velero-backups, harbor-blobs, cnpg-backups); en dgx3, /srv/creative (checkpoints de entrenamiento)."
+              description: "A / del nodo ubuntu (10.42.0.147:9100, /dev/mapper/ubuntu--vg-ubuntu--lv) le queda el 15.0 % libre. Salta con menos del 20 % libre, o si al ritmo de las últimas 24 h se llena en menos de 3 días (en dgx3 solo el umbral absoluto de 100 GiB libres: la predicción en un nodo servidor de modelos es churn esperado, SC-5736, y vive en NodeModelServerDiskPredicted). Por debajo del umbral de eviction (~5 %) el kubelet entra en disk-pressure y desaloja pods (el 07-10: AdGuard, el DNS de la LAN; 18/10 y 26/10: la lane vllm de dgx3). Mirar qué crece (du por directorio: /var/lib/longhorn, /home, /srv, /tmp) y liberar caché. En sauvage lo que crece es /srv/minio/data (velero-backups, harbor-blobs, cnpg-backups); en dgx3, /srv/creative (checkpoints de entrenamiento)."
   - interval: 5m
     name: sauvage (hub de backups), menos del 20 % libre (15 %) -> salta; es el caso del 25-10
     input_series:
@@ -52,7 +54,7 @@ tests:
           - exp_labels: {severity: critical, area: capacity, job: node-exporter, mountpoint: "/", fstype: ext4, device: /dev/md3, instance: "10.42.4.114:9100", pod: vm-prometheus-node-exporter-ccccc, node: sauvage}
             exp_annotations:
               summary: "Disco raíz del nodo (vm-prometheus-node-exporter-ccccc): poco espacio libre o se llena en menos de 3 días"
-              description: "A / del nodo sauvage (10.42.4.114:9100, /dev/md3) le queda el 15.0 % libre. Salta con menos del 20 % libre, o si al ritmo de las últimas 12 h se llena en menos de 3 días (en dgx3 solo el umbral absoluto de 100 GiB libres: la predicción en un nodo servidor de modelos es churn esperado, SC-5736, y vive en NodeModelServerDiskPredicted). Por debajo del umbral de eviction (~5 %) el kubelet entra en disk-pressure y desaloja pods (el 07-10: AdGuard, el DNS de la LAN; 18/10 y 26/10: la lane vllm de dgx3). Mirar qué crece (du por directorio: /var/lib/longhorn, /home, /srv, /tmp) y liberar caché. En sauvage lo que crece es /srv/minio/data (velero-backups, harbor-blobs, cnpg-backups); en dgx3, /srv/creative (checkpoints de entrenamiento)."
+              description: "A / del nodo sauvage (10.42.4.114:9100, /dev/md3) le queda el 15.0 % libre. Salta con menos del 20 % libre, o si al ritmo de las últimas 24 h se llena en menos de 3 días (en dgx3 solo el umbral absoluto de 100 GiB libres: la predicción en un nodo servidor de modelos es churn esperado, SC-5736, y vive en NodeModelServerDiskPredicted). Por debajo del umbral de eviction (~5 %) el kubelet entra en disk-pressure y desaloja pods (el 07-10: AdGuard, el DNS de la LAN; 18/10 y 26/10: la lane vllm de dgx3). Mirar qué crece (du por directorio: /var/lib/longhorn, /home, /srv, /tmp) y liberar caché. En sauvage lo que crece es /srv/minio/data (velero-backups, harbor-blobs, cnpg-backups); en dgx3, /srv/creative (checkpoints de entrenamiento)."
   - interval: 5m
     name: ubuntu, 50 % libre pero bajando 400 GB/día (se llena en ~1,3 días; a las 9 h quedan 350 GB) -> salta por la predicción
     input_series:
@@ -70,7 +72,7 @@ tests:
           - exp_labels: {severity: critical, area: capacity, job: node-exporter, mountpoint: "/", fstype: ext4, device: /dev/mapper/ubuntu--vg-ubuntu--lv, instance: "10.42.0.147:9100", pod: vm-prometheus-node-exporter-aaaaa, node: ubuntu}
             exp_annotations:
               summary: "Disco raíz del nodo (vm-prometheus-node-exporter-aaaaa): poco espacio libre o se llena en menos de 3 días"
-              description: "A / del nodo ubuntu (10.42.0.147:9100, /dev/mapper/ubuntu--vg-ubuntu--lv) le queda el 35.0 % libre. Salta con menos del 20 % libre, o si al ritmo de las últimas 12 h se llena en menos de 3 días (en dgx3 solo el umbral absoluto de 100 GiB libres: la predicción en un nodo servidor de modelos es churn esperado, SC-5736, y vive en NodeModelServerDiskPredicted). Por debajo del umbral de eviction (~5 %) el kubelet entra en disk-pressure y desaloja pods (el 07-10: AdGuard, el DNS de la LAN; 18/10 y 26/10: la lane vllm de dgx3). Mirar qué crece (du por directorio: /var/lib/longhorn, /home, /srv, /tmp) y liberar caché. En sauvage lo que crece es /srv/minio/data (velero-backups, harbor-blobs, cnpg-backups); en dgx3, /srv/creative (checkpoints de entrenamiento)."
+              description: "A / del nodo ubuntu (10.42.0.147:9100, /dev/mapper/ubuntu--vg-ubuntu--lv) le queda el 35.0 % libre. Salta con menos del 20 % libre, o si al ritmo de las últimas 24 h se llena en menos de 3 días (en dgx3 solo el umbral absoluto de 100 GiB libres: la predicción en un nodo servidor de modelos es churn esperado, SC-5736, y vive en NodeModelServerDiskPredicted). Por debajo del umbral de eviction (~5 %) el kubelet entra en disk-pressure y desaloja pods (el 07-10: AdGuard, el DNS de la LAN; 18/10 y 26/10: la lane vllm de dgx3). Mirar qué crece (du por directorio: /var/lib/longhorn, /home, /srv, /tmp) y liberar caché. En sauvage lo que crece es /srv/minio/data (velero-backups, harbor-blobs, cnpg-backups); en dgx3, /srv/creative (checkpoints de entrenamiento)."
   - interval: 5m
     name: ubuntu, 30 % libre goteando 30 GB/día (se llenaría en ~10 días) -> no salta
     input_series:
@@ -103,7 +105,7 @@ tests:
           - exp_labels: {severity: critical, area: capacity, job: node-exporter, mountpoint: "/", fstype: ext4, device: /dev/nvme0n1p2, instance: "10.42.7.110:9100", pod: vm-prometheus-node-exporter-bbbbb, node: dgx3}
             exp_annotations:
               summary: "Disco raíz del nodo (vm-prometheus-node-exporter-bbbbb): poco espacio libre o se llena en menos de 3 días"
-              description: "A / del nodo dgx3 (10.42.7.110:9100, /dev/nvme0n1p2) le queda el 5.0 % libre. Salta con menos del 20 % libre, o si al ritmo de las últimas 12 h se llena en menos de 3 días (en dgx3 solo el umbral absoluto de 100 GiB libres: la predicción en un nodo servidor de modelos es churn esperado, SC-5736, y vive en NodeModelServerDiskPredicted). Por debajo del umbral de eviction (~5 %) el kubelet entra en disk-pressure y desaloja pods (el 07-10: AdGuard, el DNS de la LAN; 18/10 y 26/10: la lane vllm de dgx3). Mirar qué crece (du por directorio: /var/lib/longhorn, /home, /srv, /tmp) y liberar caché. En sauvage lo que crece es /srv/minio/data (velero-backups, harbor-blobs, cnpg-backups); en dgx3, /srv/creative (checkpoints de entrenamiento)."
+              description: "A / del nodo dgx3 (10.42.7.110:9100, /dev/nvme0n1p2) le queda el 5.0 % libre. Salta con menos del 20 % libre, o si al ritmo de las últimas 24 h se llena en menos de 3 días (en dgx3 solo el umbral absoluto de 100 GiB libres: la predicción en un nodo servidor de modelos es churn esperado, SC-5736, y vive en NodeModelServerDiskPredicted). Por debajo del umbral de eviction (~5 %) el kubelet entra en disk-pressure y desaloja pods (el 07-10: AdGuard, el DNS de la LAN; 18/10 y 26/10: la lane vllm de dgx3). Mirar qué crece (du por directorio: /var/lib/longhorn, /home, /srv, /tmp) y liberar caché. En sauvage lo que crece es /srv/minio/data (velero-backups, harbor-blobs, cnpg-backups); en dgx3, /srv/creative (checkpoints de entrenamiento)."
   - interval: 5m
     name: dgx3 sano medido el 27-10 (18 % libre, 180 GB > 100 GiB) estable -> no salta (el 20 % fijo habría dado falso positivo)
     input_series:
@@ -136,7 +138,7 @@ tests:
           - exp_labels: {severity: critical, area: capacity, job: node-exporter, mountpoint: "/", fstype: ext4, device: /dev/md3, instance: "10.42.6.103:9100", pod: vm-prometheus-node-exporter-ddddd, node: ks5-cp-3}
             exp_annotations:
               summary: "Disco raíz del nodo (vm-prometheus-node-exporter-ddddd): poco espacio libre o se llena en menos de 3 días"
-              description: "A / del nodo ks5-cp-3 (10.42.6.103:9100, /dev/md3) le queda el 15.0 % libre. Salta con menos del 20 % libre, o si al ritmo de las últimas 12 h se llena en menos de 3 días (en dgx3 solo el umbral absoluto de 100 GiB libres: la predicción en un nodo servidor de modelos es churn esperado, SC-5736, y vive en NodeModelServerDiskPredicted). Por debajo del umbral de eviction (~5 %) el kubelet entra en disk-pressure y desaloja pods (el 07-10: AdGuard, el DNS de la LAN; 18/10 y 26/10: la lane vllm de dgx3). Mirar qué crece (du por directorio: /var/lib/longhorn, /home, /srv, /tmp) y liberar caché. En sauvage lo que crece es /srv/minio/data (velero-backups, harbor-blobs, cnpg-backups); en dgx3, /srv/creative (checkpoints de entrenamiento)."
+              description: "A / del nodo ks5-cp-3 (10.42.6.103:9100, /dev/md3) le queda el 15.0 % libre. Salta con menos del 20 % libre, o si al ritmo de las últimas 24 h se llena en menos de 3 días (en dgx3 solo el umbral absoluto de 100 GiB libres: la predicción en un nodo servidor de modelos es churn esperado, SC-5736, y vive en NodeModelServerDiskPredicted). Por debajo del umbral de eviction (~5 %) el kubelet entra en disk-pressure y desaloja pods (el 07-10: AdGuard, el DNS de la LAN; 18/10 y 26/10: la lane vllm de dgx3). Mirar qué crece (du por directorio: /var/lib/longhorn, /home, /srv, /tmp) y liberar caché. En sauvage lo que crece es /srv/minio/data (velero-backups, harbor-blobs, cnpg-backups); en dgx3, /srv/creative (checkpoints de entrenamiento)."
   - interval: 5m
     name: dgx3, 50 % libre bajando 400 GB/día (predicción < 0) -> NO salta el crítico (churn de servidor de modelos) y salta el info (SC-5736)
     input_series:
@@ -194,7 +196,7 @@ tests:
         alertname: NodeRootDiskLowOrFilling
         exp_alerts: []
   - interval: 5m
-    name: ks5-cp-3, llenado sostenido de 10 GB/h desde 380 GB libres (como el 19-11, INFRA-1461) -> salta por la predicción a 12 h
+    name: ks5-cp-3, llenado sostenido de 10 GB/h desde 380 GB libres (como el 19-11, INFRA-1461) -> salta por la predicción a 24 h
     input_series:
       - series: 'node_filesystem_avail_bytes{job="node-exporter",mountpoint="/",fstype="ext4",device="/dev/md3",instance="10.42.6.103:9100",pod="vm-prometheus-node-exporter-ddddd"}'
         values: '380000000000-833333333x156'
@@ -209,4 +211,18 @@ tests:
           - exp_labels: {severity: critical, area: capacity, job: node-exporter, mountpoint: "/", fstype: ext4, device: /dev/md3, instance: "10.42.6.103:9100", pod: vm-prometheus-node-exporter-ddddd, node: ks5-cp-3}
             exp_annotations:
               summary: "Disco raíz del nodo (vm-prometheus-node-exporter-ddddd): poco espacio libre o se llena en menos de 3 días"
-              description: "A / del nodo ks5-cp-3 (10.42.6.103:9100, /dev/md3) le queda el 29.0 % libre. Salta con menos del 20 % libre, o si al ritmo de las últimas 12 h se llena en menos de 3 días (en dgx3 solo el umbral absoluto de 100 GiB libres: la predicción en un nodo servidor de modelos es churn esperado, SC-5736, y vive en NodeModelServerDiskPredicted). Por debajo del umbral de eviction (~5 %) el kubelet entra en disk-pressure y desaloja pods (el 07-10: AdGuard, el DNS de la LAN; 18/10 y 26/10: la lane vllm de dgx3). Mirar qué crece (du por directorio: /var/lib/longhorn, /home, /srv, /tmp) y liberar caché. En sauvage lo que crece es /srv/minio/data (velero-backups, harbor-blobs, cnpg-backups); en dgx3, /srv/creative (checkpoints de entrenamiento)."
+              description: "A / del nodo ks5-cp-3 (10.42.6.103:9100, /dev/md3) le queda el 29.0 % libre. Salta con menos del 20 % libre, o si al ritmo de las últimas 24 h se llena en menos de 3 días (en dgx3 solo el umbral absoluto de 100 GiB libres: la predicción en un nodo servidor de modelos es churn esperado, SC-5736, y vive en NodeModelServerDiskPredicted). Por debajo del umbral de eviction (~5 %) el kubelet entra en disk-pressure y desaloja pods (el 07-10: AdGuard, el DNS de la LAN; 18/10 y 26/10: la lane vllm de dgx3). Mirar qué crece (du por directorio: /var/lib/longhorn, /home, /srv, /tmp) y liberar caché. En sauvage lo que crece es /srv/minio/data (velero-backups, harbor-blobs, cnpg-backups); en dgx3, /srv/creative (checkpoints de entrenamiento)."
+  - interval: 5m
+    name: "ks5-cp-3, ráfaga de 35 GB en 75 min (expand-snapshot de Longhorn al crecer vmsingle) con ~275 GB libres y luego plana -> NO salta (INFRA-1602, NODE-21120; con [12h] saltaba, predict −35)"
+    input_series:
+      # 310 GB libres planos 8,75 h, caída de 35 GB en 75 min (el expand del 25-11 22:32/23:25Z) y llano a 275 GB
+      - series: 'node_filesystem_avail_bytes{job="node-exporter",mountpoint="/",fstype="ext4",device="/dev/md3",instance="10.42.6.103:9100",pod="vm-prometheus-node-exporter-ddddd"}'
+        values: '310000000000x105 310000000000-2333333333x15 275000000000x75'
+      - series: 'node_filesystem_size_bytes{job="node-exporter",mountpoint="/",fstype="ext4",device="/dev/md3",instance="10.42.6.103:9100",pod="vm-prometheus-node-exporter-ddddd"}'
+        values: '1000000000000x195'
+      - series: 'kube_pod_info{namespace="monitoring",pod="vm-prometheus-node-exporter-ddddd",node="ks5-cp-3"}'
+        values: '1x195'
+    alert_rule_test:
+      - eval_time: 16h
+        alertname: NodeRootDiskLowOrFilling
+        exp_alerts: []
