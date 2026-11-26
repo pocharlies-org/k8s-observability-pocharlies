@@ -292,6 +292,84 @@ vmagent:
     # pods, le da igual el nodo.
     nodeSelector:
       kubernetes.io/hostname: atlantic
+    # INFRA-1600 (SC-6644): cardinalidad registrada. El PVC de vmsingle se llena de
+    # INDICE, no de datos retenidos: medido 26-11, data/indexdb = 78,1 Gi de los 80,4 Gi
+    # usados (data/small + data/big = 2,3 Gi, lo que corresponde a la retencion de 48 h).
+    # El indice crece con las series REGISTRADAS (/api/v1/status/tsdb: 2.552.835 series y
+    # 182.070.596 pares etiqueta-valor; eran 5.001.233 el 25-11, antes de retirar
+    # container_tasks_state con SC-6640), asi que lo que lo frena es dejar de registrar
+    # series, no retener menos (INFRA-163).
+    # Van en el relabel GLOBAL del agente porque esas mismas familias llegan duplicadas de
+    # los scrape jobs `apiserver` y `kubelet` (contado 26-11: 206.848 activas desde
+    # kubelet, 198.291 desde apiserver) y los scrapes del plano de control los genera el
+    # chart 0.79.0 — sobrescribir su lista de endpoints es pelearse en cada upgrade, como
+    # ya paso con kube-state-metrics (SC-6673).
+    # Ninguna linea se cae sin comprobar antes que no la consume ninguna VMRule /
+    # PrometheusRule desplegada, ningun dashboard provisionado (label grafana_dashboard,
+    # todos los namespaces), la BD interna de Grafana ni los dashboards de dgx-infra: el
+    # grep y su salida estan en la PR. Regla del test
+    # tests/test_infra1600_cardinality_drops.py: lo que consume una alerta o un dashboard
+    # NO se cae, y si alguien toca las excepciones el test salta.
+    globalScrapeMetricRelabelConfigs:
+      # 1) Excepciones: las unicas familias de buckets con consumidor vivo.
+      #    - apiserver_request_sli_duration_seconds_bucket: cadena de recording rules
+      #      kube-apiserver-{availability,burnrate,histogram}.rules ->
+      #      cluster_verb_scope_le:...:increase1h/30d y apiserver_request:burnrate* ->
+      #      alerta KubeAPIErrorBudgetBurn (ventanas 5m..3d, viven con 48 h).
+      #    - apiserver_client_certificate_expiration_seconds_bucket: alerta
+      #      KubeClientCertificateExpiration (certs de k3s).
+      #    Se marcan con una etiqueta temporal que se borra en el paso 4: no llega a
+      #    remote-write, asi que no añade ni un par etiqueta-valor al indice.
+      - sourceLabels: [__name__]
+        regex: "(apiserver_request_sli_duration_seconds_bucket|apiserver_client_certificate_expiration_seconds_bucket)"
+        targetLabel: infra1600_exempt
+        replacement: "yes"
+        action: replace
+      # 2) Buckets de apiserver / etcd / prober sin consumidor. Medido 26-11 en series
+      #    activas (count by (__name__)); entre parentesis las registradas que aparecian
+      #    en el top-10 de /api/v1/status/tsdb del 25-11:
+      #      apiserver_request_duration_seconds_bucket      122.784 (141.929)
+      #      etcd_request_duration_seconds_bucket            73.776  (84.473)
+      #      apiserver_request_body_size_bytes_bucket        44.352  (51.994)
+      #      apiserver_response_sizes_bucket                 19.024
+      #      apiserver_watch_list_duration_seconds_bucket    17.604
+      #      apiserver_watch_cache_read_wait_seconds_bucket  16.268
+      #      prober_probe_duration_seconds_bucket            10.260  (43.004)
+      #      apiserver_watch_events_sizes_bucket             10.170
+      #    el resto de la clase (flowcontrol_*, admission_*, cel_*, delegated_auth*,
+      #    storage_data_key_generation*, request_filter*, timestamp_comparison*) por
+      #    debajo. Total clase 405.465; menos las dos excepciones (79.710) = 325.755
+      #    series activas que dejan de registrarse, y con ellas los valores de `le` que
+      #    multiplican los pares etiqueta-valor.
+      #    Se conservan los _count/_sum de esas mismas familias: el dashboard
+      #    kubernetes-system-api-server y la alerta KubeClientErrors usan
+      #    apiserver_request_total y promedios suma/count, nunca cuantiles por bucket.
+      - sourceLabels: [__name__, infra1600_exempt]
+        regex: "(apiserver|etcd|prober)_.*_bucket;"
+        action: drop
+      # 3) cadvisor de bajo valor (job kubelet). Registradas 25-11 / activas 26-11:
+      #      container_memory_failures_total        63.171 /  7.148
+      #      container_blkio_device_usage_total     49.925 /  6.974
+      #      container_fs_reads_total               26.427 /  4.873
+      #      container_fs_writes_total              26.406 /  4.873
+      #      container_fs_reads_bytes_total         25.012 /  3.482
+      #      container_fs_writes_bytes_total              /  3.482
+      #      container_blkio_* y container_fs_* (13 familias mas de ~1.469 activas cada
+      #      una: inodes_free/total, io_current, io_time*, limit_bytes, read/write_seconds,
+      #      reads/merged per sector, usage_bytes)
+      #      container_memory_failcnt (legacy, caida por el labeldrop de `id` de todos
+      #      modos no aporta nada)          1.811
+      #    Cada una se multiplica por contenedor x dispositivo x valores de `name`/`id`
+      #    de cgroup, y los runners de ARC crean y destruyen contenedores sin parar: esa
+      #    es la churn que engorda el indice (mismo motivo por el que SC-6640 retiró
+      #    container_tasks_state). El disco de los nodos lo vigilan node_exporter y
+      #    kubelet_volume_stats_*, no estas series.
+      - sourceLabels: [__name__]
+        regex: "container_(memory_failures_total|memory_failcnt|blkio_.*|fs_.*)"
+        action: drop
+      # 4) Suelta el marcador de las excepciones.
+      - regex: "infra1600_exempt"
+        action: labeldrop
 
 vmalert:
   enabled: true
