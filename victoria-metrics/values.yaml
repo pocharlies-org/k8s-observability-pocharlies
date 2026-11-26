@@ -446,6 +446,21 @@ kubelet:
     cadvisor:
       spec:
         metricRelabelConfigs:
+          # SC-6640 (25-11-2026, incidente Keep MON-20992 monitoring-degraded):
+          # container_tasks_state lleva `name` = ID crudo de contenedor, y los
+          # runners de ARC los crean/destruyen sin parar. Cada ID nuevo es una
+          # serie nueva: vmsingle llegaba a resetear el rollup-result-cache
+          # (>190 avisos «too high cardinality of label values» en un día, la
+          # línea citada era esta métrica) — eso disparó TooManyLogs sobre
+          # vmsingle (tercer miembro del incidente) y mantuvo el índice tsid
+          # (~5,7 GiB de caché) y las inserciones saturadas (retraso de ingesta
+          # de ~10-15 min y ~450 MB de cola remotewrite en vmagent). Nadie
+          # consume esta métrica: 0 coincidencias de «container_tasks_state» en
+          # k8s-observability, dgx-infra (dashboards) y el resto de la granja.
+          # Retirarla del scrape no pierde ninguna serie consultada.
+          - source_labels: [__name__]
+            regex: "container_tasks_state"
+            action: drop
           - source_labels: [__name__]
             regex: "container_.+"
             action: keep
