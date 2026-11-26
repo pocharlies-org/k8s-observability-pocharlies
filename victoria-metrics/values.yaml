@@ -457,6 +457,17 @@ kubelet:
   vmScrapes:
     cadvisor:
       spec:
+        # SC-6648 (26-11-2026, incidente Keep MON-21004 monitoring-degraded): el
+        # timeout por defecto del chart (5 s) no da para el cuerpo de cadvisor de
+        # `ubuntu`: 6,4 MB y ~18.000 samples por scrape (medido en vmagent:
+        # scrape_duration 962 ms en régimen normal, scrapes_failed 9 de 68 en la
+        # ventana = 13 % reventando los 5 s en los picos del nodo — docker
+        # LibreChat + runners). Cada pico es un «cannot read data ... Client.Timeout»
+        # que, sumado al resto del goteo, sostenía TooManyScrapeErrors (for 15m)
+        # y rearmaba monitoring-degraded. 25 s deja margen sobre el intervalo de
+        # 30 s sin solapar scrapes. No es un problema del nodo: es el default del
+        # chart dimensionado para cadvisor sin pila docker encima.
+        scrapeTimeout: 25s
         metricRelabelConfigs:
           # SC-6640 (25-11-2026, incidente Keep MON-20992 monitoring-degraded):
           # container_tasks_state lleva `name` = ID crudo de contenedor, y los
