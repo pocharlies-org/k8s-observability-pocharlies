@@ -1,0 +1,119 @@
+# SC-6740 (causa b1c1a679ed, SC-6657): los dos terminos `absent(kube_cronjob_*)` del
+# grupo pocharlies.backup-freshness llevan la doble puerta de la familia: `unless
+# on()` sobre vm_app_uptime_seconds (SC-6654; RecoveryKitStale no la tenia) y `and
+# on() (max(up{job="kube-state-metrics"}) == 1)` (patrón KeepBackendAbsent,
+# INFRA-1527). Sin la segunda, un hueco del scrape de KSM (medido: 41 veces up=0 en
+# 18 h, SC-6673) deja la serie kube_cronjob_* fuera y el absent es cierto con los
+# CronJobs sanos — falsos criticos de backup. El caso portante (CronJob borrado ->
+# metrica fuera, KSM vivo) sigue disparando.
+rule_files:
+  - backup-freshness.rules.yaml
+evaluation_interval: 1m
+
+tests:
+  - interval: 1m
+    name: backend vivo, KSM vivo y ambas series ausentes -> las dos criticas disparan (caso portante)
+    input_series:
+      - series: 'vm_app_uptime_seconds{job="vmalert-vm-victoria-metrics-k8s-stack"}'
+        values: '1x60'
+      - series: 'up{job="kube-state-metrics", instance="10.42.6.4:8080"}'
+        values: '1x60'
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: BackupWeeklySnapshotStale
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              area: backup
+              domain: crons
+              component: postgres-shared
+              namespace: databases
+              cronjob: logical-dump-postgres-shared
+            exp_annotations:
+              summary: "El dump SEMANAL de postgres-shared no completa desde hace mas de 8 dias"
+              description: "El CronJob databases/logical-dump-postgres-shared no registra exito en Kubernetes en mas de 8 dias, o su metrica esta ausente (el termino de ausencia no dispara si las metricas del propio vmalert tampoco llegan a VictoriaMetrics: caida del backend, SC-6654; ni si el scrape de kube-state-metrics esta caido: hueco de sensor, SC-6740). Es la unica copia de la base FUERA de sauvage (el kit lo sube a Drive); el PITR de CNPG vive en el mismo disco. OJO: comprueba los BYTES en el bucket de OVH (INFRA-1175), no el estado del Job: mc ls ovh/cnpg-backups-pocharlies/logical-dumps/postgres-shared/ debe tener un .sql.gz por cada .sha256."
+      - eval_time: 16m
+        alertname: BackupRecoveryKitStale
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              area: backup
+              domain: crons
+              component: recovery-kit
+              namespace: backup-hub
+              cronjob: recovery-kit-to-drive
+            exp_annotations:
+              summary: "El kit de recuperacion no ha subido a Drive en mas de 26 h"
+              description: "El CronJob backup-hub/recovery-kit-to-drive no registra exito en Kubernetes en mas de 26 h, o su metrica esta ausente (el termino de ausencia no dispara con el backend de metricas ciego ni con el scrape de kube-state-metrics caido: SC-6654/SC-6740). Fallo CUATRO noches seguidas (16-19 de agosto de 2026) con el emptyDir desbordado y nadie se entero, porque el CronJob estaba fuera de ArgoCD y ninguna Application se ponia en rojo. Es el kit auditable para reconstruir las BBDD sin depender de OVH."
+
+  - interval: 1m
+    name: scrape KSM caido (up=0), backend vivo y series ausentes -> NO disparan (regresion SC-6740)
+    # El falso positivo medido (huecos de scrape de KSM): sin la guarda, ambas
+    # criticas de backup se abren con los CronJobs sanos; la ceguera del sensor la
+    # cubren TargetDown/ScrapePathGap.
+    input_series:
+      - series: 'vm_app_uptime_seconds{job="vmalert-vm-victoria-metrics-k8s-stack"}'
+        values: '1x60'
+      - series: 'up{job="kube-state-metrics", instance="10.42.6.4:8080"}'
+        values: '0x60'
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: BackupWeeklySnapshotStale
+        exp_alerts: []
+      - eval_time: 31m
+        alertname: BackupRecoveryKitStale
+        exp_alerts: []
+
+  - interval: 1m
+    name: backend ciego (KSM vivo) y series ausentes -> NO disparan (regresion SC-6654; puerta nueva en RecoveryKit)
+    input_series:
+      - series: 'up{job="kube-state-metrics", instance="10.42.6.4:8080"}'
+        values: '1x60'
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: BackupWeeklySnapshotStale
+        exp_alerts: []
+      - eval_time: 31m
+        alertname: BackupRecoveryKitStale
+        exp_alerts: []
+
+  - interval: 1m
+    name: KSM vivo y ultimos exitos fuera de umbral -> disparan por la rama de umbral (guarda no la toca)
+    # time() arranca en 1970 en promtool: -800000 (≈ -9,3 d) pasa el umbral de
+    # 8 d + 2 h; -100000 (≈ -27,8 h) pasa el de 26 h.
+    input_series:
+      - series: 'vm_app_uptime_seconds{job="vmalert-vm-victoria-metrics-k8s-stack"}'
+        values: '1x60'
+      - series: 'up{job="kube-state-metrics", instance="10.42.6.4:8080"}'
+        values: '1x60'
+      - series: 'kube_cronjob_status_last_successful_time{namespace="databases",cronjob="logical-dump-postgres-shared"}'
+        values: '-800000x60'
+      - series: 'kube_cronjob_status_last_successful_time{namespace="backup-hub",cronjob="recovery-kit-to-drive"}'
+        values: '-100000x60'
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: BackupWeeklySnapshotStale
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              area: backup
+              domain: crons
+              component: postgres-shared
+              namespace: databases
+              cronjob: logical-dump-postgres-shared
+            exp_annotations:
+              summary: "El dump SEMANAL de postgres-shared no completa desde hace mas de 8 dias"
+              description: "El CronJob databases/logical-dump-postgres-shared no registra exito en Kubernetes en mas de 8 dias, o su metrica esta ausente (el termino de ausencia no dispara si las metricas del propio vmalert tampoco llegan a VictoriaMetrics: caida del backend, SC-6654; ni si el scrape de kube-state-metrics esta caido: hueco de sensor, SC-6740). Es la unica copia de la base FUERA de sauvage (el kit lo sube a Drive); el PITR de CNPG vive en el mismo disco. OJO: comprueba los BYTES en el bucket de OVH (INFRA-1175), no el estado del Job: mc ls ovh/cnpg-backups-pocharlies/logical-dumps/postgres-shared/ debe tener un .sql.gz por cada .sha256."
+      - eval_time: 16m
+        alertname: BackupRecoveryKitStale
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              area: backup
+              domain: crons
+              component: recovery-kit
+              namespace: backup-hub
+              cronjob: recovery-kit-to-drive
+            exp_annotations:
+              summary: "El kit de recuperacion no ha subido a Drive en mas de 26 h"
+              description: "El CronJob backup-hub/recovery-kit-to-drive no registra exito en Kubernetes en mas de 26 h, o su metrica esta ausente (el termino de ausencia no dispara con el backend de metricas ciego ni con el scrape de kube-state-metrics caido: SC-6654/SC-6740). Fallo CUATRO noches seguidas (16-19 de agosto de 2026) con el emptyDir desbordado y nadie se entero, porque el CronJob estaba fuera de ArgoCD y ninguna Application se ponia en rojo. Es el kit auditable para reconstruir las BBDD sin depender de OVH."
