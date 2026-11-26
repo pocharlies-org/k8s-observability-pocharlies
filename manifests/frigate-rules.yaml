@@ -35,15 +35,19 @@ spec:
         # pod sin Ready el endpoint desaparece y no hay `up == 0`, solo ausencia.
         # El `unless` excluye la parada a mano: escalar el Deployment a 0 es una decisión consciente (así se libró
         # la GPU para el reranker/embedder el 05-11, anotación `e-dani.com/parado-por`), y FRG-18130/FRG-18531
-        # demuestran que sin ella cada parada abre un incidente y una Request. Con kube-state-metrics caído la
-        # derecha queda vacía y la alerta sigue saltando: se falla hacia avisar, nunca hacia callar.
+        # demuestran que sin ella cada parada abre un incidente y una Request. El `last_over_time[30m]` de la
+        # derecha es porque el selector desnudo caduca a los 5 min de lookback cuando kube-state-metrics deja de
+        # responder a tiempo (medido 25-11: 111 timeouts de scrape del job `kube-state-metrics` en 3 h, serie con
+        # ~3 min de huecos): FRG-21024 (SC-6661) saltó con Frigate parado a mano solo por ese hueco. Con la última
+        # muestra de 30 min la supresión aguanta el flap; si ksm lleva más de 30 min ciego la derecha queda vacía
+        # y la alerta vuelve a saltar: se falla hacia avisar, nunca hacia callar.
         - alert: FrigateCaido
           expr: |
             (up{job="frigate", namespace="frigate"} == 0
               or
             absent(up{job="frigate", namespace="frigate"}))
               unless on()
-            (max(kube_deployment_spec_replicas{namespace="frigate", deployment="frigate"}) == 0)
+            (max(last_over_time(kube_deployment_spec_replicas{namespace="frigate", deployment="frigate"}[30m])) == 0)
           for: 5m
           labels:
             severity: warning

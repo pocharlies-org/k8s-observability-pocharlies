@@ -73,6 +73,48 @@ tests:
         alertname: FrigateCaido
         exp_alerts: []
 
+  # SC-6661 (FRG-21024): con las series de kube-state-metrics recortadas por timeouts de scrape (111 en 3 h el
+  # 25-11), el selector desnudo del `unless` caducaba a los 5 min de lookback y la alerta saltaba con Frigate
+  # parado a mano. `last_over_time[30m]` aguanta el hueco; ciego más de 30 min la alerta vuelve (fallar hacia avisar).
+  - interval: 1m
+    name: parada a mano con hueco de 16 min de kube-state-metrics no dispara (regresión SC-6661)
+    input_series:
+      - series: 'up{job="frigate",namespace="frigate",pod="frigate-6b6cd8df4f-lnj9p"}'
+        values: '0x20'
+      - series: 'kube_deployment_spec_replicas{namespace="frigate",deployment="frigate"}'
+        values: '0x3 _x17'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: FrigateCaido
+        exp_alerts: []
+      - eval_time: 19m
+        alertname: FrigateCaido
+        exp_alerts: []
+
+  - interval: 1m
+    name: kube-state-metrics ciego más de 30 min con parada a mano vuelve a disparar (se falla hacia avisar)
+    input_series:
+      - series: 'up{job="frigate",namespace="frigate",pod="frigate-6b6cd8df4f-lnj9p"}'
+        values: '0x45'
+      - series: 'kube_deployment_spec_replicas{namespace="frigate",deployment="frigate"}'
+        values: '0x3 _x42'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: FrigateCaido
+        exp_alerts: []
+      - eval_time: 40m
+        alertname: FrigateCaido
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              area: availability
+              job: frigate
+              namespace: frigate
+              pod: frigate-6b6cd8df4f-lnj9p
+            exp_annotations:
+              summary: "Frigate no responde: las cámaras de casa no se están grabando ni analizando"
+              description: "VictoriaMetrics lleva 5 min sin poder leer `/api/metrics` de Frigate (puerto 5000 del ns `frigate`) con el Deployment queriendo más de 0 réplicas. Mirar primero `kubectl -n frigate get pods` y `kubectl -n frigate logs deploy/frigate` (rollout, OOM, GPU ocupada por Krea2: el árbitro lo deja en `coexist`). Si el pod está `1/1`, el culpable es la red: la NetworkPolicy `frigate` de k8s-frigate-pocharlies debe admitir al vmagent del ns `monitoring` en el 5000. Mientras dure, ninguna alerta de cámara ve nada. (Con el Deployment a 0 réplicas —parada a mano— esta alerta no salta; si debería estar arriba, `kubectl -n frigate get deploy frigate -o jsonpath='{.metadata.annotations}'` dice quién lo paró y por qué.)"
+
   - interval: 1m
     name: con el Deployment queriendo 1 réplica, up == 0 sigue saltando (el guard no oculta caídas)
     input_series:
