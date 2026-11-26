@@ -7,8 +7,9 @@
 # SC-5736: el join `* on(pod) group_left(node)` propaga la label `node` a la alerta
 # (por eso `node:` en los exp_labels) y la rama predict_linear de dgx3 se fue a
 # NodeModelServerDiskPredicted (info, sin Request): los casos de dgx3 y nvidia-dgx lo cubren.
-# SC-6122: la predicción del régimen 1 mira 12 h; los dos últimos casos son la ráfaga que
-# el nodo recupera (no salta) y el llenado sostenido (salta).
+# SC-6122 e INFRA-1603: la predicción del régimen 1 mira 12 h y la confirma una segunda
+# sobre [2h] offset 2h; los tres últimos casos son la ráfaga que el nodo recupera (no salta),
+# el llenado sostenido (salta) y el paso único de una expansión de PVC (no salta).
 rule_files:
   - node-disk.rules.yaml
 evaluation_interval: 5m
