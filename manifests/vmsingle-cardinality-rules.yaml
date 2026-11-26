@@ -1,0 +1,131 @@
+# INFRA-1601 (problema SC-6644) — señal puntera de cardinalidad en vmsingle.
+#
+# Por qué existe. El 25-11 22:17 el disco de vmsingle cruzó el 80 % y saltó la
+# crítica del chart `DiskRunsOutOfSpace` — cuando ya no quedaban margen ni opciones.
+# La causa no era la retención: era el ÍNDICE (medido ese día: data/indexdb 75,1 GiB
+# frente a data/small+big 3,2 GiB; 5,0M series registradas vía /api/v1/status/tsdb).
+# Las reglas del chart (`DiskRunsOutOfSpaceIn3Days`, `NodeBecomesReadonlyIn3Days`)
+# predicen desde la tasa de filas, no desde el crecimiento del índice, y son
+# críticas a 3 días: no dejan ventana de actuación. Estas tres WARNINGs avisan
+# días antes, con la causa en el texto.
+#
+# Qué métricas hay (comprobado en vivo contra /metrics de vmsingle, 26-11):
+#   - vm_data_size_bytes{type="indexdb/file"} — tamaño del índice en disco.
+#   - vm_new_timeseries_created_total — series NUEVAS registradas (counter).
+#   - vm_free_disk_space_bytes — espacio libre del volumen de datos.
+#   NO existe métrica de series activas totales en single-node (el valor 5,0M del
+#   25-11 se sacó de /api/v1/status/tsdb, que tarda ~2 min y no es scrapeable).
+#   La alerta de series se calibra por TASA de registro (proxy directo: cada serie
+#   nueva añade entrada al índice; el ratio índice/datos del incidente lo confirma).
+#
+# Calibración (histórico propio de vmsingle, disponible desde el 11-24 por los
+# reinicios del incidente; crítico cruzado el 25-11 22:17):
+#   - delta indexdb 1d: 4,1–4,7e9 B/día durante el incidente → umbral 3e9/día.
+#   - días hasta llenar (libre / crecimiento-día): 5,6–6,8 días el 11-24/25, ya
+#     MUY por debajo del umbral de 14 → la alerta de predicción habría estado
+#     FIRING desde ~11-21 (extrapolando free≈56e9 con 4e9/día), 4+ días antes
+#     del crítico. Con `for: 6h` no depende de un pico aislado.
+#   - ratio indexdb/(small+big): 26–36 sostenido DESDE el incidente (el índice no
+#     se encoge; PVC ampliado a 200 Gi, uso actual 41 %). La Request proponía
+#     alertar en >5: con el estado actual eso dispara permanentemente, así que el
+#     ratio va en las anotaciones como DISCRIMINADOR de causa (índice vs datos) y
+#     el disparo lo da el crecimiento. Decisión registrada en la nota de la Request.
+#
+# Despliegue: merge a main → app ArgoCD `k8s-observability` (VMRule entra por
+# kustomization). Validar tras el sync: `vmalert-...` /api/v1/rules muestra el grupo
+# pocharlies.vmsingle-cardinality. Los promtool tests (tests/promtool/) cubren el
+# disparo de cada regla con series sintéticas.
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMRule
+metadata:
+  name: pocharlies-vmsingle-cardinality
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: vmsingle
+    app.kubernetes.io/component: alerting
+spec:
+  groups:
+    - name: pocharlies.vmsingle-cardinality
+      rules:
+        # Crecimiento sostenido del índice: +3 GB/día durante 2 días seguidos.
+        # El 11-24→11-25 medido: 4,1–4,7 GB/día. Es la firma de cardinalidad
+        # (series nuevas), no de ingestión de puntos.
+        - alert: VmsingleIndexdbSustainedGrowth
+          expr: |
+            sum by (job, instance) (vm_data_size_bytes{type="indexdb/file"})
+              - sum by (job, instance) (vm_data_size_bytes{type="indexdb/file"} offset 1d) > 3e9
+          for: 2d
+          labels:
+            severity: warning
+            area: capacity
+            component: vmsingle
+          annotations:
+            summary: "El índice de vmsingle crece más de 3 GB/día sostenido (cardinalidad, SC-6644)"
+            description: >-
+              data/indexdb ha crecido {{ $value | humanize }} en el último día y lleva
+              2 días así: el disco lo está llenando la cardinalidad registrada, no los
+              datos. CAUSA CONOCIDA (SC-6644): si el ratio indexdb/(small+big) es alto
+              (medido 25-11: 75,1 Gi vs 3,2 Gi; hoy 26–36), bajar retención NO arregla
+              nada. Comprobar el ratio y las series: `kubectl -n monitoring exec
+              $(kubectl -n monitoring get pod -l app.kubernetes.io/name=vmsingle -o
+              jsonpath='{.items[0].metadata.name}') -c vmsingle -- sh -c 'du -sh
+              /victoria-metrics-data/data/*; wget -qO-
+              http://127.0.0.1:8428/api/v1/status/tsdb | head -c 400'` (status/tsdb
+              tarda ~2 min). Runbook completo: skill `sre-alert-triage`, referencia
+              «vmsingle: el disco lo llena el índice (SC-6644)». Opciones a tiempo:
+              recortar cardinalidad (Request enlazada a SC-6644) o ampliar el PVC
+              conscientemente; workaround inmediato: reiniciar el pod vmsingle (los
+              merges de arranque descartan partes temporales: el 25-11 el df bajó de
+              90,0G a 83,2G).
+        # Predicción sobre crecimiento del índice: a menos de 14 días de comerse
+        # todo el espacio libre. Ventana de actuación: el chart ya avisa CRÍTICO a
+        # 3 días (DiskRunsOutOfSpaceIn3Days) y a 80 % (DiskRunsOutOfSpace); ésta
+        # salta ~10 días antes que ellas. Medido 11-25: 4,6–5,7 días; 26-11: 19,3.
+        - alert: VmsingleIndexdbFillsDiskIn14Days
+          expr: |
+            sum by (job, instance) (vm_free_disk_space_bytes)
+              / clamp_min((sum by (job, instance) (vm_data_size_bytes{type="indexdb/file"})
+                  - sum by (job, instance) (vm_data_size_bytes{type="indexdb/file"} offset 1d)) / 86400, 1)
+              < 1209600
+          for: 6h
+          labels:
+            severity: warning
+            area: capacity
+            component: vmsingle
+          annotations:
+            summary: "El índice de vmsingle llenará el disco en menos de 14 días al ritmo actual"
+            description: >-
+              Al ritmo de crecimiento del índice de las últimas 24 h, el espacio libre
+              del volumen de datos se agota en menos de 14 días ({{ $value | humanizeDuration }}
+              al ritmo medido por la propia expresión). Es la antesala de DiskRunsOutOfSpace
+              (crítica al 80 %) y del read-only. Mismo diagnóstico y salidas que
+              VmsingleIndexdbSustainedGrowth (causa conocida SC-6644: índice, no
+              retención; runbook en la skill `sre-alert-triage`). Actuar antes de que
+              el chart pite crítico: recortar cardinalidad, ampliar PVC conscientemente,
+              o reiniciar vmsingle para el barrido de merges temporales.
+        # Tasa de registro de series: +3M series nuevas/día durante 2 días. El
+        # incidente (11-24→11-25) sostuvo 1,7–12M/día; 26-11 (post-reinicio):
+        # 4,85M/día. Es el proxy de "series registradas por encima del umbral
+        # con tendencia creciente": no hay métrica de total en single-node.
+        - alert: VmsingleSeriesChurnHigh
+          expr: |
+            sum by (job, instance) (increase(vm_new_timeseries_created_total[1d])) > 3e6
+          for: 2d
+          labels:
+            severity: warning
+            area: capacity
+            component: vmsingle
+          annotations:
+            summary: "vmsingle registra más de 3M series nuevas al día (SC-6644)"
+            description: >-
+              {{ $value | humanize }} series nuevas en 24 h, sostenido 2 días: la
+              cardinalidad registrada crece rápido y con ella data/indexdb (cada serie
+              añade entrada al índice; 5,0M series ↔ 75 GiB de índice el 25-11).
+              Identificar quién registra series: `kubectl -n monitoring exec
+              $(kubectl -n monitoring get pod -l app.kubernetes.io/name=vmsingle -o
+              jsonpath='{.items[0].metadata.name}') -c vmsingle -- sh -c 'wget -qO-
+              http://127.0.0.1:8428/api/v1/status/tsdb'` → topCardinalitySeries por
+              job/namespace (~2 min). Causas típicas medidas: pods que cambian de
+              nombre/IP y arrastran miles de etiquetas nuevas por scrape (reinicios,
+              Job/CronJob sin label estable). Runbook: skill `sre-alert-triage`,
+              referencia «vmsingle: el disco lo llena el índice (SC-6644)».
