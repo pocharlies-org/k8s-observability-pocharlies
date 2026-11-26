@@ -192,6 +192,17 @@ spec:
         # The `[a-z0-9]+` suffix is anchored by Prometheus and does not match a
         # hyphen, so `bge-m3-embedding-[a-z0-9]+` selects the pool Service's own
         # slice and NOT bge-m3-embedding-cpu-*. Verified live: one series per arm.
+        #
+        # 2026-11-26 (SC-6653): absent() cannot tell "the slice is gone" from
+        # "kube-state-metrics stopped reporting". Measured on CRIT-21011
+        # (2026-11-25): KSM scraped failed repeatedly 22:00-23:00Z (up=0, gap
+        # 22:35-22:39Z) and vmsingle was OOMKilled at 23:28Z; the absent arms
+        # fired this alert as CRIT-21011 while both bge pools were healthy
+        # (ready endpoints never left 1). The absent arms now carry
+        # `and on() (up{job="kube-state-metrics"} == 1)`: a KSM gap silences the
+        # alert instead of paging — a monitoring gap is not a pool outage. The
+        # load-bearing case (slice deleted while KSM reports) still fires; both
+        # are pinned by tests/promtool/llm-pool.test.yaml.
         - alert: LlmPoolCapabilityUnavailable
           expr: |
             sum by (pool) (
@@ -206,12 +217,14 @@ spec:
               )
               or
               label_replace(
-                absent(kube_endpointslice_endpoints{namespace="llm",endpointslice=~"bge-m3-embedding-[a-z0-9]+",ready="true"}),
+                absent(kube_endpointslice_endpoints{namespace="llm",endpointslice=~"bge-m3-embedding-[a-z0-9]+",ready="true"})
+                and on() (up{job="kube-state-metrics"} == 1),
                 "pool", "bge-embedding", "", ""
               ) * 0
               or
               label_replace(
-                absent(kube_endpointslice_endpoints{namespace="llm",endpointslice=~"bge-reranker-[a-z0-9]+",ready="true"}),
+                absent(kube_endpointslice_endpoints{namespace="llm",endpointslice=~"bge-reranker-[a-z0-9]+",ready="true"})
+                and on() (up{job="kube-state-metrics"} == 1),
                 "pool", "bge-reranker", "", ""
               ) * 0
             ) == 0
