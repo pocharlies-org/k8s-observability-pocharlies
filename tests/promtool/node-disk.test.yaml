@@ -214,20 +214,23 @@ tests:
   - interval: 5m
     name: ks5-cp-3, paso único de 30 GB (expansión planeada del PVC de vmsingle, SC-6637) con ~270 GB libres y luego plano -> NO salta (INFRA-1603; sin la confirmación de 2 h saltaba a las ~13 h)
     input_series:
-      # 300 GB libres 6 h, caída de 30 GB en 1 h (22:32-23:25 del 25-11) y llano en 270 GB 10 h más
+      # 300 GB libres 14 h (historia completa, como en un nodo real), caída de 30 GB en 1 h (22:32-23:25 del
+      # 25-11) y llano en 270 GB. La regresión de 12 h pone el paso al tercio izquierdo (pendiente máxima,
+      # predict < 0) de ~20,5 h a ~27 h: ahi disparaba la regla vieja (NODE-21120 midió el firing a ~7 h
+      # del paso). Con la confirmación [2h] offset 2h no salta en toda la serie.
       - series: 'node_filesystem_avail_bytes{job="node-exporter",mountpoint="/",fstype="ext4",device="/dev/md3",instance="10.42.6.103:9100",pod="vm-prometheus-node-exporter-ddddd"}'
-        values: '300000000000x72 300000000000-2500000000x12 270000000000x132'
+        values: '300000000000x168 300000000000-2500000000x12 270000000000x144'
       - series: 'node_filesystem_size_bytes{job="node-exporter",mountpoint="/",fstype="ext4",device="/dev/md3",instance="10.42.6.103:9100",pod="vm-prometheus-node-exporter-ddddd"}'
-        values: '1000000000000x216'
+        values: '1000000000000x324'
       - series: 'kube_pod_info{namespace="monitoring",pod="vm-prometheus-node-exporter-ddddd",node="ks5-cp-3"}'
-        values: '1x216'
+        values: '1x324'
     alert_rule_test:
-      - eval_time: 13h
+      - eval_time: 21h
         alertname: NodeRootDiskLowOrFilling
         exp_alerts: []
-      - eval_time: 14h
+      - eval_time: 23h
         alertname: NodeRootDiskLowOrFilling
         exp_alerts: []
-      - eval_time: 16h
+      - eval_time: 26h
         alertname: NodeRootDiskLowOrFilling
         exp_alerts: []
