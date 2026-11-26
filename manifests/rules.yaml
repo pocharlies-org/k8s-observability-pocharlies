@@ -783,10 +783,14 @@ spec:
         # DLQ series is scraped by BOTH the shared-rabbitmq and
         # shared-rabbitmq-headless jobs, so a naive sum() double-counts
         # (564 vs the real 282). `sum by (namespace) (max by (namespace, queue) (...))` collapses the two
-        # jobs back to the true per-queue depth. Threshold 350 sits above the
-        # 2026-07-22 baseline of 282 sediment messages (~68 headroom): only a
-        # bulk NEW dead-lettering event trips it, so the standing graveyard does
-        # not nag. repeat 24h on its dedicated route (alertmanager-config.yaml).
+        # jobs back to the true per-queue depth. There is NO standing baseline
+        # since SC-6732 (2026-11-26): the dlq.* parking copies expire after 72 h
+        # (DEFAULT_DLQ_TTL_MS in the synapse SDK + the sf-dlq-cap policy, both
+        # 259200000), so the graveyard that re-fired this alert for weeks after
+        # each storm (282 sediment in July, drains SC-6299/SC-6622) drains
+        # itself. Threshold 350 therefore means "bulk dead-lettering within the
+        # last ~72 h" — always worth a look at the live failure. repeat 24h on
+        # its dedicated route (alertmanager-config.yaml).
         # The sum is BY NAMESPACE (2026-11-25): per-queue rules cover both
         # installs and the alert must say which one — production's broker
         # (databases) and, once scraped, synapse2's (`synapse-rmq`). The
@@ -805,7 +809,7 @@ spec:
             component: synapse
           annotations:
             summary: "Synapse DLQ ({{ $labels.namespace }}) total backlog high ({{ $value }} messages)"
-            description: "Total ready messages across all /synapse dlq.* queues exceeded 350 (deduped across the two rabbitmq scrape jobs; baseline sediment ~282). A handler is dead-lettering in bulk. Use RabbitmqDlqGrowth to find the growing queue, then inspect that adapter's logs and the DLQ payloads."
+            description: "Total ready messages across all /synapse dlq.* queues exceeded 350 (deduped across the two rabbitmq scrape jobs). Parking copies expire after 72 h since SC-6732, so there is no sediment baseline: a handler is dead-lettering in bulk within the last ~72 h. Use RabbitmqDlqGrowth to find the growing queue, then inspect that adapter's logs and the DLQ payloads."
         # --- warning: core adapters ---------------------------------------
         # The four control-critical adapters that must always have a target up.
         # telegram is EXCLUDED on purpose: synapse-adapter-telegram runs at

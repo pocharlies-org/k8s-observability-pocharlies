@@ -120,6 +120,10 @@ resources:
   - manifests/longhorn-rules.yaml
   # SC-5955: invalid_grant del OAuth de Gmail, al primer fallo (el DLQ era el detector y llegaba tarde).
   - manifests/gmail-token-rules.yaml
+  # INFRA-1601 (SC-6644): señal puntera de cardinalidad en vmsingle (crecimiento del
+  # índice, días-hasta-llenado y tasa de series nuevas), WARNING días antes de la
+  # crítica de disco del chart. Umbrales calibrados con el histórico del 11-24/25.
+  - manifests/vmsingle-cardinality-rules.yaml
 
 # Las reglas de correlación se montan como fichero en el Job que las aplica, en
 # vez de duplicarse inline: keep/rules/correlation-rules.yaml sigue siendo la

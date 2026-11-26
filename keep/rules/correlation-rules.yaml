@@ -1259,3 +1259,39 @@ rules:
       ks5-cp por DERP = path relevado). Se resuelve solo al recuperarse el
       enlace. Si además ves «Nodos degradados» con los 4 de casa a la vez y los
       ks5-cp Ready, es la misma causa: ésta es la accionable.
+
+  # INFRA-1601 (SC-6644): cardinalidad de vmsingle — las tres WARNINGs de
+  # manifests/vmsingle-cardinality-rules.yaml (índice creciendo >3 GB/día, llenado
+  # del disco en <14 días, >3M series nuevas/día). Sin regla propia quedarían
+  # registradas y calladas: critical-safety-net sólo captura critical/page
+  # (precedente INFRA-550/INFRA-1562). Severidad warning a propósito: no solapa
+  # con la red (INVARIANTE 1: no excluimos lo que no duplicamos) y la ventana de
+  # actuación es días, no minutos — para eso están DiskRunsOutOfSpace (80 %) y
+  # DiskRunsOutOfSpaceIn3Days, críticas, que siguen por su red.
+  # Agrupa por `job` (estable entre reinicios del pod: `instance` es la IP del
+  # pod y cambiaría el nombre del incidente, clave de keep-causa de ops-watch).
+  - ruleName: vmsingle-cardinality
+    celQuery: >-
+      name in ["VmsingleIndexdbSustainedGrowth", "VmsingleIndexdbFillsDiskIn14Days",
+               "VmsingleSeriesChurnHigh"]
+    sqlQuery:
+      sql: "((name in (:name_1, :name_2, :name_3)))"
+      params:
+        name_1: VmsingleIndexdbSustainedGrowth
+        name_2: VmsingleIndexdbFillsDiskIn14Days
+        name_3: VmsingleSeriesChurnHigh
+    timeframeInSeconds: 21600
+    timeUnit: minutes
+    groupingCriteria: [job]
+    createOn: any
+    resolveOn: all_resolved
+    incidentPrefix: CARD
+    incidentNameTemplate: "Cardinalidad vmsingle en crecimiento"
+    groupDescription: >-
+      El disco de vmsingle lo llena la cardinalidad registrada (índice), no la
+      retención (SC-6644, incidente 25-11 22:17: 75,1 Gi de índice vs 3,2 Gi de
+      datos, 5,0M series). Runbook: skill `sre-alert-triage`, referencia «vmsingle:
+      el disco lo llena el índice (SC-6644)». Opciones a tiempo: recortar
+      cardinalidad (Request enlazada a SC-6644), ampliar el PVC conscientemente, o
+      reiniciar vmsingle (los merges de arranque descartan partes temporales: el
+      25-11 el df bajó de 90,0G a 83,2G).
