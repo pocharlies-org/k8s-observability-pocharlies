@@ -3050,15 +3050,21 @@ spec:
           # del 5 %, que es justo donde el kubelet ya desaloja.
           # Dos regímenes, el valor de ambos es el % libre (INFRA-1025, 29-10):
           #   1. ubuntu, sauvage, ks5-cp-*, alphalink y atlantic: menos del 20 %
-          #      libre, o al ritmo de las últimas 12 h (predict_linear) se llena en
-          #      3 días. SC-6122 (20-11): con [6h] una ráfaga de 15-25 GiB que el
-          #      nodo recupera en horas (tanda de imágenes nuevas en containerd,
-          #      relleno del WAL de postgres-shared hasta max_wal_size) proyectaba
-          #      lleno a 3 días con ~270 GiB libres: 5 disparos en 48 h en ks5-cp-*,
-          #      3 de ellos ráfagas sin nada que arreglar (como SC-5853, SC-5883,
-          #      SC-5896, SC-5920). Con [12h] el backtest de esas 48 h deja solo
-          #      el llenado real del 19-11 (INFRA-1461), cazado ~2,5 h más tarde y
-          #      con >200 GiB libres; el 20 % y NodeDiskPressure no cambian;
+          #      libre, o al ritmo de las últimas 24 h (predict_linear) se llena en
+          #      3 días. SC-6122 (20-11) pasó la ventana [6h]→[12h] porque una ráfaga
+          #      de 15-25 GiB que el nodo recupera en horas (imágenes nuevas en
+          #      containerd, WAL de postgres-shared hasta max_wal_size) proyectaba
+          #      lleno a 3 días con ~270 GiB libres (SC-5853, SC-5883, SC-5896,
+          #      SC-5920). INFRA-1602 (26-11): con [12h] disparaba además el ciclo
+          #      diario de los cps — los expand-snapshots que Longhorn deja al crecer
+          #      un volumen (vmsingle 100→150→200Gi el 25-11: −20 GiB en 45 min en
+          #      ks5-cp-3, NODE-21120) y las purgas que lo revierten; en 7 días [12h]
+          #      dio 5 ráfagas de ≥30 min en ks5-cp-2/3 y atlantic sin nada que
+          #      arreglar. Con [24h] el backtest de esas 72 h deja 1 (el llenado real
+          #      de vmsingle del 24-11, el que motivó el expand). El llenado real del
+          #      19-11 (INFRA-1461, −105 GiB en 6 h) se sigue cazando (~−4 GB/h de
+          #      media a 24 h → predict < 0 con 267 GiB libres) y los llenados lentos
+          #      los cubre el 20 %; el 20 % y NodeDiskPressure no cambian;
           #   2. dgx3 (SC-5736, 16-11): solo bajo 100 GiB libres (umbral absoluto).
           #      La rama predict_linear salió del crítico: en un nodo servidor de
           #      modelos es ruido esperado (SC-5100: 84 % por pesos en uso con 146
@@ -3099,7 +3105,7 @@ spec:
                 (
                   (node_filesystem_avail_bytes{job="node-exporter",mountpoint="/",fstype!~"tmpfs|overlay"} / node_filesystem_size_bytes{job="node-exporter",mountpoint="/",fstype!~"tmpfs|overlay"} * 100)
                   and
-                  (predict_linear(node_filesystem_avail_bytes{job="node-exporter",mountpoint="/",fstype!~"tmpfs|overlay"}[12h], 3 * 86400) < 0)
+                  (predict_linear(node_filesystem_avail_bytes{job="node-exporter",mountpoint="/",fstype!~"tmpfs|overlay"}[24h], 3 * 86400) < 0)
                 )
               )
               * on(pod) group_left(node)
@@ -3125,7 +3131,7 @@ spec:
             summary: "Disco raíz del nodo ({{ $labels.pod }}): poco espacio libre o se llena en menos de 3 días"
             description: >-
               A / del nodo {{ $labels.node }} ({{ $labels.instance }}, {{ $labels.device }}) le queda el {{ printf "%.1f" $value }} % libre.
-              Salta con menos del 20 % libre, o si al ritmo de las últimas 12 h se llena en menos de 3 días (en dgx3 solo el umbral absoluto de 100 GiB libres: la predicción en un nodo servidor de modelos es churn esperado, SC-5736, y vive en NodeModelServerDiskPredicted).
+              Salta con menos del 20 % libre, o si al ritmo de las últimas 24 h se llena en menos de 3 días (en dgx3 solo el umbral absoluto de 100 GiB libres: la predicción en un nodo servidor de modelos es churn esperado, SC-5736, y vive en NodeModelServerDiskPredicted).
               Por debajo del umbral de eviction (~5 %) el kubelet entra en disk-pressure y desaloja pods (el 07-10: AdGuard, el DNS de la LAN; 18/10 y 26/10: la lane vllm de dgx3).
               Mirar qué crece (du por directorio: /var/lib/longhorn, /home, /srv, /tmp) y liberar caché.
               En sauvage lo que crece es /srv/minio/data (velero-backups, harbor-blobs, cnpg-backups); en dgx3, /srv/creative (checkpoints de entrenamiento).
