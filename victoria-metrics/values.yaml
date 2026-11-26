@@ -526,6 +526,34 @@ kube-state-metrics:
       memory: 512Mi
   nodeSelector:
     node-pool: ks5-nvme
+  # SC-6673 (26-11-2026, Keep CRIT-21045 · causa critical-safety-net:b1c1a679ed): el
+  # endpoint del scrape no fijaba scrapeTimeout, así que vmagent cortaba a 10 s
+  # (medido 25-11: scrape_duration clavado en 10,0 s en los picos;
+  # up{job="kube-state-metrics"} a 0 cuarenta y una veces en 18 h; en el log de KSM
+  # «Failed to write metrics ... connection reset by peer» = el scraper cierra al
+  # expirar). Cada hueco de scapes deja sin serie kube_endpointslice_endpoints
+  # {ready="true"} y las patas absent() de LlmPoolCapabilityUnavailable disparan un
+  # CRÍTICO con los dos pools sirviendo (medido: ready=1 continuo 20:39→03:39 UTC
+  # mientras la alerta ardía 22:45→00:10). El guard de la regla ya vive en main: las
+  # patas absent() llevan `and on() (up{job="kube-state-metrics"} == 1)` desde
+  # SC-6653 (#273), que SILENCIA la alerta mientras KSM no reporta; esta línea es la
+  # raíz — sin el timeout no hay huecos que silentar, y TooManyScrapeErrors/TargetDown
+  # dejan de recibir el goteo. Mismo arreglo y mismo criterio que SC-6648 con cadvisor:
+  # 25 s de margen sobre el intervalo global de 30 s sin solapar
+  # scrapes. La lista es la default del chart 0.79.0
+  # (kube-state-metrics.vmScrape.spec.endpoints) MÁS el scrapeTimeout: Helm
+  # reemplaza la lista entera, no la fusiona, así que honorLabels y el labeldrop
+  # van copiados literalmente; el selector y jobLabel del default sobreviven porque
+  # sus claves no se tocan aquí.
+  vmScrape:
+    spec:
+      endpoints:
+        - port: http
+          honorLabels: true
+          scrapeTimeout: 25s
+          metricRelabelConfigs:
+            - action: labeldrop
+              regex: (uid|container_id|image_id)
   # DGX-128 — telemetría del sync 1Password -> Vault (external-secrets).
   # ESO no expone una métrica de "última sincronización con éxito":
   # .status.refreshTime vive solo en el CR (veredicto del tech lead en
