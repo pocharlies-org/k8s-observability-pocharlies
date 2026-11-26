@@ -213,7 +213,16 @@ vmsingle:
           # se llena (primera: 50Gi -> 100Gi, rama sc-disk-vm); la cardinalidad va en
           # el ticket de problema correspondiente. Margen del disco Longhorn medido en
           # el nodo del replica (ks5-cp-3): 357 Gi disponibles de 942.
-          storage: 150Gi
+          # 2026-11-25 (SC-6637, mismo turno): 150Gi -> 200Gi. Con 150Gi medido, la
+          # tasa se acelero: de 80,1 Gi usados (22:50) a 89,4 Gi (23:25), unos
+          # 16 Gi/h, sin ficheros borrados-aun-abiertos (0 en /proc/1/fd) y con las
+          # partes de data/indexdb pasando de 67 a 61: se crean y se descartan
+          # mientras se escribe. Con esa pendiente, el 0,8 de la regla se cruzaba de
+          # nuevo en ~2 h (118 Gi). Con 200Gi el margen medido es 106 Gi libres
+          # (46% de uso), ~4 h a esa tasa. Es colchon, no arreglo: el arreglo esta en
+          # SC-6644 (cardinalidad registrada y partes de indice que la rotacion de
+          # 48h no elimina).
+          storage: 200Gi
     # SC-6096 (mitigacion SC-6094): sale de ks5-cp-3. El plano de control va a llevar
     # taint control-plane:NoSchedule y aqui solo debe quedar lo que no pueda vivir en
     # otro sitio; la PVC es longhorn (RWO) -> el volumen se re-adjunta en atlantic sin
