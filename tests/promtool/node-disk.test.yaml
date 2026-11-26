@@ -210,3 +210,23 @@ tests:
             exp_annotations:
               summary: "Disco raíz del nodo (vm-prometheus-node-exporter-ddddd): poco espacio libre o se llena en menos de 3 días"
               description: "A / del nodo ks5-cp-3 (10.42.6.103:9100, /dev/md3) le queda el 29.0 % libre. Salta con menos del 20 % libre, o si al ritmo de las últimas 12 h se llena en menos de 3 días (en dgx3 solo el umbral absoluto de 100 GiB libres: la predicción en un nodo servidor de modelos es churn esperado, SC-5736, y vive en NodeModelServerDiskPredicted). Por debajo del umbral de eviction (~5 %) el kubelet entra en disk-pressure y desaloja pods (el 07-10: AdGuard, el DNS de la LAN; 18/10 y 26/10: la lane vllm de dgx3). Mirar qué crece (du por directorio: /var/lib/longhorn, /home, /srv, /tmp) y liberar caché. En sauvage lo que crece es /srv/minio/data (velero-backups, harbor-blobs, cnpg-backups); en dgx3, /srv/creative (checkpoints de entrenamiento)."
+  - interval: 5m
+    name: ks5-cp-3, paso único de 30 GB (expansión planeada del PVC de vmsingle, SC-6637) con ~270 GB libres y luego plano -> NO salta (INFRA-1603; sin la confirmación de 2 h saltaba a las ~13 h)
+    input_series:
+      # 300 GB libres 6 h, caída de 30 GB en 1 h (22:32-23:25 del 25-11) y llano en 270 GB 10 h más
+      - series: 'node_filesystem_avail_bytes{job="node-exporter",mountpoint="/",fstype="ext4",device="/dev/md3",instance="10.42.6.103:9100",pod="vm-prometheus-node-exporter-ddddd"}'
+        values: '300000000000x72 300000000000-2500000000x12 270000000000x132'
+      - series: 'node_filesystem_size_bytes{job="node-exporter",mountpoint="/",fstype="ext4",device="/dev/md3",instance="10.42.6.103:9100",pod="vm-prometheus-node-exporter-ddddd"}'
+        values: '1000000000000x216'
+      - series: 'kube_pod_info{namespace="monitoring",pod="vm-prometheus-node-exporter-ddddd",node="ks5-cp-3"}'
+        values: '1x216'
+    alert_rule_test:
+      - eval_time: 13h
+        alertname: NodeRootDiskLowOrFilling
+        exp_alerts: []
+      - eval_time: 14h
+        alertname: NodeRootDiskLowOrFilling
+        exp_alerts: []
+      - eval_time: 16h
+        alertname: NodeRootDiskLowOrFilling
+        exp_alerts: []

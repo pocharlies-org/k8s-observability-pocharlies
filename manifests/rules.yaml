@@ -3054,7 +3054,15 @@ spec:
           #      3 de ellos ráfagas sin nada que arreglar (como SC-5853, SC-5883,
           #      SC-5896, SC-5920). Con [12h] el backtest de esas 48 h deja solo
           #      el llenado real del 19-11 (INFRA-1461), cazado ~2,5 h más tarde y
-          #      con >200 GiB libres; el 20 % y NodeDiskPressure no cambian;
+          #      con >200 GiB libres; el 20 % y NodeDiskPressure no cambian.
+          #      INFRA-1603 (26-11): [12h] seguía tragando pasos únicos — la
+          #      expansión planeada del PVC de vmsingle 150→200 Gi (SC-6637) metió
+          #      30 GB en 1 h en la réplica Longhorn de ks5-cp-3 y la regresión de
+          #      12 h la proyectó lleno a 3 días con 274 GB libres (NODE-21120; el
+          #      ritmo real desde el paso era ~0,9 GB/h). Por eso la predicción se
+          #      confirma con una segunda regresión sobre [2h] offset 2h: un paso
+          #      deja de contar en cuanto queda fuera de esa ventana (nunca hay
+          #      solape que dispare), un llenado sostenido la pasa igual.
           #   2. dgx3 (SC-5736, 16-11): solo bajo 100 GiB libres (umbral absoluto).
           #      La rama predict_linear salió del crítico: en un nodo servidor de
           #      modelos es ruido esperado (SC-5100: 84 % por pesos en uso con 146
@@ -3096,6 +3104,8 @@ spec:
                   (node_filesystem_avail_bytes{job="node-exporter",mountpoint="/",fstype!~"tmpfs|overlay"} / node_filesystem_size_bytes{job="node-exporter",mountpoint="/",fstype!~"tmpfs|overlay"} * 100)
                   and
                   (predict_linear(node_filesystem_avail_bytes{job="node-exporter",mountpoint="/",fstype!~"tmpfs|overlay"}[12h], 3 * 86400) < 0)
+                  and
+                  (predict_linear(node_filesystem_avail_bytes{job="node-exporter",mountpoint="/",fstype!~"tmpfs|overlay"}[2h] offset 2h, 3 * 86400) < 0)
                 )
               )
               * on(pod) group_left(node)
