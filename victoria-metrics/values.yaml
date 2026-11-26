@@ -202,6 +202,17 @@ vmsingle:
         memory: 32Gi
     extraArgs:
       maxLabelsPerTimeseries: "200"
+      # 2026-11-26 (SC-6682): concurrencia de SELECT 4 (default = 2*CPU limite) -> 8,
+      # y cola de espera 10 s -> 30 s. Medido: vm_concurrent_select_limit_reached
+      # sostenido ~3/s incluso tras el subidón de memoria de SC-6652; vmalert se
+      # llevava 429 y i/o timeouts (~2800 ejecuciones fallidas/hora) y su grupo
+      # synapse.reloj enclavó SynapseRelojParado (23:15:40-00:10:40Z) con el reloj
+      # sano (latido con lag 5-10 s en la ventana, medido en la serie). El cap 4
+      # lo saturan sobre todo las propias reglas de vmalert con ventanas [24h].
+      # Con 8 ranuras + cola de 30 s una regla lenta ya no convierte el resto del
+      # plano de alertas en falsos positivos.
+      search.maxConcurrentRequests: "8"
+      search.maxQueueDuration: "30s"
     # Keep metrics for 48 hours. This is intentionally expressed in hours so
     # the live CR and the requested policy are unambiguous.
     retentionPeriod: "48h"
