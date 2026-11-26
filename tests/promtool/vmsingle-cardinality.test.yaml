@@ -1,0 +1,106 @@
+# INFRA-1601: casos de las 3 reglas de cardinalidad de vmsingle (promtool test
+# rules). `rules` la genera tests/test_infra1601_vmsingle_cardinality_promtool.py
+# desde manifests/vmsingle-cardinality-rules.yaml (harness tests/promtool_rules.py).
+# Crecimientos de la calibración del incidente SC-6644 (11-24→11-25: +4,1–4,7 GB/día
+# de índice, 1,7–12M series/día; 25-11 22:17 la crítica del chart cruzó el 80 % con
+# 5,6 días de índice por delante). GOTCHA promtool: evaluation_interval debe alinear
+# con el `interval` de las series (1h); con 1m cada hueco entre muestras horarias
+# vacía el vector del `offset 1d` y el pending nunca acumula el `for`.
+rule_files:
+- vmsingle-cardinality.rules.yaml
+evaluation_interval: 1h
+tests:
+- interval: 1h
+  name: 'índice +4 GB/día sostenido: WARNING a las 72 h (24 h hasta tener delta 1d + for 2d)'
+  input_series:
+  - series: vm_data_size_bytes{job="vmsingle-vm-victoria-metrics-k8s-stack",instance="10.42.10.5:8428",type="indexdb/file"}
+    values: 40000000000+166666667x95
+  alert_rule_test:
+  - eval_time: 71h
+    alertname: VmsingleIndexdbSustainedGrowth
+    exp_alerts: []
+  - eval_time: 73h
+    alertname: VmsingleIndexdbSustainedGrowth
+    exp_alerts:
+    - exp_labels:
+        severity: warning
+        area: capacity
+        component: vmsingle
+        job: vmsingle-vm-victoria-metrics-k8s-stack
+        instance: 10.42.10.5:8428
+      exp_annotations:
+        description: 'data/indexdb ha crecido 4G en el último día y lleva 2 días así: el disco lo está llenando la cardinalidad registrada, no los datos. CAUSA CONOCIDA (SC-6644): si el ratio indexdb/(small+big) es alto (medido 25-11: 75,1 Gi vs 3,2 Gi; hoy 26–36), bajar retención NO arregla nada. Comprobar el ratio y las series: `kubectl -n monitoring exec $(kubectl -n monitoring get pod -l app.kubernetes.io/name=vmsingle -o jsonpath=''{.items[0].metadata.name}'') -c vmsingle -- sh -c ''du -sh /victoria-metrics-data/data/*; wget -qO- http://127.0.0.1:8428/api/v1/status/tsdb | head -c 400''` (status/tsdb tarda ~2 min). Runbook completo: skill `sre-alert-triage`, referencia «vmsingle: el disco lo llena el índice (SC-6644)». Opciones a tiempo: recortar cardinalidad (Request enlazada a SC-6644) o ampliar el PVC conscientemente; workaround inmediato: reiniciar el pod vmsingle (los merges de arranque descartan partes temporales: el 25-11 el df bajó de 90,0G a 83,2G).'
+        summary: El índice de vmsingle crece más de 3 GB/día sostenido (cardinalidad, SC-6644)
+- interval: 1h
+  name: 'índice +2 GB/día (crecimiento normal de datos, no cardinalidad): no dispara'
+  input_series:
+  - series: vm_data_size_bytes{job="vmsingle-vm-victoria-metrics-k8s-stack",instance="10.42.10.5:8428",type="indexdb/file"}
+    values: 40000000000+83333333x95
+  alert_rule_test:
+  - eval_time: 95h
+    alertname: VmsingleIndexdbSustainedGrowth
+    exp_alerts: []
+- interval: 1h
+  name: 'libre 30 GB con índice creciendo a 4 GB/día (7,5 días): WARNING de llenado a las 31 h'
+  input_series:
+  - series: vm_data_size_bytes{job="vmsingle-vm-victoria-metrics-k8s-stack",instance="10.42.10.5:8428",type="indexdb/file"}
+    values: 40000000000+166666667x95
+  - series: vm_free_disk_space_bytes{job="vmsingle-vm-victoria-metrics-k8s-stack",instance="10.42.10.5:8428",path="/victoria-metrics-data"}
+    values: 30000000000x95
+  alert_rule_test:
+  - eval_time: 29h
+    alertname: VmsingleIndexdbFillsDiskIn14Days
+    exp_alerts: []
+  - eval_time: 31h
+    alertname: VmsingleIndexdbFillsDiskIn14Days
+    exp_alerts:
+    - exp_labels:
+        severity: warning
+        area: capacity
+        component: vmsingle
+        job: vmsingle-vm-victoria-metrics-k8s-stack
+        instance: 10.42.10.5:8428
+      exp_annotations:
+        description: 'Al ritmo de crecimiento del índice de las últimas 24 h, el espacio libre del volumen de datos se agota en menos de 14 días (7d 11h 59m 59s al ritmo medido por la propia expresión). Es la antesala de DiskRunsOutOfSpace (crítica al 80 %) y del read-only. Mismo diagnóstico y salidas que VmsingleIndexdbSustainedGrowth (causa conocida SC-6644: índice, no retención; runbook en la skill `sre-alert-triage`). Actuar antes de que el chart pite crítico: recortar cardinalidad, ampliar PVC conscientemente, o reiniciar vmsingle para el barrido de merges temporales.'
+        summary: El índice de vmsingle llenará el disco en menos de 14 días al ritmo actual
+- interval: 1h
+  name: 'índice menguante tras reinicio (merges de arranque) con 120 GB libres: no dispara (clamp_min)'
+  input_series:
+  - series: vm_data_size_bytes{job="vmsingle-vm-victoria-metrics-k8s-stack",instance="10.42.10.5:8428",type="indexdb/file"}
+    values: 80000000000-208333333x95
+  - series: vm_free_disk_space_bytes{job="vmsingle-vm-victoria-metrics-k8s-stack",instance="10.42.10.5:8428",path="/victoria-metrics-data"}
+    values: 120000000000x95
+  alert_rule_test:
+  - eval_time: 95h
+    alertname: VmsingleIndexdbFillsDiskIn14Days
+    exp_alerts: []
+- interval: 1h
+  name: '4M series nuevas/día sostenidas: WARNING de churn a las 67 h'
+  input_series:
+  - series: vm_new_timeseries_created_total{job="vmsingle-vm-victoria-metrics-k8s-stack",instance="10.42.10.5:8428"}
+    values: 0+166667x95
+  alert_rule_test:
+  - eval_time: 65h
+    alertname: VmsingleSeriesChurnHigh
+    exp_alerts: []
+  - eval_time: 67h
+    alertname: VmsingleSeriesChurnHigh
+    exp_alerts:
+    - exp_labels:
+        severity: warning
+        area: capacity
+        component: vmsingle
+        job: vmsingle-vm-victoria-metrics-k8s-stack
+        instance: 10.42.10.5:8428
+      exp_annotations:
+        description: '4M series nuevas en 24 h, sostenido 2 días: la cardinalidad registrada crece rápido y con ella data/indexdb (cada serie añade entrada al índice; 5,0M series ↔ 75 GiB de índice el 25-11). Identificar quién registra series: `kubectl -n monitoring exec $(kubectl -n monitoring get pod -l app.kubernetes.io/name=vmsingle -o jsonpath=''{.items[0].metadata.name}'') -c vmsingle -- sh -c ''wget -qO- http://127.0.0.1:8428/api/v1/status/tsdb''` → topCardinalitySeries por job/namespace (~2 min). Causas típicas medidas: pods que cambian de nombre/IP y arrastran miles de etiquetas nuevas por scrape (reinicios, Job/CronJob sin label estable). Runbook: skill `sre-alert-triage`, referencia «vmsingle: el disco lo llena el índice (SC-6644)».'
+        summary: vmsingle registra más de 3M series nuevas al día (SC-6644)
+- interval: 1h
+  name: '1M series nuevas/día (ritmo sano): no dispara churn'
+  input_series:
+  - series: vm_new_timeseries_created_total{job="vmsingle-vm-victoria-metrics-k8s-stack",instance="10.42.10.5:8428"}
+    values: 0+41667x95
+  alert_rule_test:
+  - eval_time: 95h
+    alertname: VmsingleSeriesChurnHigh
+    exp_alerts: []
