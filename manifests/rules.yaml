@@ -192,6 +192,21 @@ spec:
         # The `[a-z0-9]+` suffix is anchored by Prometheus and does not match a
         # hyphen, so `bge-m3-embedding-[a-z0-9]+` selects the pool Service's own
         # slice and NOT bge-m3-embedding-cpu-*. Verified live: one series per arm.
+        #
+        # 2026-11-26 (SC-6673, CRIT-21045 · causa critical-safety-net:b1c1a679ed, que
+        # abrió Requests SC-5546/6460/6653/6660/6673/6693 en 7 días): las patas
+        # absent() no distinguen «pool sin endpoints» de «kube-state-metrics sin
+        # scrape». Medido 25-11: up{job="kube-state-metrics"} a 0 cuarenta y una veces
+        # en 18 h (scrape cortado por el timeout), la alerta ardió 22:45→00:10 UTC con
+        # kube_endpointslice_endpoints{ready="true"} = 1 continuo en los dos pools —
+        # falso positivo puro. El `unless on()` suprime solo el PARPADEO (dentro de
+        # 10 min hay scrapes buenos y malos: la serie ausente es culpa del camino de
+        # scrape, y TargetDown ya avisa de él). Con kube-state-metrics ciego del todo
+        # más de 10 min (max_over_time == 0) la derecha cae y la alerta vuelve a
+        # saltar, como en FrigateCaido (SC-6661): se falla hacia avisar, nunca hacia
+        # callar. Raíz aparte: scrapeTimeout 25 s en victoria-metrics/values.yaml.
+        # El nombre y las labels no cambian: critical-safety-net y ops-watch los
+        # referencian.
         - alert: LlmPoolCapabilityUnavailable
           expr: |
             sum by (pool) (
@@ -215,6 +230,12 @@ spec:
                 "pool", "bge-reranker", "", ""
               ) * 0
             ) == 0
+            unless on()
+            (
+              min_over_time(up{job="kube-state-metrics"}[10m]) == 0
+              and
+              max_over_time(up{job="kube-state-metrics"}[10m]) == 1
+            )
           for: 5m
           labels:
             namespace: llm   # el expr agrega (sum/min by, absent) y suelta el label namespace de la serie; critical-safety-net de Keep agrupa y nombra por él

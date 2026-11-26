@@ -1,0 +1,100 @@
+# SC-6673 (26-11-2026, Keep CRIT-21045 · causa critical-safety-net:b1c1a679ed): LlmPoolCapabilityUnavailable
+# ardía 85 min con los dos pools sirviendo porque las patas absent() casaban con el hueco de
+# scrape de kube-state-metrics (medido: up a 0, 41 veces en 18 h; duration clavada en el timeout
+# de 10 s). El unless on() suprime el parpadeo; ciego del todo >10 min la alerta vuelve (patrón
+# SC-6661: se falla hacia avisar, nunca hacia callar). Corre tests/test_sc6673_llm_pool_ksm_guard_promtool.py.
+rule_files:
+- llm-pool-ksm-guard.rules.yaml
+evaluation_interval: 1m
+tests:
+- interval: 1m
+  name: 'regresión SC-6673: pool sirviendo 10 min, luego 35 min de hueco de scrape con up parpadeando (1/0) - NO dispara'
+  input_series:
+  - series: kube_endpointslice_endpoints{namespace="llm",endpointslice="bge-m3-embedding-nssw7",ready="true"}
+    values: 1x10 _x35
+  - series: kube_endpointslice_endpoints{namespace="llm",endpointslice="bge-reranker-l6ld6",ready="true"}
+    values: 1x45
+  - series: up{job="kube-state-metrics",namespace="monitoring",instance="10.42.6.4:8080",pod="vm-kube-state-metrics-54c988d789-9zcpw"}
+    values: 1 0 1 0 1 0 1 0 1 0 1 0 1 0 1 0 1 0 1 0 1 0 1 0 1 0 1 0 1 0 1 0 1 0 1 0 1 0 1 0 1 0 1 0 1
+  alert_rule_test:
+  - eval_time: 17m
+    alertname: LlmPoolCapabilityUnavailable
+    exp_alerts: []
+  - eval_time: 21m
+    alertname: LlmPoolCapabilityUnavailable
+    exp_alerts: []
+  - eval_time: 40m
+    alertname: LlmPoolCapabilityUnavailable
+    exp_alerts: []
+- interval: 1m
+  name: pool caído de verdad con KSM sano (up=1 continuo) - dispara tras el absent + for (no se ha perdido detección)
+  input_series:
+  - series: kube_endpointslice_endpoints{namespace="llm",endpointslice="bge-m3-embedding-nssw7",ready="true"}
+    values: 1x10 _x35
+  - series: kube_endpointslice_endpoints{namespace="llm",endpointslice="bge-reranker-l6ld6",ready="true"}
+    values: 1x45
+  - series: up{job="kube-state-metrics",namespace="monitoring",instance="10.42.6.4:8080",pod="vm-kube-state-metrics-54c988d789-9zcpw"}
+    values: 1x45
+  alert_rule_test:
+  - eval_time: 17m
+    alertname: LlmPoolCapabilityUnavailable
+    exp_alerts: []
+  - eval_time: 21m
+    alertname: LlmPoolCapabilityUnavailable
+    exp_alerts:
+    - exp_labels:
+        alertname: LlmPoolCapabilityUnavailable
+        severity: critical
+        area: kubernetes
+        workload_class: llm-pool
+        namespace: llm
+        pool: bge-embedding
+      exp_annotations:
+        summary: LLM pool Service has no ready endpoint
+        description: 'The bge-embedding pool Service has no ready endpoint, so everything that embeds or reranks (brain, litellm, openclaw) is failing and there is no CPU fallback. Note this fires on zero ENDPOINTS, not zero replicas: healthy pods sitting next to a Service whose label selector (bge-pool) matches none of them looks exactly like this, and the brain will answer 200 with zero sources rather than erroring. Check `kubectl get endpointslices -n llm | grep bge` first, then the pods'' bge-pool label, then the KEDA ScaledObjects and whether the gpu_arbiter preempted a half.'
+- interval: 1m
+  name: 'kube-state-metrics ciego del todo >10 min (up siempre 0, series sin scapear) - la alerta vuelve a saltar: se falla hacia avisar'
+  input_series:
+  - series: kube_endpointslice_endpoints{namespace="llm",endpointslice="bge-m3-embedding-nssw7",ready="true"}
+    values: 1x5 _x40
+  - series: kube_endpointslice_endpoints{namespace="llm",endpointslice="bge-reranker-l6ld6",ready="true"}
+    values: 1x5 _x40
+  - series: up{job="kube-state-metrics",namespace="monitoring",instance="10.42.6.4:8080",pod="vm-kube-state-metrics-54c988d789-9zcpw"}
+    values: '0x45'
+  alert_rule_test:
+  - eval_time: 21m
+    alertname: LlmPoolCapabilityUnavailable
+    exp_alerts:
+    - exp_labels:
+        alertname: LlmPoolCapabilityUnavailable
+        severity: critical
+        area: kubernetes
+        workload_class: llm-pool
+        namespace: llm
+        pool: bge-embedding
+      exp_annotations:
+        summary: LLM pool Service has no ready endpoint
+        description: 'The bge-embedding pool Service has no ready endpoint, so everything that embeds or reranks (brain, litellm, openclaw) is failing and there is no CPU fallback. Note this fires on zero ENDPOINTS, not zero replicas: healthy pods sitting next to a Service whose label selector (bge-pool) matches none of them looks exactly like this, and the brain will answer 200 with zero sources rather than erroring. Check `kubectl get endpointslices -n llm | grep bge` first, then the pods'' bge-pool label, then the KEDA ScaledObjects and whether the gpu_arbiter preempted a half.'
+    - exp_labels:
+        alertname: LlmPoolCapabilityUnavailable
+        severity: critical
+        area: kubernetes
+        workload_class: llm-pool
+        namespace: llm
+        pool: bge-reranker
+      exp_annotations:
+        summary: LLM pool Service has no ready endpoint
+        description: 'The bge-reranker pool Service has no ready endpoint, so everything that embeds or reranks (brain, litellm, openclaw) is failing and there is no CPU fallback. Note this fires on zero ENDPOINTS, not zero replicas: healthy pods sitting next to a Service whose label selector (bge-pool) matches none of them looks exactly like this, and the brain will answer 200 with zero sources rather than erroring. Check `kubectl get endpointslices -n llm | grep bge` first, then the pods'' bge-pool label, then the KEDA ScaledObjects and whether the gpu_arbiter preempted a half.'
+- interval: 1m
+  name: 'todo sano: pools con endpoint listo y KSM scrapeando - silencio'
+  input_series:
+  - series: kube_endpointslice_endpoints{namespace="llm",endpointslice="bge-m3-embedding-nssw7",ready="true"}
+    values: 1x45
+  - series: kube_endpointslice_endpoints{namespace="llm",endpointslice="bge-reranker-l6ld6",ready="true"}
+    values: 1x45
+  - series: up{job="kube-state-metrics",namespace="monitoring",instance="10.42.6.4:8080",pod="vm-kube-state-metrics-54c988d789-9zcpw"}
+    values: 1x45
+  alert_rule_test:
+  - eval_time: 40m
+    alertname: LlmPoolCapabilityUnavailable
+    exp_alerts: []
