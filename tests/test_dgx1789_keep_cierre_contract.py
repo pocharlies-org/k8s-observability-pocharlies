@@ -2,8 +2,8 @@
 
 Pins:
 
-1. `alertas-cierre` se dispara con `type: incident` / `events: [updated]` (la resolución de Keep 0.52.1
-   sale como `updated`, no como evento propio).
+1. `alertas-cierre` se dispara con `type: incident` / `events: [updated, deleted]` (la resolución de
+   Keep 0.52.1 sale como `updated`, no como evento propio; el borrado sale como `deleted`).
 2. El step SIEMPRE devuelve una fila (LEFT JOIN sobre `(VALUES (1))`): con 0 filas `results.0.0`
    renderiza vacío y el `if` de la action corta el POST. El `if` no puede ir en el step.
 3. El body lleva `tipo: cierre` y la lista de fingerprints con los que se lanzaron las sesiones (la clave
@@ -38,8 +38,8 @@ class CierreTest(unittest.TestCase):
         (self.avisar,) = self.wf["actions"]
         self.query = self.datos["provider"]["with"]["query"]
 
-    def test_trigger_incidente_actualizado(self):
-        self.assertEqual(self.wf["triggers"], [{"type": "incident", "events": ["updated"]}])
+    def test_trigger_incidente_actualizado_o_borrado(self):
+        self.assertEqual(self.wf["triggers"], [{"type": "incident", "events": ["updated", "deleted"]}])
 
     def test_step_siempre_devuelve_fila(self):
         self.assertIn("FROM (VALUES (1)) AS siempre(x)", self.query)
@@ -74,7 +74,15 @@ class CierreTest(unittest.TestCase):
         # Medido en el pod (23-11): `{{ incident.status }}` llega como
         # `IncidentStatus.RESOLVED`, no `resolved`; sin normalizar, el ON nunca
         # casa y el cierre no sale.
-        self.assertIn("lower(replace('{{ incident.status }}', 'IncidentStatus.', '')) = 'resolved'", self.query)
+        self.assertIn("lower(replace('{{ incident.status }}', 'IncidentStatus.', ''))", self.query)
+
+    def test_borrado_cierra_igual_que_resuelto(self):
+        # INFRA-1610: Keep emite `deleted` al borrar el incidente; sin esto su
+        # sesión quedaba abierta para siempre.
+        self.assertIn(
+            "lower(replace('{{ incident.status }}', 'IncidentStatus.', '')) IN ('resolved', 'deleted')",
+            self.query,
+        )
 
 
 if __name__ == "__main__":
