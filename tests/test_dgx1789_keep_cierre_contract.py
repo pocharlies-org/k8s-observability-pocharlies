@@ -70,19 +70,15 @@ class CierreTest(unittest.TestCase):
         self.assertIn("substr(md5(id::text), 1, 16)", self.query)
         self.assertIn("string_agg(DISTINCT", self.query)
 
-    def test_estado_normalizado_porque_el_enum_renderiza_su_repr(self):
-        # Medido en el pod (23-11): `{{ incident.status }}` llega como
-        # `IncidentStatus.RESOLVED`, no `resolved`; sin normalizar, el ON nunca
-        # casa y el cierre no sale.
-        self.assertIn("lower(replace('{{ incident.status }}', 'IncidentStatus.', ''))", self.query)
-
-    def test_borrado_cierra_igual_que_resuelto(self):
-        # INFRA-1610: Keep emite `deleted` al borrar el incidente; sin esto su
-        # sesión quedaba abierta para siempre.
+    def test_estado_leido_de_la_bbdd_no_del_evento(self):
+        # En el borrado el DTO del evento se construye ANTES del UPDATE
+        # (incidents_bl.delete_incident) y `{{ incident.status }}` llega con el
+        # estado viejo (`firing`, medido 26-11): el estado se lee de la columna.
         self.assertIn(
-            "lower(replace('{{ incident.status }}', 'IncidentStatus.', '')) IN ('resolved', 'deleted')",
-            self.query,
+            "LEFT JOIN arbol ON (SELECT status::text FROM incident", self.query
         )
+        self.assertIn("IN ('resolved', 'deleted')", self.query)
+        self.assertNotIn("{{ incident.status }}", self.query)
 
 
 if __name__ == "__main__":
