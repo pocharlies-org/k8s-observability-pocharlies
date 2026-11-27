@@ -151,10 +151,20 @@ rules:
       Workers y tasa de error del dominio de generación de imagen, incluido el
       entrenador de Krea. Van juntos porque comparten cola y GPU.
 
+  # INFRA-1626 (SC-6837): la familia de saturación entera, no sólo BackendsWaiting.
+  # Medido en SC-6824: postgres-shared a 493/500 —PostgresSharedConnectionsCritical
+  # fireó 20 min (04:05→04:25Z)— y el incidente lo montaron los daños colaterales
+  # (TargetDown + BlackboxProbeDown de synapse-dispatcher y firecrawl-api, que
+  # mueren al arrancar sin conexiones) bajo «Monitorización degradada» (MON-21241):
+  # la causa no tenía incidente propio y la regla de monitorización absorbía un
+  # daño que no era monitorización rota. Ahora la saturación abre su PGSH con su
+  # keep-causa; los colaterales se inhiben en Alertmanager mientras firea
+  # (manifests/alertmanager-config.yaml, patrón INFRA-1529) y no montan un MON
+  # falso. Un TargetDown sin saturación sigue abriendo monitoring-degraded.
   - ruleName: datastore-shared
     incidentPrefix: PGSH
-    celQuery: name in ["PostgresSharedBackendsWaiting"]
-    sqlQuery: {"sql": "((name in (:name_1)))", "params": {"name_1": "PostgresSharedBackendsWaiting"}}
+    celQuery: name.startsWith("PostgresSharedConnections") || name == "PostgresSharedBackendsWaiting"
+    sqlQuery: {"sql": "((name like :name_1) or (name in (:name_2)))", "params": {"name_1": "PostgresSharedConnections%", "name_2": "PostgresSharedBackendsWaiting"}}
     groupingCriteria: []
     createOn: any
     resolveOn: all_resolved
@@ -162,8 +172,10 @@ rules:
     timeUnit: minutes
     incidentNameTemplate: "Postgres compartido saturado"
     groupDescription: >-
-      Backends esperando en el CNPG compartido. Lo usan Synapse, Keep, Aurora y
-      la tienda: la saturación aquí se manifiesta como lentitud en todo lo demás.
+      Saturación del CNPG compartido: conexiones (High/Critical) y backends
+      esperando. Lo usan Synapse, Keep, Aurora y la tienda: la saturación aquí se
+      manifiesta como lentitud en todo lo demás — y como TargetDown de sus
+      consumidores, inhibido mientras firea (INFRA-1626).
 
   - ruleName: k8s-control-plane
     incidentPrefix: K8S
@@ -211,6 +223,11 @@ rules:
   # warning); con critical montaba un «Crítico en N/A» fantasma — no lleva label
   # namespace y la red agrupa por él (CRIT-18469, 05/11). La cobertura la sigue
   # dando sre-chain-probe, cuyo CEL no mira la severidad.
+  # INFRA-1626: PostgresSharedConnections* tiene regla propia (datastore-shared) y
+  # se excluye aquí para no abrir dos incidentes por la misma saturación — la
+  # crítica ConnectionsCritical montaba además un «Crítico en databases» (INVARIANTE
+  # 1: la exclusión delega en la regla). Las demás PostgresShared* (Backup*,
+  # InstancesNotReady) NO tienen regla y se quedan recogidas por la red.
   - ruleName: critical-safety-net
     celQuery: >-
       (severity == "critical" || labels.severity == "page") && !(
@@ -222,6 +239,7 @@ rules:
         name.startsWith("Rabbitmq") || name.startsWith("Keep") ||
         name.startsWith("LonghornVolume") ||
         name.startsWith("Alertmanager") || name.startsWith("SharedValkey") ||
+        name.startsWith("PostgresSharedConnections") ||
         name.startsWith("SharedDatastore") || name.startsWith("KubeNode") ||
         name.startsWith("Node") || name.startsWith("MacBuild") ||
         name in ["KubernetesDeploymentUnavailable", "KubeDeploymentReplicasMismatch",
