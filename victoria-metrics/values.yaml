@@ -592,14 +592,24 @@ kube-state-metrics:
   # kube_replicaset_owner para el join Deployment), los 20 dashboards instalados
   # (label grafana_dashboard=1, todos los namespaces) y los dashboards/codigo de
   # dgx-infra. Resultado medido: -7.23 MB de 13.21 MB de familias kube_* (-54%).
-  # Colecciones retiradas (0 consumidores en todo lo anterior):
-  # certificatesigningrequests, leases, limitranges, persistentvolumes,
-  # poddisruptionbudgets, replicationcontrollers, resourcequotas, storageclasses,
-  # volumeattachments, mutating/validatingwebhookconfigurations.
-  # metricDenylist = familias NO consumidas dentro de las colecciones que quedan
-  # (nombres exactos, medidos del body real; no regex, para que un typo no pueda
-  # retirar una serie consumida). Si una regla nueva necesita una familia
-  # retirada, se anade aqui su nombre exacto (es una linea, no un revert).
+  # INFRA-1617 (27-11, CRIT-21231): la medicion de arriba dejaba fuera las VMRules
+  # del propio chart (las Kube* de kubernetes-apps/-resources/-storage/-kubelet) y
+  # daba por exactos nombres que KSM compila como regex SIN ANCLAR: la entrada
+  # kube_deployment_status_replicas retiro tambien, por prefijo,
+  # kube_deployment_status_replicas_available y cego WeightResolverDown /
+  # WeightResolverMetricMissing con el servicio sano. Corregido: collectors y
+  # metricDenylist validados contra las 60 familias kube_* que referencian las
+  # VMRules vivas del cluster (kubectl get vmrule -A -o json, expr de las reglas).
+  # Colecciones retiradas (0 consumidores en reglas vivas + dashboards):
+  # certificatesigningrequests, leases, limitranges, replicationcontrollers,
+  # storageclasses, volumeattachments, mutating/validatingwebhookconfigurations.
+  # (persistentvolumes, poddisruptionbudgets y resourcequotas volvieron con
+  # INFRA-1617: las KubePersistentVolumeErrors / KubePdbNotEnoughHealthyPods /
+  # KubeQuota* del chart las consumen.)
+  # metricDenylist = familias NO consumidas dentro de las colecciones que quedan.
+  # OJO: cada entrada es una regex sin anclar: retira TODA familia que empiece por
+  # ella. Antes de anadir una, comprobar contra las reglas vivas del cluster, no
+  # solo contra las de este repo (es lo que fallo aqui).
   collectors:
     - configmaps
     - cronjobs
@@ -613,8 +623,11 @@ kube-state-metrics:
     - networkpolicies
     - nodes
     - persistentvolumeclaims
+    - persistentvolumes
     - pods
+    - poddisruptionbudgets
     - replicasets
+    - resourcequotas
     - secrets
     - services
     - statefulsets
@@ -639,23 +652,15 @@ kube-state-metrics:
     - kube_daemonset_created
     - kube_daemonset_deletion_timestamp
     - kube_daemonset_metadata_generation
-    - kube_daemonset_status_current_number_scheduled
-    - kube_daemonset_status_number_available
-    - kube_daemonset_status_number_misscheduled
     - kube_daemonset_status_number_unavailable
     - kube_daemonset_status_observed_generation
-    - kube_daemonset_status_updated_number_scheduled
     - kube_deployment_annotations
     - kube_deployment_created
     - kube_deployment_deletion_timestamp
-    - kube_deployment_metadata_generation
     - kube_deployment_owner
     - kube_deployment_spec_paused
     - kube_deployment_spec_strategy_rollingupdate_max_surge
     - kube_deployment_spec_strategy_rollingupdate_max_unavailable
-    - kube_deployment_status_condition
-    - kube_deployment_status_observed_generation
-    - kube_deployment_status_replicas
     - kube_deployment_status_replicas_ready
     - kube_deployment_status_replicas_updated
     - kube_deployment_status_terminating_replicas
@@ -672,7 +677,6 @@ kube-state-metrics:
     - kube_horizontalpodautoscaler_labels
     - kube_horizontalpodautoscaler_metadata_generation
     - kube_horizontalpodautoscaler_spec_target_metric
-    - kube_horizontalpodautoscaler_status_desired_replicas
     - kube_horizontalpodautoscaler_status_target_metric
     - kube_ingress_annotations
     - kube_ingress_created
@@ -688,7 +692,6 @@ kube-state-metrics:
     - kube_job_spec_active_deadline_seconds
     - kube_job_spec_completions
     - kube_job_spec_parallelism
-    - kube_job_status_active
     - kube_job_status_completion_time
     - kube_job_status_failed
     - kube_job_status_ready
@@ -704,12 +707,7 @@ kube-state-metrics:
     - kube_node_annotations
     - kube_node_created
     - kube_node_deletion_timestamp
-    - kube_node_spec_taint
-    - kube_node_spec_unschedulable
     - kube_node_status_addresses
-    - kube_node_status_allocatable
-    - kube_node_status_capacity
-    - kube_persistentvolumeclaim_access_mode
     - kube_persistentvolumeclaim_annotations
     - kube_persistentvolumeclaim_created
     - kube_persistentvolumeclaim_deletion_timestamp
@@ -761,7 +759,6 @@ kube-state-metrics:
     - kube_replicaset_status_ready_replicas
     - kube_replicaset_status_replicas
     - kube_replicaset_status_terminating_replicas
-    - kube_resourcequota
     - kube_secret_annotations
     - kube_secret_created
     - kube_secret_labels
@@ -776,16 +773,10 @@ kube-state-metrics:
     - kube_statefulset_annotations
     - kube_statefulset_created
     - kube_statefulset_deletion_timestamp
-    - kube_statefulset_metadata_generation
     - kube_statefulset_ordinals_start
     - kube_statefulset_persistentvolumeclaim_retention_policy
-    - kube_statefulset_status_current_revision
-    - kube_statefulset_status_observed_generation
-    - kube_statefulset_status_replicas
     - kube_statefulset_status_replicas_available
     - kube_statefulset_status_replicas_current
-    - kube_statefulset_status_replicas_updated
-    - kube_statefulset_status_update_revision
   metricLabelsAllowlist:
     - services=[infra]
     - namespaces=[infra]
