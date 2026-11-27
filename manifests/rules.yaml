@@ -3246,8 +3246,14 @@ spec:
           # ha ido y también es alarma. Con KSM caído NO: el hueco de serie es de KSM,
           # no del x86 (SC-2850: el crash-loop OOM de KSM del 21/10–27/10 reabrió este
           # crítico 10 veces con el nodo sano; TargetDown del chart ya cubre KSM caído).
-          # El gate `and on() up{job="kube-state-metrics"} == 1` deja la alarma de
-          # monitorización en TargetDown y la de nodo en esta.
+          # (SC-6808, CRIT-21229, 27-11) El gate era `up{job="kube-state-metrics"} == 1` y
+          # NO bastó: el recorte de colecciones de SC-6741 (#284) quitó `nodes` de KSM y a
+          # las 01:59Z esto saltó con el x86 sano y KSM up==1 — vivo pero ciego de nodos.
+          # El gate ahora exige que KSM esté exportando de verdad condiciones Ready de los
+          # DEMÁS nodos: cubre KSM caído (las series caducan → cerrado, como antes), KSM con
+          # el scrape roto y KSM vivo sin el colector (el caso de hoy), y sigue disparando
+          # con el x86 mudo de verdad (Ready=false/unknown, u objeto nodo borrado con los
+          # demás nodos presentes). Deja la alarma de monitorización en TargetDown.
           # Un reinicio planificado de más de 5 min también salta: es intencionado.
           expr: |
             (
@@ -3256,7 +3262,7 @@ spec:
               absent_over_time(kube_node_status_condition{node="ubuntu",condition="Ready"}[5m])
             )
             and on()
-            (up{job="kube-state-metrics"} == 1)
+            (count(kube_node_status_condition{condition="Ready",node!="ubuntu"}) > 0)
           for: 5m
           labels:
             severity: critical
