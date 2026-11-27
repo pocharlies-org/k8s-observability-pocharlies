@@ -3307,8 +3307,12 @@ spec:
 # 14.4Gi (48 %) — RSS 4.2Gi + page cache activo subieron el ws a 27.3Gi — falsa alarma; y a
 # las 11:54Z el tmpfs SÍ se llenó (ENOSPC, builds amd64 cayendo, INFRA-953) sin dispararse:
 # llenó a ~2.5Gi/min (9→31Gi en 9 min) y nunca estuvo 10 min por encima de 26.1Gi.
-# Umbral: 85 % del sizeLimit de 30Gi = 26.1Gi (28057006694 bytes). La referencia desde el
+# Umbral: 85 % del sizeLimit de 48Gi = 40.8Gi (43798696038 bytes). La referencia desde el
 # manifiesto está en k8s-infra-pocharlies buildkit/buildkitd-amd64.yaml.
+# INFRA-1628 (27-11): la regla ya corregida (SC-6224) disparó de verdad — dos builds
+# concurrentes dieron ENOSPC con el tmpfs a 29.4Gi (un lote de merges dejó ~6 builds amd64
+# en vuelo a la vez; el GC entre builds no puede podar lo que está en uso). Positivo
+# verdadero: se sube el sizeLimit a 48Gi en k8s-infra y este umbral con él.
 apiVersion: operator.victoriametrics.com/v1beta1
 kind: VMRule
 metadata:
@@ -3321,7 +3325,7 @@ spec:
         - alert: BuildkitAmd64CacheHigh
           expr: |
             (container_memory_cache{namespace="buildkit", pod=~"buildkitd-amd64.*", container="buildkitd"}
-              - container_memory_total_inactive_file_bytes{namespace="buildkit", pod=~"buildkitd-amd64.*", container="buildkitd"}) > 26.1Gi
+              - container_memory_total_inactive_file_bytes{namespace="buildkit", pod=~"buildkitd-amd64.*", container="buildkitd"}) > 40.8Gi
           # 1m, no 10m: con el ritmo de llenado medido (~2.5Gi/min) nunca hay 10 min de
           # margen hasta el ENOSPC — el 21-11 el evento real cruzó el 85 % ~1 min antes de
           # fallar. El margen útil son ~2 min: para avisar, no para podar a mano (el GC
@@ -3340,11 +3344,11 @@ spec:
             area: capacity
             namespace: buildkit
           annotations:
-            summary: "Caché de buildkitd-amd64 por encima del 85 % del tmpfs de 30Gi ({{ $value | humanize1024 }}B)"
+            summary: "Caché de buildkitd-amd64 por encima del 85 % del tmpfs de 48Gi ({{ $value | humanize1024 }}B)"
             description: >-
               La caché tmpfs de buildkitd-amd64 (cache - inactive_file, que excluye el RSS
-              del daemon y de sus builds) lleva 1 min por encima de 26.1Gi = 85 % del
-              sizeLimit de 30Gi. A 30Gi el tmpfs da ENOSPC y caen todos los builds amd64
+              del daemon y de sus builds) lleva 1 min por encima de 40.8Gi = 85 % del
+              sizeLimit de 48Gi. A 48Gi el tmpfs da ENOSPC y caen todos los builds amd64
               de la org (INFRA-953). El GC (buildkitd.toml, SC-2759) poda solo al
               llenarse; si se repite sin que el GC pode, revisar el ConfigMap
               buildkitd-amd64-config y el suelo de registros «in use» (INFRA-953).
