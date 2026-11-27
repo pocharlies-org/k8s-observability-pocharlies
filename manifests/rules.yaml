@@ -1944,7 +1944,14 @@ spec:
     - name: skirmshop-apps.runtime
       rules:
         - alert: SkirmshopAppRestartSpike
-          expr: increase(kube_pod_container_status_restarts_total{namespace="skirmshop",container="app",pod!~"affiliate-app.*"}[1h]) > 2
+          # increase() de VM cuenta el primer valor de una serie renacida como
+          # incremento: cada arranque de kube-state-metrics disparaba crítico
+          # falso ~1h en todo pod con >=3 reinicios históricos (CRIT-21254,
+          # 27-11: rag-app plano en 5 desde 01:34, firing 04:37 tras el rollout
+          # de KSM de las 04:24). max-min mide el delta real de la ventana.
+          expr: |
+            (max_over_time(kube_pod_container_status_restarts_total{namespace="skirmshop",container="app",pod!~"affiliate-app.*"}[1h])
+             - min_over_time(kube_pod_container_status_restarts_total{namespace="skirmshop",container="app",pod!~"affiliate-app.*"}[1h])) > 2
           for: 10m
           labels:
             severity: critical

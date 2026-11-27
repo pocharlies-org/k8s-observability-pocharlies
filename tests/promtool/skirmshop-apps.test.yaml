@@ -47,6 +47,15 @@ tests:
         alertname: AffiliateAppRestartSpike
         exp_alerts: []
   - interval: 5m
+    name: KSM renace la serie en 5 sin reinicios nuevos -> no SkirmshopAppRestartSpike (el falso CRIT-21254)
+    input_series:
+      - series: 'kube_pod_container_status_restarts_total{namespace="skirmshop",container="app",pod="rag-app-64c5ff455c-qnlgw"}'
+        values: '_ _ _ _ _ _ _ _ _ _ _ _ 5x24'
+    alert_rule_test:
+      - eval_time: 80m
+        alertname: SkirmshopAppRestartSpike
+        exp_alerts: []
+  - interval: 5m
     name: collections-tree-app OOMKilled y reinicia -> solo SkirmshopAppOOMKilled
     input_series:
       - series: 'kube_pod_container_status_last_terminated_reason{namespace="skirmshop",container="app",pod="collections-tree-app-6986ffc74b-fj22w",reason="OOMKilled"}'
