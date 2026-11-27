@@ -307,7 +307,10 @@ spec:
   schedule: "*/15 * * * *"
   timeZone: Europe/Madrid
   concurrencyPolicy: Forbid
-  successfulJobsHistoryLimit: 1
+  # 2 en vez de 1 (INFRA-1627): con 1, el job que cerró un incident se borra al
+  # éxito del siguiente y la evidencia del cierre («fantasma: N») desaparece en
+  # 15 min — imposibilitó atribuir los cierres de la verificación del 27-11.
+  successfulJobsHistoryLimit: 2
   failedJobsHistoryLimit: 3
   startingDeadlineSeconds: 300
   jobTemplate:
