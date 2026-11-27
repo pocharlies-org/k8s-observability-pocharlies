@@ -8,13 +8,30 @@
 # `firing` con CERO alertas activas en AM, el más antiguo de julio.
 #
 # QUÉ HACE. Reconcilia desde el otro lado: pide a AM la lista de fingerprints
-# activos (fuente de verdad) y a Keep sus incidents `firing`. Para cada alerta
-# de un incident que NO esté activa en AM, reenvía el evento `resolved` por el
-# MISMO canal de ingesta que usa AM (`POST /alerts/event/prometheus`, formato
-# webhook con clave `alerts` — en formato array Keep lo descarta en silencio,
-# verificado el 17-09). El motor de Keep resuelve el incident solo al quedar
-# todas sus alertas resolved; como red de seguridad, si tras el replay sigue
-# `firing` y todas sus alertas están resolved, lo resuelve por API.
+# activos (fuente de verdad) y a Keep sus incidents `firing` y `acknowledged`.
+# Dos casos, dos caminos:
+#
+# 1. Zombis: alertas `firing`/`acknowledged` de un incident cuya fingerprint NO
+#    está en AM. Reenvía el evento `resolved` por el MISMO canal de ingesta que
+#    usa AM (`POST /alerts/event/prometheus`, formato webhook con clave `alerts`
+#    — en formato array Keep lo descarta en silencio, verificado el 17-09). El
+#    motor de Keep resuelve el incident solo al quedar todas sus alertas
+#    resolved; como red de seguridad, si tras el replay sigue abierto y todas
+#    sus alertas están resolved, lo resuelve por API.
+#
+# 2. Fantasma (INFRA-1627): incident `firing`/`acknowledged` con TODAS sus
+#    alertas ya `resolved` en Keep. Cuando el resolved SÍ llegó a Keep pero el
+#    incident estaba acknowledged (el claim de Aurora acks al nacer), el motor
+#    `all_resolved` no lo toca: en Keep el acknowledged es estado de persona y
+#    no auto-resuelve. Medido el 27-11: 9 incidents así, el más antiguo de
+#    octubre; MON-21004 (SC-6648) y MON-21241 (SC-6824) se cerraron a mano dos
+#    veces. Criterio: sin alertas abiertas, `alert_sources` solo `prometheus`
+#    (x86/argocd tienen su propia fuente de verdad, ver el filtro de zombis),
+#    ningún fingerprint de sus alertas resolved de las últimas
+#    PHANTOM_RESOLVED_WINDOW_HOURS está vivo en AM, y `last_seen` más viejo que
+#    GRACE_SECONDS. Sin resolved recientes no hay comprobación AM posible: no
+#    se toca (por eso los fantasma anteriores al despliegue se barrieren a mano
+#    una vez, no por el job).
 #
 # NUNCA resuelve nada si AM no responde: el criterio de "zombi" es la ausencia
 # en AM, y una AM inalcansable no es prueba de nada. Ante cualquier fallo al
@@ -55,6 +72,12 @@ data:
     # este job viene a evitar. El steady-state son segundos; el primer barrido
     # tras un backlog grande tarda minutos a propósito.
     PAUSE = float(os.environ.get("PAUSE_SECONDS", "0.5"))
+    # Ventana del camino fantasma: solo se comprueba AM contra alertas resolved
+    # recibidas en las últimas N horas (consulta acotada por CEL lastReceived;
+    # el histórico completo son ~20k filas y no cabe cada 15 min). Un incident
+    # fantasma más viejo que la ventana no se puede verificar: se queda como
+    # está (se barrió a mano una vez; los nuevos caen dentro siempre).
+    PHANTOM_WINDOW_HOURS = float(os.environ.get("PHANTOM_RESOLVED_WINDOW_HOURS", "48"))
 
     def call(url, method="GET", payload=None, headers=None):
         req = urllib.request.Request(
@@ -217,7 +240,59 @@ data:
                 print(f"  {inc['id'][:8]}: estado tras replay no confirmable ({e})", file=sys.stderr)
         time.sleep(PAUSE)
 
-    print(f"replayed: {replayed} alertas zombi | incidents resueltos: {resolved}")
+    # 3. Camino fantasma (INFRA-1627): incidents abiertos con TODAS sus alertas
+    # resolved. El resolved llegó a Keep (la alerta está resolved) pero el
+    # incident sigue `acknowledged` porque en Keep el acknowledged no
+    # auto-resuelve. Comprobación AM: ningún fingerprint de sus alertas
+    # resolved recientes está vivo en AM.
+    window_start = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(now - PHANTOM_WINDOW_HOURS * 3600))
+    resolved_fps = {}  # incident id -> set de fingerprints resolved en la ventana
+    offset = 0
+    while True:
+        resp = call(f"{KEEP}/alerts/query", method="POST", headers=keep_h,
+                    payload={"cel": f'status == "resolved" && lastReceived > "{window_start}"',
+                             "limit": 1000, "offset": offset})
+        items = resp.get("results", [])
+        for a in items:
+            if not a.get("fingerprint"):
+                continue
+            for inc_id in (a.get("incident") or "").split(","):
+                inc_id = inc_id.strip()
+                if inc_id:
+                    resolved_fps.setdefault(inc_id, set()).add(a["fingerprint"])
+        if not items or offset + len(items) >= resp.get("count", 0):
+            break
+        offset += 1000
+
+    phantoms = 0
+    for inc in firing:
+        inc_id = str(inc["id"])
+        if alerts_by_inc.get(inc_id):
+            continue  # tiene alertas abiertas: eso es el camino de zombis, no este
+        sources = set(inc.get("alert_sources") or [])
+        if not sources or not sources <= {"prometheus"}:
+            continue  # x86/argocd/otros: su fuente de verdad no es AM (ver zombis)
+        fps = resolved_fps.get(inc_id)
+        if not fps:
+            continue  # sin resolved recientes no hay comprobación AM posible
+        if fps & live:
+            continue  # AM aún tiene una de sus alertas viva: incident vivo, no tocar
+        last_seen = (inc.get("last_seen_time") or "")[:19]
+        try:
+            ls_epoch = time.mktime(time.strptime(last_seen, "%Y-%m-%dT%H:%M:%S"))
+            if now - ls_epoch < GRACE_SECONDS:
+                continue
+        except ValueError:
+            pass
+        try:
+            call(f"{KEEP}/incidents/{inc_id}/status", method="POST",
+                 payload={"status": "resolved"}, headers=keep_h)
+            phantoms += 1
+        except Exception as e:
+            print(f"  fantasma {inc_id[:8]}: no se pudo resolver ({e})", file=sys.stderr)
+        time.sleep(PAUSE)
+
+    print(f"replayed: {replayed} alertas zombi | incidents resueltos: {resolved} | fantasma: {phantoms}")
 ---
 apiVersion: batch/v1
 kind: CronJob
