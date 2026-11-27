@@ -115,6 +115,21 @@ spec:
         - alertname = "VmagentRemoteWriteFailing"
       target_matchers:
         - pipeline_blind = "true"
+    # INFRA-1626 (SC-6837, 27-11): postgres-shared saturado tumba los arranques de
+    # sus consumidores y sus TargetDown/BlackboxProbeDown montaban el incidente
+    # «Monitorización degradada» (MON-21241 / SC-6824: 493/500, synapse-dispatcher
+    # y firecrawl-api) que no era monitorización rota. Mientras
+    # PostgresSharedConnectionsCritical firea, esos daños colaterales se inhiben y
+    # no llegan a Keep: el incidente real es el PGSH (regla datastore-shared, que
+    # desde esta PR cubre la familia PostgresSharedConnections*). Sin `equal`: la
+    # fuente es global — un postgres lleno ciega a los consumidores de todos los
+    # namespaces, no sólo a los de su serie. Al resolverse la saturación, los
+    # targets que sigan caídos re-arden y abren monitoring-degraded: si un target
+    # está caído con postgres sano, eso SÍ es monitorización o app rota.
+    - source_matchers:
+        - alertname = "PostgresSharedConnectionsCritical"
+      target_matchers:
+        - alertname =~ "TargetDown|BlackboxProbeDown"
 
   receivers:
     - name: blackhole
