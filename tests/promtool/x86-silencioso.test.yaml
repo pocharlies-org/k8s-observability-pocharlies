@@ -1,4 +1,6 @@
-# Casos de X86Silencioso (promtool test rules, INFRA-727; gate de KSM vivo SC-2850).
+# Casos de X86Silencioso (promtool test rules, INFRA-727; gate SC-2850 -> SC-6808:
+# el gate ya no es up{job="kube-state-metrics"} sino que KSM exporte las condiciones
+# Ready de los demás nodos, así que los casos se modelan con series de otro nodo).
 # `rules` la genera tests/test_infra727_x86_silencioso_promtool.py desde la VMRule
 # pocharlies-x86-silencioso.
 rule_files:
@@ -14,7 +16,7 @@ tests:
         values: '0x40'
       - series: 'kube_node_status_condition{node="ubuntu",condition="Ready",status="unknown"}'
         values: '0x40'
-      - series: 'up{job="kube-state-metrics"}'
+      - series: 'kube_node_status_condition{node="atlantic",condition="Ready",status="true"}'
         values: '1x40'
     alert_rule_test:
       - eval_time: 30m
@@ -29,7 +31,7 @@ tests:
         values: '0x39'
       - series: 'kube_node_status_condition{node="ubuntu",condition="Ready",status="unknown"}'
         values: '0x9 1x29'
-      - series: 'up{job="kube-state-metrics"}'
+      - series: 'kube_node_status_condition{node="atlantic",condition="Ready",status="true"}'
         values: '1x40'
     alert_rule_test:
       - eval_time: 14m
@@ -48,12 +50,14 @@ tests:
               summary: "x86 (ubuntu) sin latido de nodo más de 5 min"
               description: "El nodo ubuntu (x86) lleva más de 5 min sin Ready en kube-state-metrics, o la serie ha desaparecido. Causa típica: NFS hard contra sauvage (100.109.183.9) o kubelet bloqueado. Mirar `grep sauvage /proc/mounts`, `journalctl -b -1 -k` y `systemctl --user status openchamber`."
   - interval: 1m
-    name: la serie desaparece con KSM caído -> SIN alerta (el hueco es de KSM; lo cubre TargetDown) — SC-2850
+    name: todas las series de nodo desaparecen con KSM VIVO y up==1 (cegador del colector nodes, CRIT-21229) -> SIN alerta; el hueco es de KSM (SC-2850 caído / SC-6808 vivo-pero-ciego; lo cubre TargetDown)
     input_series:
       - series: 'kube_node_status_condition{node="ubuntu",condition="Ready",status="true"}'
         values: '1x4 _x30'
+      - series: 'kube_node_status_condition{node="atlantic",condition="Ready",status="true"}'
+        values: '1x4 _x30'
       - series: 'up{job="kube-state-metrics"}'
-        values: '1x4 0x30'
+        values: '1x40'
     alert_rule_test:
       - eval_time: 16m
         alertname: X86Silencioso
@@ -63,7 +67,7 @@ tests:
     input_series:
       - series: 'kube_node_status_condition{node="ubuntu",condition="Ready",status="true"}'
         values: '1x4 _x30'
-      - series: 'up{job="kube-state-metrics"}'
+      - series: 'kube_node_status_condition{node="atlantic",condition="Ready",status="true"}'
         values: '1x40'
     alert_rule_test:
       - eval_time: 8m
