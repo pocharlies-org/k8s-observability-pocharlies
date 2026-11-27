@@ -995,6 +995,12 @@ spec:
         # atlassian) y SC-6692 (shared-valkey): con el backend vivo y la serie
         # perdida el gate esta fresco y el termino dispara igual; con el backend
         # ciego la ausencia no es evidencia (lo cubre AlertingRulesError).
+        # SC-6740 (causa b1c1a679ed, SC-6657): ademas `and on()
+        # (max(up{job="kube-state-metrics"}) == 1)` en el absent de las dos — un
+        # hueco del scrape de KSM (41 veces up=0 en 18 h, SC-6673) quita la serie
+        # y hace cierto el absent con los CronJobs sanos; con el sensor ciego la
+        # ceguera la cubren TargetDown/ScrapePathGap (patrón KeepBackendAbsent,
+        # INFRA-1527).
         - alert: BackupWeeklySnapshotStale
           # Domingos 04:00 UTC (SC-3974 movio la familia 21:00 -> 04:00; el
           # CronJob live tiene schedule "0 4 * * 0"). 8 dias + 2 h: tolera un
@@ -1014,6 +1020,7 @@ spec:
                 namespace="databases", cronjob="logical-dump-postgres-shared"
               })
               unless on() absent_over_time(vm_app_uptime_seconds{job="vmalert-vm-victoria-metrics-k8s-stack"}[10m])
+              and on() (max(up{job="kube-state-metrics"}) == 1)
             )
           for: 15m
           labels:
@@ -1024,9 +1031,18 @@ spec:
             component: postgres-shared
           annotations:
             summary: "El dump SEMANAL de postgres-shared no completa desde hace mas de 8 dias"
-            description: "El CronJob databases/logical-dump-postgres-shared no registra exito en Kubernetes en mas de 8 dias, o su metrica esta ausente (el termino de ausencia no dispara si las metricas del propio vmalert tampoco llegan a VictoriaMetrics: caida del backend, SC-6654). Es la unica copia de la base FUERA de sauvage (el kit lo sube a Drive); el PITR de CNPG vive en el mismo disco. OJO: comprueba los BYTES en el bucket de OVH (INFRA-1175), no el estado del Job: mc ls ovh/cnpg-backups-pocharlies/logical-dumps/postgres-shared/ debe tener un .sql.gz por cada .sha256."
+            description: "El CronJob databases/logical-dump-postgres-shared no registra exito en Kubernetes en mas de 8 dias, o su metrica esta ausente (el termino de ausencia no dispara si las metricas del propio vmalert tampoco llegan a VictoriaMetrics: caida del backend, SC-6654; ni si el scrape de kube-state-metrics esta caido: hueco de sensor, SC-6740). Es la unica copia de la base FUERA de sauvage (el kit lo sube a Drive); el PITR de CNPG vive en el mismo disco. OJO: comprueba los BYTES en el bucket de OVH (INFRA-1175), no el estado del Job: mc ls ovh/cnpg-backups-pocharlies/logical-dumps/postgres-shared/ debe tener un .sql.gz por cada .sha256."
         - alert: BackupRecoveryKitStale
           # Diario 21:30 UTC. 26 h cubre el retraso normal sin tragarse dos noches.
+          #
+          # SC-6740 (causa b1c1a679ed, SC-6657): el termino `absent` era el unico
+          # de la familia SIN ninguna puerta: un hueco del scrape de KSM (medido:
+          # 41 veces up=0 en 18 h, SC-6673) o la caida del backend (SC-6654) lo
+          # vuelven cierto con el CronJob sano. Lleva ya las dos puertas de la
+          # familia: `unless on()` sobre el uptime de vmalert (SC-6654) y
+          # `and on() (max(up{job="kube-state-metrics"}) == 1)` (patrón
+          # KeepBackendAbsent, INFRA-1527): con el sensor ciego la ceguera la
+          # cubren TargetDown/ScrapePathGap, no una critica de backup.
           expr: |
             (
               time() - max by (namespace, cronjob) (
@@ -1036,9 +1052,13 @@ spec:
               ) > 26 * 3600
             )
             or
-            absent(kube_cronjob_status_last_successful_time{
-              namespace="backup-hub", cronjob="recovery-kit-to-drive"
-            })
+            (
+              absent(kube_cronjob_status_last_successful_time{
+                namespace="backup-hub", cronjob="recovery-kit-to-drive"
+              })
+              unless on() absent_over_time(vm_app_uptime_seconds{job="vmalert-vm-victoria-metrics-k8s-stack"}[10m])
+              and on() (max(up{job="kube-state-metrics"}) == 1)
+            )
           for: 15m
           labels:
             namespace: backup-hub   # el expr agrega (sum/min by, absent) y suelta el label namespace de la serie; critical-safety-net de Keep agrupa y nombra por él
@@ -1048,7 +1068,7 @@ spec:
             component: recovery-kit
           annotations:
             summary: "El kit de recuperacion no ha subido a Drive en mas de 26 h"
-            description: "El CronJob backup-hub/recovery-kit-to-drive no registra exito en Kubernetes en mas de 26 h. Fallo CUATRO noches seguidas (16-19 de agosto de 2026) con el emptyDir desbordado y nadie se entero, porque el CronJob estaba fuera de ArgoCD y ninguna Application se ponia en rojo. Es el kit auditable para reconstruir las BBDD sin depender de OVH."
+            description: "El CronJob backup-hub/recovery-kit-to-drive no registra exito en Kubernetes en mas de 26 h, o su metrica esta ausente (el termino de ausencia no dispara con el backend de metricas ciego ni con el scrape de kube-state-metrics caido: SC-6654/SC-6740). Fallo CUATRO noches seguidas (16-19 de agosto de 2026) con el emptyDir desbordado y nadie se entero, porque el CronJob estaba fuera de ArgoCD y ninguna Application se ponia en rojo. Es el kit auditable para reconstruir las BBDD sin depender de OVH."
 ---
 apiVersion: operator.victoriametrics.com/v1beta1
 kind: VMRule
@@ -1657,7 +1677,11 @@ spec:
           # on()` sobre el uptime del propio vmalert, la de SC-6654/SC-6718: con
           # vmalert llegando a VictoriaMetrics la ausencia es evidencia y el
           # termino dispara igual; con el backend ciego no es evidencia (lo cubre
-          # AlertingRulesError).
+          # AlertingRulesError). SC-6740 (causa b1c1a679ed, SC-6657): ademas
+          # `and on() (max(up{job="kube-state-metrics"}) == 1)` — un hueco del
+          # scrape de KSM (41 veces up=0 en 18 h, SC-6673) quitaba la serie y
+          # hacia cierto el absent con los CronJobs sanos; con el sensor ciego la
+          # ceguera la cubren TargetDown/ScrapePathGap, no una critica fiscal.
           expr: |
             (
               time() - max by (namespace, cronjob) (
@@ -1672,6 +1696,7 @@ spec:
                 namespace="skirmshop", cronjob="sii-invoicing"
               })
               unless on() absent_over_time(vm_app_uptime_seconds{job="vmalert-vm-victoria-metrics-k8s-stack"}[10m])
+              and on() (max(up{job="kube-state-metrics"}) == 1)
             )
           for: 15m
           labels:
@@ -1681,7 +1706,7 @@ spec:
             component: shopify-sii
           annotations:
             summary: "SII daily invoicing CronJob has no recent successful run"
-            description: "CronJob skirmshop/sii-invoicing has no Kubernetes success in over 27 hours, or its status metric is absent (the absent term does not fire when vmalert's own metrics are not reaching VictoriaMetrics either: backend down, SC-6683). It should run daily at 01:00 Europe/Madrid. Check `kubectl -n skirmshop get cronjob sii-invoicing` and the newest Job/pod logs."
+            description: "CronJob skirmshop/sii-invoicing has no Kubernetes success in over 27 hours, or its status metric is absent (the absent term does not fire when vmalert's own metrics are not reaching VictoriaMetrics either: backend down, SC-6683; nor when kube-state-metrics' own scrape is down: sensor blind, SC-6740). It should run daily at 01:00 Europe/Madrid. Check `kubectl -n skirmshop get cronjob sii-invoicing` and the newest Job/pod logs."
         - alert: SiiInvoicingTelemetryMissing
           # Only fires while Kubernetes still proves a recent successful run;
           # once that run is stale, SiiInvoicingCronStale takes over.
@@ -1793,7 +1818,10 @@ spec:
           # vmalert, la de SC-6654/SC-6718: con vmalert llegando a
           # VictoriaMetrics la ausencia es evidencia y el termino dispara igual
           # (CronJob borrado -> metrica fuera -> critica); con el backend ciego la
-          # ausencia no es evidencia (lo cubre AlertingRulesError).
+          # ausencia no es evidencia (lo cubre AlertingRulesError). SC-6740 (causa
+          # b1c1a679ed): igual que la diaria, `and on()
+          # (max(up{job="kube-state-metrics"}) == 1)` calla la ausencia con el
+          # scrape de KSM caido (hueco de sensor, SC-6673).
           expr: |
             (
               time() - max by (namespace, cronjob) (
@@ -1808,6 +1836,7 @@ spec:
                 namespace="skirmshop", cronjob="sii-monthly-report"
               })
               unless on() absent_over_time(vm_app_uptime_seconds{job="vmalert-vm-victoria-metrics-k8s-stack"}[10m])
+              and on() (max(up{job="kube-state-metrics"}) == 1)
             )
           for: 30m
           labels:
@@ -1817,7 +1846,7 @@ spec:
             component: shopify-sii
           annotations:
             summary: "SII monthly fiscal report has not run in over 32 days"
-            description: "CronJob skirmshop/sii-monthly-report has no Kubernetes success in over 32 days, or its status metric is absent (the absent term does not fire when vmalert's own metrics are not reaching VictoriaMetrics either: backend down, SC-6683). It should run at 01:10 Europe/Madrid on day 1. The fiscal Excel and gestoría draft may be missing; inspect the CronJob and latest Job immediately."
+            description: "CronJob skirmshop/sii-monthly-report has no Kubernetes success in over 32 days, or its status metric is absent (the absent term does not fire when vmalert's own metrics are not reaching VictoriaMetrics either: backend down, SC-6683; nor when kube-state-metrics' own scrape is down: sensor blind, SC-6740). It should run at 01:10 Europe/Madrid on day 1. The fiscal Excel and gestoría draft may be missing; inspect the CronJob and latest Job immediately."
 ---
 # affiliate.skirmshop.es (Shopify embedded app): affiliate portal/API + the
 # go.skirmshop.es/r/* link redirects (revenue path), single pod on the edge node.
