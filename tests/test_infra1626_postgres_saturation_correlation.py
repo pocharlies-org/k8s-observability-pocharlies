@@ -19,7 +19,7 @@ regla propia. Dos piezas, ambas medidas aquí con el caso inyectado:
 El test simula la cadena completa —inhibición de Alertmanager sobre el set de
 alertas disparadas, luego el matching por regla de correlación sobre las
 sobrevivientes— con los datos de SC-6824 inyectados. Reutiliza el evaluador CEL
-de `scripts/verify-notification-coverage.py` como test_infra405; la inhibición
+que comparte `keep_correlation.py`; la inhibición
 reproduce la semántica de inhibit_rules de Alertmanager sin `equal` (cualquier
 instancia de la fuente inhibe a todos los targets que casen).
 
@@ -27,21 +27,14 @@ Hermetic: no kubectl, no network.
 """
 
 from pathlib import Path
-import importlib.util
 import re
 import unittest
 
 import yaml
 
-REPO = Path(__file__).resolve().parents[1]
-RULES = REPO / "keep" / "rules" / "correlation-rules.yaml"
-AMCONFIG = REPO / "manifests" / "alertmanager-config.yaml"
+from keep_correlation import RULES, coverage
 
-_spec = importlib.util.spec_from_file_location(
-    "verify_notification_coverage", REPO / "scripts" / "verify-notification-coverage.py"
-)
-coverage = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(coverage)
+AMCONFIG = Path(__file__).resolve().parents[1] / "manifests" / "alertmanager-config.yaml"
 
 
 def parse_matcher(matcher):
