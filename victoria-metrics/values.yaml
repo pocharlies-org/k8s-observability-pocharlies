@@ -421,13 +421,20 @@ alertmanager:
     # ~268 MB (container_memory_working_set_bytes, 6 h). Cada OOM corta el
     # webhook a Keep y abre el incidente keep-hub-degraded (HUB-19110/19114,
     # 5 y 3 reinicios en las dos réplicas). 512Mi deja ~2x de margen.
+    # SC-6822 (27-11): el margen de 512Mi se agotó. Medido en la ventana del
+    # incidente HUB-21237: la réplica -1 estacionada en 522–535 MB (límite
+    # 537 MB) y OOMKilled en bucle (01:50, 02:56, 04:28–04:30, 04:48–04:50Z;
+    # alertmanager_alerts_received ~1.500/10 min; -0 subiendo 90→128 MB). Cada
+    # OOM corta el webhook a Keep → keep-hub-degraded otra vez. 1Gi = ~2x
+    # sobre el pico actual; la causa del crecimiento la persigue el ticket
+    # [PROBLEMA] abierto desde esta Request (268→535 MB en 14 días).
     resources:
       requests:
         cpu: 50m
-        memory: 192Mi
+        memory: 384Mi
       limits:
         cpu: 200m
-        memory: 512Mi
+        memory: 1Gi
     nodeSelector:
       node-pool: ks5-nvme
     storage:
