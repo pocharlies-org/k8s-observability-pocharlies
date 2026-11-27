@@ -66,8 +66,6 @@ tests:
   - interval: 1m
     name: "KSM sano y keep-backend con réplica disponible - silencio"
     input_series:
-      - series: 'up{job="kube-state-metrics", instance="10.42.6.4:8080"}'
-        values: '1x10'
       - series: 'kube_deployment_status_replicas_available{namespace="monitoring", deployment="keep-backend"}'
         values: '1x10'
     alert_rule_test:
@@ -77,8 +75,6 @@ tests:
   - interval: 1m
     name: "KSM sano y el deployment con 0 réplicas disponibles - dispara"
     input_series:
-      - series: 'up{job="kube-state-metrics", instance="10.42.6.4:8080"}'
-        values: '1x10'
       - series: 'kube_deployment_status_replicas_available{namespace="monitoring", deployment="keep-backend"}'
         values: '0x10'
     alert_rule_test:
