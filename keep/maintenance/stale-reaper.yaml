@@ -103,8 +103,18 @@ data:
         sys.exit(1)
     print(f"Keep: {len(firing)} incidents abiertos (firing/acknowledged)")
 
-    def firing_alerts_by_incident():
-        """Alertas firing (la última por fingerprint) agrupadas por incident id.
+    def open_alerts_by_incident():
+        """Alertas abiertas —firing o acknowledged (la última por fingerprint)—
+        agrupadas por incident id.
+
+        SC-6822: van también las `acknowledged` por el mismo motivo que SC-5344
+        metió los incidents acknowledged en el paso 2: el claim de Aurora acks
+        también las alertas, y una alerta ack con su fingerprint fuera de AM es
+        un zombi igual que una firing — con solo `firing` el incident que la
+        contiene no se reconcilia NUNCA (HUB-21237 quedó colgado así: 13 alertas
+        resolved + 1 acknowledged bajo resolveOn: all_resolved). El ack es una
+        decisión humana sobre el incident, no una señal de vida: la fuente de
+        verdad sigue siendo AM.
 
         SC-5867: NO se usa /incidents/<id>/alerts. En keep 0.52.1,
         get_incident_alerts_and_links_by_incident_id (keep/api/core/db.py) ejecuta
@@ -120,7 +130,7 @@ data:
         offset = 0
         while True:
             resp = call(f"{KEEP}/alerts/query", method="POST", headers=keep_h,
-                        payload={"cel": 'status == "firing"', "limit": 1000, "offset": offset})
+                        payload={"cel": 'status == "firing" || status == "acknowledged"', "limit": 1000, "offset": offset})
             items = resp.get("results", [])
             for a in items:
                 for inc_id in (a.get("incident") or "").split(","):
@@ -134,7 +144,7 @@ data:
     # SC-5867: sin este fetch no hay decisión posible; el job falla RUIDOSO
     # (exit != 0) en vez de terminar Complete sin resolver nada.
     try:
-        alerts_by_inc = firing_alerts_by_incident()
+        alerts_by_inc = open_alerts_by_incident()
     except Exception as e:
         print(f"KEEP: fetch de alerts falló ({e}); no puedo decidir, salgo con error", file=sys.stderr)
         sys.exit(1)
@@ -154,7 +164,7 @@ data:
         # estado vivo de la Application, y quien la consulta es
         # keepsvc-argocd-reconciler (keep/maintenance/argocd-reconciler.yaml).
         zombies = [a for a in items
-                   if a.get("status") == "firing" and a.get("fingerprint") not in live
+                   if a.get("status") in ("firing", "acknowledged") and a.get("fingerprint") not in live
                    and "x86" not in (a.get("source") or [])
                    and "argocd" not in (a.get("source") or [])]
         if zombies:
@@ -197,8 +207,8 @@ data:
                 if fresh.get("status") not in ("firing", "acknowledged"):
                     resolved += 1
                 else:
-                    s2 = firing_alerts_by_incident().get(str(inc["id"]), [])
-                    if not [a for a in s2 if a.get("status") == "firing"
+                    s2 = open_alerts_by_incident().get(str(inc["id"]), [])
+                    if not [a for a in s2 if a.get("status") in ("firing", "acknowledged")
                             and a.get("fingerprint") not in live]:
                         call(f"{KEEP}/incidents/{inc['id']}/status", method="POST",
                              payload={"status": "resolved"}, headers=keep_h)

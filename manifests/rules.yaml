@@ -2225,10 +2225,20 @@ spec:
           # absent() se cumple y el incidente se abre contra un hub sano (6 veces
           # en 2 semanas: HUB-18767, 19114, 19862, 19970, 19982, 20314; medido en
           # vivo: up{job="kube-state-metrics"}=0 con keep-backend Running y 0
-          # restarts). La guarda `and on() up==1` exige que el sensor esté sano
-          # para poder afirmar ausencia; con KSM ciego la ceguera la cubren
-          # TargetDown/monitoring-degraded. Verificado en MetricsQL: deployment
-          # inexistente + up=1 -> dispara; + up=0 -> silenciado.
+          # restarts). La guarda exige que el sensor esté exportando de verdad la
+          # serie que esta regla necesita para afirmar ausencia.
+          #
+          # (SC-6822, HUB-21237, 27-11) La guarda era `and on() up==1` y NO bastó:
+          # con el metricDenylist de KSM cegando el colector de deployments (INFRA-1617),
+          # keep-backend estuvo Running con up{job="kube-state-metrics"}=1 y la serie
+          # kube_deployment_status_replicas_available ausente 2 h 35 min (01:50-04:25Z)
+          # -> crítico falso, 6º caso de esta familia tras INFRA-1527. Mismo fallo de
+          # planteamiento que SC-6808 arregló para X86Silencioso: up==1 dice que KSM
+          # vive, no que exporta. Ahora el gate pide count>0 de la propia familia de
+          # series: cubre KSM caído (caducan -> silenciado), scrape roto y KSM vivo sin
+          # el colector, y sigue disparando con el deployment realmente ausente o a 0
+          # (los demás deployments mantienen el count). La ceguera de KSM la cubren
+          # TargetDown/monitoring-degraded.
           expr: |
             (
               absent(kube_deployment_status_replicas_available{namespace="monitoring", deployment="keep-backend"})
@@ -2236,7 +2246,7 @@ spec:
               max(kube_deployment_status_replicas_available{namespace="monitoring", deployment="keep-backend"}) == 0
             )
             and on()
-            max(up{job="kube-state-metrics"}) == 1
+            (count(kube_deployment_status_replicas_available) > 0)
           for: 2m
           labels:
             severity: critical
