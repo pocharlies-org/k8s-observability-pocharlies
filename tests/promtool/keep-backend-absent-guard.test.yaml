@@ -3,14 +3,26 @@
 # kube_deployment_status_replicas_available ausente >5 min) abría un incidente
 # keep-hub-degraded contra un hub sano — 6 veces en 2 semanas. El caso 2 es el
 # falso positivo medido (up{job="kube-state-metrics"}=0 con keep-backend Running).
+#
+# SC-6822 (HUB-21237, 27-11): la guarda pasó de `up==1` a
+# `count(kube_deployment_status_replicas_available) > 0` (idioma de SC-6808),
+# porque up==1 no distingue "KSM vivo" de "KSM vivo pero sin el colector de
+# deployments" (metricDenylist, INFRA-1617): 2 h 35 min de crítico falso con el
+# hub sano. Por eso el caso 1 necesita ahora una serie de control de OTRO
+# deployment: "KSM sano" significa que exporta la familia de series. El caso 3
+# fija el falso positivo de HUB-21237: up==1 y ni una serie de deployment -> NO.
 rule_files:
   - keep-hub-health.rules.yaml
 evaluation_interval: 1m
 tests:
   - interval: 1m
-    name: "KSM sano y la serie del deployment desaparece - dispara tras el for de 2 min"
+    name: "KSM sano (exporta otros deployments) y la serie del deployment desaparece - dispara tras el for de 2 min"
     input_series:
       - series: 'up{job="kube-state-metrics", instance="10.42.6.4:8080"}'
+        values: '1x10'
+      # Control: KSM exporta de verdad el colector de deployments (otro deployment
+      # del mismo namespace, disponible). Sin esta serie el caso sería el 3.
+      - series: 'kube_deployment_status_replicas_available{namespace="monitoring", deployment="keep-frontend"}'
         values: '1x10'
     alert_rule_test:
       - eval_time: 1m
@@ -32,6 +44,18 @@ tests:
     input_series:
       - series: 'up{job="kube-state-metrics", instance="10.42.6.4:8080"}'
         values: '0x20'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: KeepBackendAbsent
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: KeepBackendAbsent
+        exp_alerts: []
+  - interval: 1m
+    name: "KSM vivo pero ciego del colector de deployments (up=1, sin series) - NO dispara (HUB-21237)"
+    input_series:
+      - series: 'up{job="kube-state-metrics", instance="10.42.6.36:8080"}'
+        values: '1x20'
     alert_rule_test:
       - eval_time: 10m
         alertname: KeepBackendAbsent
