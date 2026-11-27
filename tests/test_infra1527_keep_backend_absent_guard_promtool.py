@@ -1,9 +1,11 @@
 """promtool test de la guarda de KeepBackendAbsent (INFRA-1527, HUB-20314).
 
-La regla solo arde con el scrape de kube-state-metrics sano (`and on()
-max(up{job="kube-state-metrics"}) == 1`): con KSM ciego, absent() sobre la serie
-del deployment era un falso positivo en cada flap del scrape (6 incidentes
-keep-hub-degraded en 2 semanas con el hub sano). Casos:
+La regla solo arde con KSM exportando de verdad el colector de deployments
+(`and on() count(kube_deployment_status_replicas_available) > 0`, idioma de
+SC-6808; antes `up==1`, insuficiente: HUB-21237, 2 h 35 min de falso crítico con
+KSM up==1 y el colector cegado por el metricDenylist — INFRA-1617). Con KSM
+ciego, absent() sobre la serie del deployment era un falso positivo en cada flap
+del scrape (6 incidentes keep-hub-degraded en 2 semanas con el hub sano). Casos:
 tests/promtool/keep-backend-absent-guard.test.yaml (harness: tests/promtool_rules.py).
 """
 
