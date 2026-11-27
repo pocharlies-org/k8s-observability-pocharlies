@@ -545,6 +545,24 @@ prometheus-node-exporter:
     - --collector.filesystem.mount-points-exclude=^/(dev|proc|sys|var/lib/docker/.+|var/lib/kubelet/.+)($|/)
     - --collector.filesystem.fs-types-exclude=^(autofs|binfmt_misc|bpf|cgroup2?|configfs|debugfs|devpts|devtmpfs|fusectl|hugetlbfs|iso9660|mqueue|nsfs|overlay|proc|procfs|pstore|rpc_pipefs|securityfs|selinuxfs|squashfs|erofs|sysfs|tracefs)$
     - --collector.textfile.directory=/host/root/var/lib/ovh-pvc-hub
+  # SC-6863 (incidente Keep NODE-21302): el directorio de texto del collector
+  # anterior es el hub de backups PVC de OVH y solo existe de nacimiento en los
+  # nodos hub. En un nodo nuevo sin el, node-exporter falla el scrape entero
+  # (node_textfile_scrape_error=1 → NodeTextFileCollectorScrapeError → regla
+  # node-degraded): lo dispararon garagepi-almacen y garagepi-oficina al unirse
+  # el 27-11. El initContainer lo crea vacio en TODOS los nodos (mkdir -p es
+  # idempotente; los hub siguen rellenandolo con sus .prom, el resto no
+  # expone metricas de texto). Sin esto, cada nodo de alta reabre el incidente.
+  extraInitContainers:
+    - name: ensure-textfile-dir
+      image: docker.io/library/busybox:1.37
+      command: ["/bin/sh", "-c", "mkdir -p /host/root/var/lib/ovh-pvc-hub"]
+      securityContext:
+        runAsUser: 0
+        runAsNonRoot: false
+      volumeMounts:
+        - name: root
+          mountPath: /host/root
 
 # Override cadvisor scrape to drop the high-cardinality `id` cgroup label
 # (every container restart creates new series). Keep only container_* metrics
