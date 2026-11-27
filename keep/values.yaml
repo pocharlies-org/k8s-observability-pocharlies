@@ -935,15 +935,20 @@ backend:
       # las claves de una vez. Cerrar una clave sin sesión viva es no-op.
       # shortcut: fusionar en un incidente YA resuelto no dispara nada y su
       # sesión queda huérfana, se archiva a mano.
+      #
+      # Borrado (INFRA-1610): un incidente borrado por API/UI emite `deleted`
+      # (`incidents_bl.py`: `send_workflow_event(incident_dto, "deleted")`) y
+      # dejaría su sesión abierta para siempre; se escucha y se trata como el
+      # resolved.
       - id: alertas-cierre
         name: Alertas — cierre de la sesión de arreglo
         description: >-
-          Cuando el incidente de Keep se resuelve, avisa a Synapse del cierre
-          para que se archive la sesión (o sesiones, si absorbió otras) de
-          Paseo que abrió su RCA.
+          Cuando el incidente de Keep se resuelve (o se borra), avisa a Synapse
+          del cierre para que se archive la sesión (o sesiones, si absorbió
+          otras) de Paseo que abrió su RCA.
         triggers:
           - type: incident
-            events: [updated]
+            events: [updated, deleted]
         steps:
           # La lectura va en un step (como link-datos): sus `results` los lee el
           # `if` de la action. Los steps no admiten `if`, así que devuelve
@@ -962,10 +967,12 @@ backend:
                   )
                   SELECT coalesce(string_agg(DISTINCT substr(md5(id::text), 1, 16), ','), '')
                     FROM (VALUES (1)) AS siempre(x)
-                    -- `incident.status` renderiza el repr del enum
-                    -- (`IncidentStatus.RESOLVED`, medido 23-11 en el pod), no el
-                    -- valor: se normaliza antes de comparar.
-                    LEFT JOIN arbol ON lower(replace('{{ incident.status }}', 'IncidentStatus.', '')) = 'resolved'
+                    -- El estado se lee de la BBDD, no del `incident.status` del evento:
+                    -- en el borrado el DTO se construye ANTES del UPDATE
+                    -- (incidents_bl.delete_incident) y llega con el estado viejo
+                    -- (`firing`, medido 26-11); la columna ya dice `deleted`.
+                    LEFT JOIN arbol ON (SELECT status::text FROM incident
+                                         WHERE id = NULLIF('{{ incident.id }}', '')::uuid) IN ('resolved', 'deleted')
         actions:
           - name: avisar-synapse
             if: "'{{ steps.datos-cierre.results.0.0 }}' != ''"

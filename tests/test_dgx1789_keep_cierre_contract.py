@@ -2,8 +2,8 @@
 
 Pins:
 
-1. `alertas-cierre` se dispara con `type: incident` / `events: [updated]` (la resolución de Keep 0.52.1
-   sale como `updated`, no como evento propio).
+1. `alertas-cierre` se dispara con `type: incident` / `events: [updated, deleted]` (la resolución de
+   Keep 0.52.1 sale como `updated`, no como evento propio; el borrado sale como `deleted`).
 2. El step SIEMPRE devuelve una fila (LEFT JOIN sobre `(VALUES (1))`): con 0 filas `results.0.0`
    renderiza vacío y el `if` de la action corta el POST. El `if` no puede ir en el step.
 3. El body lleva `tipo: cierre` y la lista de fingerprints con los que se lanzaron las sesiones (la clave
@@ -38,8 +38,8 @@ class CierreTest(unittest.TestCase):
         (self.avisar,) = self.wf["actions"]
         self.query = self.datos["provider"]["with"]["query"]
 
-    def test_trigger_incidente_actualizado(self):
-        self.assertEqual(self.wf["triggers"], [{"type": "incident", "events": ["updated"]}])
+    def test_trigger_incidente_actualizado_o_borrado(self):
+        self.assertEqual(self.wf["triggers"], [{"type": "incident", "events": ["updated", "deleted"]}])
 
     def test_step_siempre_devuelve_fila(self):
         self.assertIn("FROM (VALUES (1)) AS siempre(x)", self.query)
@@ -70,11 +70,15 @@ class CierreTest(unittest.TestCase):
         self.assertIn("substr(md5(id::text), 1, 16)", self.query)
         self.assertIn("string_agg(DISTINCT", self.query)
 
-    def test_estado_normalizado_porque_el_enum_renderiza_su_repr(self):
-        # Medido en el pod (23-11): `{{ incident.status }}` llega como
-        # `IncidentStatus.RESOLVED`, no `resolved`; sin normalizar, el ON nunca
-        # casa y el cierre no sale.
-        self.assertIn("lower(replace('{{ incident.status }}', 'IncidentStatus.', '')) = 'resolved'", self.query)
+    def test_estado_leido_de_la_bbdd_no_del_evento(self):
+        # En el borrado el DTO del evento se construye ANTES del UPDATE
+        # (incidents_bl.delete_incident) y `{{ incident.status }}` llega con el
+        # estado viejo (`firing`, medido 26-11): el estado se lee de la columna.
+        self.assertIn(
+            "LEFT JOIN arbol ON (SELECT status::text FROM incident", self.query
+        )
+        self.assertIn("IN ('resolved', 'deleted')", self.query)
+        self.assertNotIn("{{ incident.status }}", self.query)
 
 
 if __name__ == "__main__":
