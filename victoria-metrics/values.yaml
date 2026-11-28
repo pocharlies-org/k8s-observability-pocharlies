@@ -280,6 +280,17 @@ vmagent:
     extraArgs:
       promscrape.maxScrapeSize: "67108864"
       promscrape.streamParse: "true"
+      # INFRA-1639 (28-11): por defecto vmagent sustituye el valor de la etiqueta
+      # `url` de sus metricas `vmagent_remotewrite_*` (y de los logs) por
+      # "<n>:secret-url" para no filtrar credenciales. Esa etiqueta viaja a la
+      # alerta (VmagentRemoteWriteFailing / TooManyRemoteWriteErrors), pasa por
+      # Alertmanager a Keep y alli AlertDto.url (AnyHttpUrl) la rechaza:
+      # "Failed to parse alert" -> el resolved se pierde (MON-21004, SC-6837).
+      # Con showURL la etiqueta vuelve a llevar la URL real. Nuestro
+      # remoteWrite.url no lleva credenciales (http a vmsingle en el cluster),
+      # asi que no hay secreto que filtrar; si alguna vez se anadieran al URL,
+      # quitar este flag y suprimir la etiqueta `url` de las alertas en su lugar.
+      remoteWrite.showURL: "true"
     selectAllByDefault: true
     # 2026-08-15: 20s -> 30s. Un tercio menos de scrapes e ingesta, medido en
     # ~1 core entre vmagent y vmsingle. No se baja a 60s porque 10 de las 401
