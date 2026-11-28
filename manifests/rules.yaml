@@ -3446,14 +3446,14 @@ spec:
           annotations:
             summary: "claude-rc-status por encima del 80% de su límite de memoria"
             description: >-
-              El working set del sidecar claude-rc-status supera el 80% de su
-              límite (1Gi) de forma sostenida 30m: el OOMKill llega solo si nadie
-              actúa. Reinicio sin recrear el pod (los tmux de Paseo sobreviven,
-              viven en el contenedor paseo): skill `paseo-rc-status-runbook`,
-              comando `kubectl -n paseo exec paseo-0 -c claude-rc-status -- kill 1`.
-              Causa de fondo: el corpus de transcripts crece sin tope (~10.200 el
-              13-11); si la alerta se repite tras el reinicio, toca dimensionar la
-              rotación, no subir el techo a ciegas (SC-5718).
+              El working set de claude-rc-status supera el 80% de su límite (1Gi) de forma
+              sostenida 30m: el OOMKill llega solo si nadie actúa. Desde SC-6870 corre en
+              su propio pod (Deployment claude-rc-status, ns paseo): reiniciarlo no toca
+              Paseo ni la compañía. Skill `paseo-rc-status-runbook`, comando `kubectl -n
+              paseo rollout restart deploy/claude-rc-status`. Causa de fondo: el corpus de
+              transcripts crece sin tope (~10.200 el 13-11); si la alerta se repite tras
+              el reinicio, toca dimensionar la rotación, no subir el techo a ciegas
+              (SC-5718).
 ---
 # SC-5606: detección temprana de la partición del enlace casa↔OVH.
 #
