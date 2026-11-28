@@ -859,12 +859,12 @@ spec:
               # kube_job_status_start_time dejaba de ver el fallo persistente a
               # las 4 h del arranque del Job (litellm-fork-update fallaba de
               # verdad y desaparecio del panel). El `unless` de abajo ya da la
-              # semantica correcta: sigue firing mientras el ultimo Job del
-              # CronJob sea el fallido. La cobertura de `DeadlineExceeded` se
-              # conserva: un Job que muere a su deadline esta failed desde ese
-              # instante y no hay ventana que lo pierda (el paso del 16-08-2026
-              # — logical-dump, deadline 3600 invisible con la ventana de 1 h —
-              # no puede repetirse).
+              # semantica correcta: sigue firing mientras el status del CronJob
+              # no registre un exito posterior al arranque del Job fallido. La
+              # cobertura de `DeadlineExceeded` se conserva: un Job que muere a
+              # su deadline esta failed desde ese instante y no hay ventana que
+              # lo pierda (el paso del 16-08-2026 — logical-dump, deadline 3600
+              # invisible con la ventana de 1 h — no puede repetirse).
               max by (namespace, job_name) (kube_job_failed{condition="true"} == 1)
               * on (namespace, job_name) group_left(owner_name)
                 # SC-4414 (SC-4369): keycloak-role-drift queda fuera — su cadencia
@@ -873,16 +873,23 @@ spec:
                 # fallos consecutivos, en KeycloakRoleDriftConsecutiveFailures.
                 max by (namespace, job_name, owner_name) (kube_job_owner{owner_kind="CronJob", owner_name!="keycloak-role-drift"})
             )
+            # SC-6885 (SC-6877, CRON-21322): la supresion por recuperacion se
+            # basa en kube_cronjob_status_last_successful_time (status del
+            # CronJob), NO en la supervivencia del objeto Job de exito. El
+            # unless anterior pedia kube_job_status_succeeded del Job de exito:
+            # al borrarse ese Job (repro del 27-11, garbage collection, TTL) el
+            # ultimo Job visible volvia a ser el fallido —dejado como evidencia,
+            # sin TTL— y la alerta re-firing abria un incidente fantasma con la
+            # misma keep-causa. El status del CronJob no lo garbage-colecta
+            # kube-state-metrics: la recuperacion deja de depender de que el
+            # Job de exito siga existiendo. Subsume el unless viejo: el
+            # controlador pone lastSuccessfulTime al terminar el Job de exito,
+            # luego exito-mas-reciente => last_successful_time > start fallido.
             unless on (namespace, owner_name)
             (
-              max by (namespace, owner_name) (
-                (
-                  max by (namespace, job_name) (kube_job_status_start_time)
-                  * on (namespace, job_name)
-                    max by (namespace, job_name) (kube_job_status_succeeded > 0)
-                )
-                * on (namespace, job_name) group_left(owner_name)
-                  max by (namespace, job_name, owner_name) (kube_job_owner{owner_kind="CronJob"})
+              label_replace(
+                max by (namespace, cronjob) (kube_cronjob_status_last_successful_time),
+                "owner_name", "$1", "cronjob", "(.*)"
               )
               > on (namespace, owner_name)
               max by (namespace, owner_name) (
