@@ -381,6 +381,21 @@ vmagent:
       # 4) Suelta el marcador de las excepciones.
       - regex: "infra1600_exempt"
         action: labeldrop
+      # 5) INFRA-1639: vmagent prefija la etiqueta `url` de sus metricas propias
+      #    vmagent_remotewrite_* con el indice de cola: "<n>:<url>" (medido tras
+      #    -remoteWrite.showURL=true: url="1:http://vmsingle-.../api/v1/write").
+      #    Esa etiqueta viaja a la alerta (VmagentRemoteWriteFailing /
+      #    TooManyRemoteWriteErrors) y de ahi a Keep, donde AlertDto.url
+      #    (AnyHttpUrl) la rechaza -> "Failed to parse alert" y el resolved se
+      #    pierde (MON-21004, SC-6837). Aqui se quita el prefijo y la url vuelve
+      #    a ser la URL real, parseable (sin credenciales: veredicto INFRA-1645).
+      #    Si alguna vez el remoteWrite.url llevara credenciales: quitar
+      #    remoteWrite.showURL y sustituir esta regla por un labeldrop de `url`.
+      - sourceLabels: [__name__, url]
+        regex: "vmagent_remotewrite_.+;\\d+:(https?://.*)"
+        targetLabel: url
+        replacement: "$1"
+        action: replace
 
 vmalert:
   enabled: true
